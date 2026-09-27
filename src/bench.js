@@ -54,22 +54,31 @@ function measure(game, seconds) {
       tris += info.render.triangles;
       n++;
     };
+    // a hidden tab stops drawing: the interval over such a pause is left out
+    let paused = document.hidden;
+    const onVisibility = () => {
+      if (document.hidden) paused = true;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
     let last = performance.now();
     let measured = 0;
+    let first = true; // the interval up to the first frame is partial
     const tick = () => {
       const now = performance.now();
       const dt = now - last;
       last = now;
-      // a hidden tab stops drawing: leave such pauses out of the result
-      if (!document.hidden && dt < 1000) {
+      if (first || paused) paused = document.hidden;
+      else {
         frames.push(dt);
         measured += dt;
       }
-      if (measured < seconds * 1000) requestAnimationFrame(tick);
+      first = false;
+      // slow machines: at least a few frames even if they take long
+      if (measured < seconds * 1000 || frames.length < 5) requestAnimationFrame(tick);
       else {
+        document.removeEventListener('visibilitychange', onVisibility);
         battle.frame = origFrame;
         info.autoReset = true;
-        frames.shift();
         const sorted = [...frames].sort((a, b) => a - b);
         const avg = frames.reduce((a, b) => a + b, 0) / Math.max(1, frames.length);
         const cpuSorted = [...cpu].sort((a, b) => a - b);
@@ -140,6 +149,8 @@ async function startBattle(game, preset) {
 export async function runBenchmark(game) {
   const out = panel();
   out.innerHTML = '<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈3 хвилини. Підключіть зарядку.';
+  // a tab opened in the background does not draw: start once it is shown
+  while (document.hidden) await wait(250);
   await game.charactersLoading;
   await wait(500);
   const results = [];

@@ -168,7 +168,12 @@ export class BattleTerrain {
 
   // ---- meshes -------------------------------------------------------------------------
   material(params, std = this.std) {
-    return std ? new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, ...params }) : new THREE.MeshLambertMaterial(params);
+    if (std) return new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, ...params });
+    // Lambert has no roughness or metalness
+    const lambert = { ...params };
+    delete lambert.roughness;
+    delete lambert.metalness;
+    return new THREE.MeshLambertMaterial(lambert);
   }
 
   build(scene, gfx = {}) {
