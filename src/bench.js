@@ -31,8 +31,8 @@ function panel() {
   return el;
 }
 
-// Measure the running battle for `seconds`: frame intervals from
-// requestAnimationFrame, CPU time of battle.frame(), draw calls, triangles.
+// Measure the running battle for `seconds` of visible frames: frame
+// intervals, CPU time of battle.frame(), draw calls, triangles.
 function measure(game, seconds) {
   return new Promise((resolve) => {
     const battle = game.battle;
@@ -55,11 +55,17 @@ function measure(game, seconds) {
       n++;
     };
     let last = performance.now();
-    const start = last;
-    const tick = (t) => {
-      frames.push(t - last);
-      last = t;
-      if (t - start < seconds * 1000) requestAnimationFrame(tick);
+    let measured = 0;
+    const tick = () => {
+      const now = performance.now();
+      const dt = now - last;
+      last = now;
+      // a hidden tab stops drawing: leave such pauses out of the result
+      if (!document.hidden && dt < 1000) {
+        frames.push(dt);
+        measured += dt;
+      }
+      if (measured < seconds * 1000) requestAnimationFrame(tick);
       else {
         battle.frame = origFrame;
         info.autoReset = true;
