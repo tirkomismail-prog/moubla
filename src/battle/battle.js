@@ -10,6 +10,7 @@ import { aiControl } from './ai.js';
 import { Projectiles } from './projectiles.js';
 import { BattleHud } from './hud.js';
 import { BattleInput } from './input.js';
+import { Effects } from './effects.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
 import { h } from '../ui/dom.js';
@@ -60,6 +61,7 @@ export class Battle {
     this.extraLosses = [new Map(), new Map()];
 
     this.setupRenderer();
+    this.fx = new Effects(this.scene);
     this.terrain = new BattleTerrain(config.kind, config.terrain);
     this.terrain.build(this.scene);
     this.buildObstacleGrid();
@@ -359,7 +361,7 @@ export class Battle {
         x: b0.x + fx * 5,
         z: b0.z + fz * 5,
         yaw: b0.yaw,
-        colors: { team: '#2f5aa0', team2: '#f5d76e' },
+        colors: { team: this.colorsFor(0).team, team2: '#f5d76e' },
         noHorse: cfg.kind === 'siege',
         name: hero.name,
       });
@@ -616,6 +618,7 @@ export class Battle {
       att.setAction('bounce', T.bounce);
       const shieldBlock = !!t.activeShield();
       this.sound(shieldBlock ? 'wood' : 'clang', t);
+      this.impactFx(shieldBlock ? 'wood' : 'spark', t, att);
       // heavy blows push the defender back a little
       if (!t.horse) {
         const dx = t.pos.x - att.pos.x;
@@ -634,7 +637,17 @@ export class Battle {
     this.applyHit(att, t, raw, dtype, hit.horse, dir === 'overhead' || (dir === 'thrust' && Math.random() < 0.25), dir);
   }
 
+  // Spawn particles on `t` facing the attacker.
+  impactFx(kind, t, from, horse = false) {
+    const dx = from ? from.pos.x - t.pos.x : 0;
+    const dz = from ? from.pos.z - t.pos.z : 0;
+    const d = Math.hypot(dx, dz) || 1;
+    const y = t.pos.y + (horse ? 1.35 : t.horse ? 2.2 : 1.3);
+    this.fx.spawn(kind, t.pos.x + (dx / d) * 0.3, y, t.pos.z + (dz / d) * 0.3, (-dx / d) * 0.6, (-dz / d) * 0.6);
+  }
+
   applyHit(att, t, raw, dtype, horse, head, dir) {
+    this.impactFx('blood', t, att, horse && !!t.horse);
     if (horse && t.horse) {
       const dmg = computeDamage(raw * 1.1, dtype, t.horse.armor);
       t.damageHorse(dmg, att);
@@ -878,6 +891,7 @@ export class Battle {
     const along = (rider.vel.x * nx + rider.vel.z * nz) / Math.max(0.01, Math.abs(sp));
     if (sp < 5 || along < 0.5) return;
     const dmg = computeDamage(sp * 1.7 * (rider.horse.item.barding ? 1.3 : 1), 'blunt', victim.bodyArmor);
+    this.fx.spawn('dust', victim.pos.x, victim.pos.y + 0.4, victim.pos.z, nx, nz);
     victim.takeDamage(dmg, rider, 'blunt', { push: [nx * sp * 0.5, nz * sp * 0.5] });
     victim.stun(0.9);
     victim.bumpCd = 1;
@@ -1183,12 +1197,17 @@ export class Battle {
     }
     this.updateCamera(dt);
     for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(this.paused ? 0 : dt);
+    if (!this.paused) this.fx.update(dt);
     this.hud.update();
     this.renderer.render(this.scene, this.camera);
   }
 
   step(dt) {
     this.time += dt;
+    if (this.tipUntil && this.time > this.tipUntil) {
+      this.tipUntil = 0;
+      this.hud.showHint(null);
+    }
     this.input.decay(dt);
     this.rebuildGrid();
     this.controlPlayer(dt);
@@ -1321,6 +1340,12 @@ export class Battle {
     if (!this.started) {
       this.started = true;
       this.game.sfx.horn();
+      if (!this.settings.seenBattleTips) {
+        this.settings.seenBattleTips = true;
+        this.game.saveSettings();
+        this.tipUntil = this.time + 22;
+        this.hud.showHint('Порада: рухніть мишею вліво, вправо, вгору чи вниз — і натисніть ЛКМ, щоб ударити з цього боку.<br>Утримуйте ПКМ, щоб блокувати. Червона стрілка показує, звідки летить ворожий удар.');
+      }
     }
   }
 

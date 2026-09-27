@@ -173,6 +173,7 @@ export class Projectiles {
       if (blocked || p.pos.y <= ground) {
         if (p.pos.y < ground) p.pos.y = ground + 0.02;
         battle.sound('arrowHit', p);
+        if (!blocked && Math.random() < 0.5) battle.fx.spawn('dust', p.pos.x, p.pos.y + 0.05, p.pos.z);
         this.stick(p);
         this.list.splice(i, 1);
         continue;
@@ -195,10 +196,12 @@ export class Projectiles {
       const raised = a.action.s === 'block';
       if ((raised && rel < 1.35) || (!raised && rel < 0.55 && Math.random() < 0.5)) {
         battle.sound('wood', a);
+        battle.fx.spawn('wood', p.pos.x, p.pos.y, p.pos.z);
         return;
       }
       void rel;
     }
+    battle.fx.spawn('blood', p.pos.x, p.pos.y, p.pos.z, p.vel.x * 0.02, p.vel.z * 0.02);
     const speedF = Math.min(1.2, p.vel.length() / Math.max(1, p.speed0));
     const raw = p.dmg * (0.5 + speedF * 0.5) * (0.9 + Math.random() * 0.2);
     if (horse) {

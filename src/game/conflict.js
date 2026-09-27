@@ -39,6 +39,11 @@ function unitsOf(parties) {
   return units;
 }
 
+// Colour of the player's side: blue unless the enemy wears blue too.
+export function allyColor(enemyFaction) {
+  return enemyFaction === 'nordheim' ? '#7d3c98' : '#3f6fb5';
+}
+
 export function battleTerrain(world, x, y) {
   return BIOME_BATTLE[world.nav.biomeAt(x, y)] || 'plains';
 }
@@ -62,10 +67,7 @@ export function startFieldBattle(game, { enemies, allies = [], mapBattle = null 
       { name: 'Ваші сили', units: [...unitsOf([pp]), ...unitsOf(allies)], hero: playerHero(world), playerKey: 'player' },
       { name: enemyNames, units: unitsOf(enemies), hero: null },
     ],
-    factionColors: [
-      '#3f6fb5',
-      factionInfo(enemies[0]?.faction).color,
-    ],
+    factionColors: [allyColor(enemies[0]?.faction), factionInfo(enemies[0]?.faction).color],
     enemyFaction: enemies[0]?.faction,
     allyFaction: allies[0]?.faction,
   };
@@ -346,7 +348,7 @@ export function startSiegeAssault(game, s) {
       { name: 'Ваші сили', units: unitsOf([st.party]), hero: playerHero(world), playerKey: 'player' },
       { name: `Гарнізон ${s.name}`, units: [...garrisonUnits, ...unitsOf(defenders)], hero: null },
     ],
-    factionColors: ['#3f6fb5', factionInfo(s.faction).color],
+    factionColors: [allyColor(s.faction), factionInfo(s.faction).color],
     fortName: s.name,
   };
   for (const d of defenders) d.held = true;
@@ -426,7 +428,7 @@ export function startArena(game, s) {
     hour: 13,
     sides: [{ name: 'Ви', units: [], hero: playerHero(world), playerKey: 'player' }, { name: 'Бійці арени', units: [], hero: null }],
     arenaFighters: 7,
-    factionColors: ['#3f6fb5', factionInfo(s.faction).color],
+    factionColors: [allyColor(s.faction), factionInfo(s.faction).color],
   };
   game.startBattle(config, (result) => {
     const pl = world.state.player;
