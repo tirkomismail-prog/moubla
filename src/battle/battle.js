@@ -91,8 +91,9 @@ export class Battle {
   // ---- setup ----------------------------------------------------------------------------
 
   setupRenderer() {
-    const r = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2) * (this.settings.quality || 1));
+    // anti-aliasing comes from the post-processing chain (FXAA / MSAA target)
+    const r = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    r.setPixelRatio(this.pixelRatio());
     r.setSize(window.innerWidth, window.innerHeight);
     r.shadowMap.enabled = this.gfx.shadows && this.settings.shadows !== false;
     r.shadowMap.type = THREE.PCFShadowMap;
@@ -102,9 +103,23 @@ export class Battle {
     this.camera = new THREE.PerspectiveCamera(64, window.innerWidth / window.innerHeight, 0.1, 1500);
   }
 
+  pixelRatio() {
+    // a fixed internal resolution (benchmark) or the screen's, capped per preset
+    if (this.renderHeight) return this.renderHeight / window.innerHeight;
+    return Math.min(window.devicePixelRatio || 1, this.gfx.maxPixelRatio || 1) * (this.settings.quality || 1);
+  }
+
+  // Render at `height` pixels whatever the window size (null: back to normal).
+  setRenderHeight(height) {
+    this.renderHeight = height;
+    this.resize();
+  }
+
   resize() {
+    const pr = this.pixelRatio();
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    if (this.post) this.post.resize(window.innerWidth, window.innerHeight);
+    if (this.post) this.post.resize(window.innerWidth, window.innerHeight, pr);
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
   }

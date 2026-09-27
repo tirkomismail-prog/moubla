@@ -6,11 +6,14 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js';
 
 export const GFX_PRESETS = {
-  low: { name: 'Низька', standard: false, sky: false, post: false, ao: false, grass: 0, shadowSize: 1024, shadows: false, msaa: 0 },
-  medium: { name: 'Середня', standard: true, sky: true, post: false, ao: false, grass: 9000, shadowSize: 2048, shadows: true, msaa: 4 },
-  high: { name: 'Висока', standard: true, sky: true, post: true, ao: true, grass: 22000, shadowSize: 4096, shadows: true, msaa: 4 },
+  // aa: anti-aliasing (MSAA doubles the frame time on integrated GPUs, FXAA is
+  // a cheap full-screen filter); maxPixelRatio caps rendering on HiDPI screens
+  low: { name: 'Низька', standard: false, sky: false, post: false, ao: false, aa: 'none', grass: 0, shadowSize: 1024, shadows: false, msaa: 0, maxPixelRatio: 1 },
+  medium: { name: 'Середня', standard: true, sky: true, post: true, ao: false, aa: 'fxaa', grass: 9000, shadowSize: 2048, shadows: true, msaa: 0, maxPixelRatio: 1 },
+  high: { name: 'Висока', standard: true, sky: true, post: true, ao: true, aa: 'msaa', grass: 22000, shadowSize: 4096, shadows: true, msaa: 4, maxPixelRatio: 1.5 },
 };
 
 export function gfxPreset(settings) {
@@ -155,7 +158,7 @@ function gradientDome(top, horizon, ground = null, sunDir = null, sunCol = null)
   return new THREE.Mesh(geo, mat);
 }
 
-// Post-processing chain: ambient occlusion, then tone mapping.
+// Post-processing chain: ambient occlusion, tone mapping, then FXAA.
 export class PostFX {
   constructor(renderer, scene, camera, preset) {
     const w = window.innerWidth;
@@ -174,13 +177,15 @@ export class PostFX {
       this.ao = ao;
     }
     this.composer.addPass(new OutputPass());
+    if (preset.aa === 'fxaa') this.composer.addPass(new FXAAPass());
   }
 
   render() {
     this.composer.render();
   }
 
-  resize(w, h) {
+  resize(w, h, pixelRatio) {
+    if (pixelRatio) this.composer.setPixelRatio(pixelRatio);
     this.composer.setSize(w, h);
   }
 

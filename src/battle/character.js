@@ -287,6 +287,7 @@ function partMaterial(part, spec) {
 // ---------------------------------------------------------------------------
 
 const LOCO = ['idle', 'walk', 'run', 'walk_back'];
+const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
 const LOD_DIST = 17;
 
 export class SkinnedHuman {
@@ -305,7 +306,9 @@ export class SkinnedHuman {
         o.material = partMaterial(part, spec);
         o.castShadow = true;
         o.receiveShadow = true;
-        o.frustumCulled = false;
+        // a sphere that holds the body in any pose (arms up, lying dead), in
+        // the mesh's own space: soldiers outside the view are not drawn
+        o.boundingSphere = CULL_SPHERE;
         if (part === 'Beard' && !spec.beard) o.visible = false;
         o.userData.part = part;
         if (!o.visible) return;

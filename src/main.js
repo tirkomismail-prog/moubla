@@ -6,6 +6,7 @@ import { MapHud } from './ui/hud.js';
 import { Sfx } from './core/audio.js';
 import { Battle } from './battle/battle.js';
 import { loadCharacters, charactersReady } from './battle/character.js';
+import { runBenchmark } from './bench.js';
 import { setUidCounter } from './core/util.js';
 import { FACTIONS } from './data/factions.js';
 import * as conflict from './game/conflict.js';
@@ -76,6 +77,8 @@ class Game {
     // realistic soldier models (packed in dist/characters.js); parsed once
     this.charactersLoading = loadCharacters();
     requestAnimationFrame((t) => this.loop(t));
+    // bench.html: run the performance benchmark
+    if (window.__BENCH) setTimeout(() => runBenchmark(this), 300);
   }
 
   saveSettings() {
