@@ -8,7 +8,8 @@ Runs inside Blender's Python (the `bpy` module from PyPI works headless):
 
 The body, its skeleton and skin weights and the helper shells used for the
 clothes come from MakeHuman / MPFB (assets under CC0). Everything else
-(clothes, hair, eyes, level of detail) is generated here.
+(clothes, hair, eyes, three levels of detail) is generated here; each level
+is exported as one mesh whose vertices name their part (_PART attribute).
 """
 import argparse
 import importlib
@@ -34,7 +35,8 @@ def parse_args():
     p.add_argument('--mpfb', required=True, help='path to the mpfb2 source folder (src/mpfb)')
     p.add_argument('--out', default='assets/characters/soldier.glb')
     p.add_argument('--bvh', default='', help='folder with CMU BVH files (optional, adds mocap clips)')
-    p.add_argument('--lod1', type=float, default=0.3, help='decimation ratio of the far model')
+    p.add_argument('--lod1', type=float, default=0.3, help='decimation ratio of the middle-distance model')
+    p.add_argument('--lod2', type=float, default=0.1, help='decimation ratio of the far model')
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
     return p.parse_args(argv)
 
@@ -236,6 +238,43 @@ def store_fit(rig, human, parts):
     rig['eye_mid'] = to_gltf((le + re) / 2)
 
 
+PART_IDS = {'Body': 0, 'Shirt': 1, 'Skirt': 2, 'Hose': 3, 'Boots': 4, 'Belt': 5, 'Hair': 6, 'Beard': 7, 'EyeL': 8, 'EyeR': 8}
+
+
+def merge_parts(objs, name):
+    """Join parts into one mesh with one material. Each vertex keeps the
+    number of its part (_PART) so the game can colour it from a palette."""
+    for o in objs:
+        me = o.data
+        pid = PART_IDS[o.name.split('_LOD')[0]]
+        attr = me.attributes.get('_PART') or me.attributes.new('_PART', 'FLOAT', 'POINT')
+        for i in range(len(me.vertices)):
+            attr.data[i].value = float(pid)
+        col = me.color_attributes.get('Col')
+        if col is None:
+            col = me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
+            for i in range(len(me.vertices)):
+                col.data[i].color = (1.0, 1.0, 1.0, 1.0)
+        me.color_attributes.active_color = col
+        me.color_attributes.render_color_index = me.color_attributes.active_color_index
+        if not me.uv_layers:
+            me.uv_layers.new(name='UVMap')
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    bpy.ops.object.join()
+    merged = bpy.context.view_layer.objects.active
+    merged.name = name
+    merged.data.name = name
+    mat = bpy.data.materials.get('soldier') or bpy.data.materials.new('soldier')
+    merged.data.materials.clear()
+    merged.data.materials.append(mat)
+    for p in merged.data.polygons:
+        p.material_index = 0
+    return merged
+
+
 def tri_count(obj):
     return sum(len(p.vertices) - 2 for p in obj.data.polygons)
 
@@ -269,19 +308,28 @@ def build():
     bpy.data.objects.remove(human)
     parts['Body'] = body
 
-    # far models
-    lods = {}
-    for name, obj in list(parts.items()):
-        ratio = 1.0 if tri_count(obj) < 400 else ARGS.lod1
-        if ratio < 1.0:
-            lods[name + '_LOD1'] = decimate(obj, ratio, name + '_LOD1')
-    parts.update(lods)
-
     for name, obj in parts.items():
         obj.parent = rig
         if not any(m.type == 'ARMATURE' for m in obj.modifiers):
             m = obj.modifiers.new('Armature', 'ARMATURE')
             m.object = rig
+        print(f'{name:14s} {tri_count(obj):6d} tris')
+
+    # one mesh per level of detail, so a soldier is a single draw call; each
+    # vertex remembers which part it belongs to (_PART) for the game's palette.
+    # Small parts are copied as they are; the eyes are left out far away.
+    meshes = {}
+    for level, ratio in ((1, ARGS.lod1), (2, ARGS.lod2)):
+        objs = []
+        for name, obj in parts.items():
+            if name.startswith('Eye') and level == 2:
+                continue
+            lod = f'{name}_LOD{level}'
+            objs.append(copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod))
+        meshes[f'Soldier_LOD{level}'] = objs
+    meshes['Soldier_LOD0'] = list(parts.values())
+    parts = {name: merge_parts(objs, name) for name, objs in sorted(meshes.items())}
+    for name, obj in parts.items():
         print(f'{name:14s} {tri_count(obj):6d} tris')
 
     if ARGS.bvh:
@@ -298,7 +346,7 @@ def build():
         export_yup=True, export_animations=bool(ARGS.bvh), export_animation_mode='ACTIONS',
         export_force_sampling=True, export_morph=False, export_skins=True, export_all_influences=False,
         export_vertex_color='ACTIVE', export_normals=True, export_tangents=False, export_texcoords=True,
-        export_extras=True)
+        export_extras=True, export_attributes=True)
     print('wrote', ARGS.out, os.path.getsize(ARGS.out), 'bytes')
 
 

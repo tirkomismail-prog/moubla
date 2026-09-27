@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
-import { buildHuman, buildHorse, weaponGeo, shieldGeo, mesh, armQuat, pickSkin, pickHair } from './models.js';
+import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
@@ -210,7 +210,7 @@ export class Agent {
     spec.driverOnly = !!(battle.gfx && battle.gfx.standard && charactersReady());
     this.rig = buildHuman(spec);
     if (spec.driverOnly) {
-      this.body = new SkinnedHuman(spec);
+      this.body = new SkinnedHuman(spec, battle.props);
       this.rig.root.add(this.body.object);
       this.body.fitDriver(this.rig);
     }
@@ -288,21 +288,22 @@ export class Agent {
 
   setupMeshes() {
     const r = this.rig;
-    for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh]) if (m && m.parent) m.parent.remove(m);
+    const props = this.battle.props;
+    for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh]) if (m) props.remove(m);
     const w = this.weapon;
-    this.weaponMesh = mesh(weaponGeo(w.model));
+    this.weaponMesh = props.add(weaponGeo(w.model));
     if (this.body) this.body.attach(this.weaponMesh, w.cls === 'bow' ? 'l' : 'r');
     else if (w.cls === 'bow') r.handL.add(this.weaponMesh);
     else r.wristR.add(this.weaponMesh);
     if (this.shield) {
       const it = ITEMS[this.shield];
-      this.shieldMesh = mesh(shieldGeo(it.model, it.color, this.colors.team));
+      this.shieldMesh = props.add(shieldGeo(it.model, it.color, this.colors.team));
       r.shieldMount.add(this.shieldMesh);
     }
     // show an inactive bow / crossbow on the back
     const other = this.weapons.find((id, i) => i !== this.wi && (ITEMS[id].cls === 'bow' || ITEMS[id].cls === 'crossbow'));
     if (other) {
-      this.backMesh = mesh(weaponGeo(ITEMS[other].model));
+      this.backMesh = props.add(weaponGeo(ITEMS[other].model));
       this.backMesh.rotation.set(0, HALF_PI, 0.6);
       this.backMesh.position.set(0, 0, -0.04);
       r.backMount.add(this.backMesh);
@@ -842,7 +843,14 @@ export class Agent {
 
   dispose() {
     const scene = this.battle.scene;
-    scene.remove(this.rig.root);
-    if (this.horse) scene.remove(this.horse.rig.root);
+    for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh, this.body && this.body.helmet]) if (m) this.battle.props.remove(m);
+    for (const root of [this.rig.root, this.horse && this.horse.rig.root]) {
+      if (!root) continue;
+      scene.remove(root);
+      // free the bone textures of the skinned meshes
+      root.traverse((o) => {
+        if (o.isSkinnedMesh) o.skeleton.dispose();
+      });
+    }
   }
 }

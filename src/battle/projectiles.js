@@ -1,6 +1,6 @@
 // Arrows, bolts and thrown weapons with simple ballistic physics.
 import * as THREE from 'three';
-import { material, weaponGeo } from './models.js';
+import { weaponGeo } from './models.js';
 import { computeDamage } from './combat.js';
 
 const G = 9.8;
@@ -89,8 +89,8 @@ export class Projectiles {
 
   spawn(o) {
     const kind = o.model === 'javelin' ? 'javelin' : o.model === 'throwaxe' ? 'throwaxe' : o.model === 'crossbow' ? 'bolt' : 'arrow';
-    const m = new THREE.Mesh(geoFor(kind), material());
-    m.castShadow = false;
+    // drawn instanced with the other carried items (props.js)
+    const m = this.battle.props.add(geoFor(kind));
     this.battle.scene.add(m);
     const p = { ...o, kind, mesh: m, age: 0, speed0: o.vel.length(), spin: kind === 'throwaxe' ? 0 : null };
     // defenders shoot over their own parapet
@@ -223,14 +223,13 @@ export class Projectiles {
     p.mesh.position.copy(p.pos);
     this.stuck.push(p.mesh);
     if (this.stuck.length > MAX_STUCK) {
-      const m = this.stuck.shift();
-      this.battle.scene.remove(m);
+      this.battle.props.remove(this.stuck.shift());
     }
   }
 
   remove(i) {
     const p = this.list[i];
-    this.battle.scene.remove(p.mesh);
+    this.battle.props.remove(p.mesh);
     this.list.splice(i, 1);
   }
 }

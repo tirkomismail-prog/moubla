@@ -177,7 +177,7 @@ def head_only(obj):
 
 def color_layer(obj, fn):
     me = obj.data
-    attr = me.color_attributes.get('Col') or me.color_attributes.new('Col', 'BYTE_COLOR', 'POINT')
+    attr = me.color_attributes.get('Col') or me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
     me.color_attributes.active_color = attr
     for v in me.vertices:
         c = fn(v)

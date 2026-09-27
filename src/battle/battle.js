@@ -13,6 +13,7 @@ import { BattleInput } from './input.js';
 import { Effects } from './effects.js';
 import { gfxPreset, Environment, PostFX } from './graphics.js';
 import { setMaterialQuality } from './models.js';
+import { Props } from './props.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
 import { h } from '../ui/dom.js';
@@ -100,6 +101,8 @@ export class Battle {
     this.root.append(r.domElement);
     this.renderer = r;
     this.scene = new THREE.Scene();
+    this.scene.matrixWorldAutoUpdate = false;
+    this.props = new Props(this.scene);
     this.camera = new THREE.PerspectiveCamera(64, window.innerWidth / window.innerHeight, 0.1, 1500);
   }
 
@@ -1207,6 +1210,11 @@ export class Battle {
       this.terrain.update(this.time, this.camera);
     }
     this.hud.update();
+    // world matrices once per frame (the renderer does not repeat it), then
+    // the carried items follow their holders
+    this.scene.updateMatrixWorld();
+    this.camera.updateMatrixWorld();
+    this.props.sync(this.camera);
     if (this.post) this.post.render();
     else this.renderer.render(this.scene, this.camera);
   }
@@ -1403,6 +1411,7 @@ export class Battle {
         if (o.parent === this.terrain.group || o === this.sky) o.geometry.dispose();
       }
     });
+    this.props.dispose();
     if (this.post) this.post.dispose();
     if (this.env) this.env.dispose();
     this.renderer.dispose();

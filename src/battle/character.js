@@ -5,14 +5,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { helmetGeo, mesh as vcMesh } from './models.js';
+import { helmetGeo } from './models.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
-import { applyPattern as patternFor } from './fabric.js';
-
-// Procedural surface detail (fabric.js) is still an experiment: its bump and
-// colour strength need tuning before it looks right, so it is off for now.
-const SURFACE_DETAIL = false;
-const applyPattern = (material, kind) => (SURFACE_DETAIL ? patternFor(material, kind) : material);
 
 const state = { status: 'idle', promise: null, t: null };
 
@@ -188,19 +182,14 @@ function fingerPose(bones, s, hand, amount) {
 }
 
 // ---------------------------------------------------------------------------
-// Materials (shared between soldiers with the same colours)
+// Material: the whole body is one mesh (one draw call per soldier). Every
+// vertex carries the number of its part (_part); a palette per soldier type
+// gives each part its colour, roughness and metalness, and can hide a part
+// (no beard, hair under a helmet). Shared between soldiers who look alike.
 // ---------------------------------------------------------------------------
 
-const materials = new Map();
-
-function material(key, make) {
-  let m = materials.get(key);
-  if (!m) {
-    m = make();
-    materials.set(key, m);
-  }
-  return m;
-}
+const PART = { body: 0, shirt: 1, skirt: 2, hose: 3, boots: 4, belt: 5, hair: 6, beard: 7, eyes: 8 };
+const PARTS = 9;
 
 const METALS = {
   mail: { color: '#7d848c', roughness: 0.5, metalness: 0.85 },
@@ -208,78 +197,101 @@ const METALS = {
   plate: { color: '#aab2ba', roughness: 0.28, metalness: 0.95 },
 };
 const CLOTH = { padded: '#cdbf9a', leather: '#6f4c2e' };
+const surface = (color, roughness, metalness = 0) => ({ color, roughness, metalness });
 
-function clothMat(color, roughness = 0.9, pattern = 'wool') {
-  return material(`cloth:${color}:${roughness}:${pattern}`, () =>
-    applyPattern(new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 }), pattern));
+function palette(spec) {
+  const look = spec.look || 'cloth';
+  const team = surface(spec.team, 0.92);
+  const padded = surface(CLOTH.padded, 0.9);
+  const p = [];
+  p[PART.body] = surface(spec.skin, 0.58);
+  p[PART.shirt] = METALS[look] || (look === 'padded' ? padded : look === 'leather' ? surface(CLOTH.leather, 0.62) : team);
+  p[PART.skirt] = look === 'padded' ? padded : team;
+  p[PART.hose] = look === 'plate' || look === 'mail' ? METALS[look] : surface(spec.pants, 0.9);
+  p[PART.boots] = look === 'plate' ? METALS.plate : surface('#3b2819', 0.6);
+  p[PART.belt] = surface('#4a2f1b', 0.5);
+  p[PART.hair] = surface(spec.hair, 0.75);
+  p[PART.beard] = p[PART.hair];
+  p[PART.eyes] = surface('#ffffff', 0.12);
+  return p;
 }
 
-function metalMat(kind) {
-  const p = METALS[kind];
-  return material(`metal:${kind}`, () =>
-    applyPattern(new THREE.MeshStandardMaterial({ color: p.color, roughness: p.roughness, metalness: p.metalness }), kind));
-}
+const PART_VERTEX = `
+  attribute float _part;
+  uniform float partHidden[${PARTS}];`;
+// moves the vertices of a hidden part out of the view: its triangles vanish
+const HIDE_VERTEX = `
+  if (partHidden[int(_part + 0.5)] > 0.5) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);`;
 
-function skinMat(color) {
-  return material(`skin:${color}`, () =>
-    applyPattern(new THREE.MeshStandardMaterial({ color, roughness: 0.58, metalness: 0, vertexColors: true }), 'skin'));
-}
+const materials = new Map();
 
-// Hair and beards: vertex alpha says how far from the edge of the shell a
-// point is; the shader frays the outline with noise and adds strand shading.
-function hairMat(color) {
-  return material(`hair:${color}`, () => {
-    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0, vertexColors: true });
-    m.onBeforeCompile = (shader) => {
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vHairPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHairPos = position;');
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>
-          varying vec3 vHairPos;
-          float hairHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }`)
-        .replace('#include <color_fragment>', `#include <color_fragment>
+function soldierMat(spec, hidden) {
+  const key = `${spec.look}|${spec.team}|${spec.pants}|${spec.skin}|${spec.hair}|${hidden.join('')}`;
+  let m = materials.get(key);
+  if (m) return m;
+  const colors = new Float32Array(PARTS * 3);
+  const surfaces = new Float32Array(PARTS * 2);
+  const c = new THREE.Color();
+  palette(spec).forEach((s, i) => {
+    c.set(s.color).toArray(colors, i * 3);
+    surfaces[i * 2] = s.roughness;
+    surfaces[i * 2 + 1] = s.metalness;
+  });
+  const hide = { value: new Float32Array(hidden) };
+  m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.partHidden = hide;
+    shader.uniforms.partColor = { value: colors };
+    shader.uniforms.partSurface = { value: surfaces };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>${PART_VERTEX}
+        uniform vec3 partColor[${PARTS}];
+        uniform vec2 partSurface[${PARTS}];
+        varying vec3 vPartColor;
+        varying vec2 vPartSurface;
+        varying float vHair;
+        varying vec3 vHairPos;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        int part = int(_part + 0.5);
+        vPartColor = partColor[part];
+        vPartSurface = partSurface[part];
+        vHair = part == ${PART.hair} || part == ${PART.beard} ? 1.0 : 0.0;
+        vHairPos = position;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
+    // hair and beards: vertex alpha says how far from the edge of the shell
+    // a point is; the outline is frayed with noise and strands are shaded
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vPartColor;
+        varying vec2 vPartSurface;
+        varying float vHair;
+        varying vec3 vHairPos;
+        float hairHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        diffuseColor.rgb *= vPartColor;
+        if (vHair > 0.5) {
           float hn = hairHash(floor(vHairPos * 420.0));
           if (vColor.a < hn * 0.95 + 0.03) discard;
           float strand = hairHash(floor(vHairPos * vec3(900.0, 260.0, 900.0)));
           diffuseColor.rgb *= 0.78 + 0.4 * strand;
-          diffuseColor.a = 1.0;`);
-    };
-    m.customProgramCacheKey = () => 'hair';
-    return m;
-  });
-}
-
-const EYE_MAT = () => material('eye', () => new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.12, metalness: 0, vertexColors: true }));
-
-function partMaterial(part, spec) {
-  const look = spec.look || 'cloth';
-  switch (part) {
-    case 'Body':
-      return skinMat(spec.skin);
-    case 'Hair':
-    case 'Beard':
-      return hairMat(spec.hair);
-    case 'EyeL':
-    case 'EyeR':
-      return EYE_MAT();
-    case 'Shirt':
-      if (METALS[look]) return metalMat(look);
-      if (look === 'padded') return clothMat(CLOTH.padded, 0.9, 'quilt');
-      if (look === 'leather') return clothMat(CLOTH.leather, 0.62, 'leather');
-      return clothMat(spec.team, 0.92, 'wool');
-    case 'Skirt':
-      if (look === 'padded') return clothMat(CLOTH.padded, 0.9, 'quilt');
-      return clothMat(spec.team, 0.92, 'wool');
-    case 'Hose':
-      return look === 'plate' ? metalMat('plate') : look === 'mail' ? metalMat('mail') : clothMat(spec.pants, 0.9, 'knit');
-    case 'Boots':
-      return look === 'plate' ? metalMat('plate') : clothMat('#3b2819', 0.6, 'leather');
-    case 'Belt':
-      return clothMat('#4a2f1b', 0.5, 'leather');
-    default:
-      return clothMat('#888888');
-  }
+        }
+        diffuseColor.a = 1.0;`)
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPartSurface.x;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPartSurface.y;');
+  };
+  m.customProgramCacheKey = () => 'soldier';
+  // shadows: hidden parts cast none either
+  const depth = new THREE.MeshDepthMaterial();
+  depth.onBeforeCompile = (shader) => {
+    shader.uniforms.partHidden = hide;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>${PART_VERTEX}`)
+      .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
+  };
+  depth.customProgramCacheKey = () => 'soldier-depth';
+  m.userData.depth = depth;
+  materials.set(key, m);
+  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,38 +300,46 @@ function partMaterial(part, spec) {
 
 const LOCO = ['idle', 'walk', 'run', 'walk_back'];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
-const LOD_DIST = 17;
+// levels of detail: full model up close, then 30 % and 10 % of the triangles
+const LOD_DIST = [17, 45];
 
 export class SkinnedHuman {
-  constructor(spec) {
+  // `props` draws the helmet (see props.js)
+  constructor(spec, props) {
     const t = state.t;
     this.t = t;
     this.spec = spec;
     this.object = cloneSkinned(t.scene);
     this.bones = {};
-    this.lod = [[], []];
+    this.lod = [];
     this.object.traverse((o) => {
       if (o.isBone) this.bones[o.name] = o;
-      if (o.isSkinnedMesh) {
-        const far = o.name.endsWith('_LOD1');
-        const part = o.name.replace(/_LOD1$/, '');
-        o.material = partMaterial(part, spec);
-        o.castShadow = true;
-        o.receiveShadow = true;
-        // a sphere that holds the body in any pose (arms up, lying dead), in
-        // the mesh's own space: soldiers outside the view are not drawn
-        o.boundingSphere = CULL_SPHERE;
-        if (part === 'Beard' && !spec.beard) o.visible = false;
-        o.userData.part = part;
-        if (!o.visible) return;
-        // eyes and the belt are not worth a far model
-        const hasFar = part !== 'Belt';
-        this.lod[far ? 1 : 0].push(o);
-        if (!hasFar) this.lod[1].push(o);
-      }
+      const m = o.isSkinnedMesh && /_LOD(\d)$/.exec(o.name);
+      if (m) this.lod[+m[1]] = o;
+    });
+    this.addHelmet(spec, props);
+    // hoods and closed helmets hide the hair
+    const hidden = new Array(PARTS).fill(0);
+    if (!spec.beard) hidden[PART.beard] = 1;
+    if (this.helmet) hidden[PART.hair] = 1;
+    const mat = soldierMat(spec, hidden);
+    // the levels of detail share one skeleton: one bone update and one bone
+    // texture per soldier
+    const shared = this.lod[0].skeleton;
+    this.lod.forEach((o, level) => {
+      if (o.skeleton !== shared) o.bind(shared, o.bindMatrix);
+      o.material = mat;
+      o.customDepthMaterial = mat.userData.depth;
+      o.castShadow = level < 2;
+      o.receiveShadow = true;
+      // a sphere that holds the body in any pose (arms up, lying dead), in
+      // the mesh's own space: soldiers outside the view are not drawn
+      o.boundingSphere = CULL_SPHERE;
     });
     this.lodLevel = -1;
     this.setLod(0);
+    this.frameNo = Math.floor(Math.random() * 4);
+    this.pending = 0;
     this.mixer = new THREE.AnimationMixer(this.object);
     this.actions = {};
     for (const k of LOCO) {
@@ -343,22 +363,19 @@ export class SkinnedHuman {
       this.grip[s] = g;
     }
     this.handPose = { l: 'relaxed', r: 'relaxed' };
-    this.addHelmet(spec);
   }
 
   setLod(level) {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
-    for (const o of this.lod[0]) o.visible = false;
-    for (const o of this.lod[1]) o.visible = false;
-    for (const o of this.lod[level]) o.visible = true;
+    this.lod.forEach((o, i) => (o.visible = i === level));
   }
 
-  addHelmet(spec) {
+  addHelmet(spec, props) {
     const geo = helmetGeo(spec.helmet, spec.team);
     if (!geo) return;
     const fit = this.t.fit;
-    const m = vcMesh(geo);
+    const m = props.add(geo);
     // the procedural helmets are sized for a head whose hair is 0.12 m wide
     // (half) around (0, 0.19, 0) above the neck: scale and place them on
     // this head
@@ -375,13 +392,6 @@ export class SkinnedHuman {
     holder.add(m);
     this.bones.head.add(holder);
     this.helmet = m;
-    // hoods and closed helmets hide the hair
-    if (spec.helmet) {
-      this.object.traverse((o) => {
-        if (o.isSkinnedMesh && o.userData.part === 'Hair') o.visible = false;
-      });
-      this.lod = this.lod.map((l) => l.filter((o) => o.userData.part !== 'Hair'));
-    }
   }
 
   // Move the pose rig's shoulders and hands to where this body's are, so that
@@ -407,9 +417,17 @@ export class SkinnedHuman {
     const r = agent.rig;
     const b = this.bones;
     const cam = agent.battle.camera;
-    this.setLod(cam.position.distanceToSquared(agent.pos) < LOD_DIST * LOD_DIST ? 0 : 1);
+    const d2 = cam.position.distanceToSquared(agent.pos);
+    const level = d2 < LOD_DIST[0] ** 2 ? 0 : d2 < LOD_DIST[1] ** 2 ? 1 : 2;
+    this.setLod(level);
+    // animation level of detail: distant soldiers are posed less often
+    this.pending += dt;
+    const every = [1, 2, 4][level];
+    if (dt > 0 && this.frameNo++ % every !== 0) return;
+    dt = this.pending;
+    this.pending = 0;
     this.locomotion(agent, dt);
-    r.root.updateMatrixWorld(true);
+    b.pelvis.updateWorldMatrix(true, false);
     const rootQ = r.root.getWorldQuaternion(U.rootQ);
 
     if (agent.horse && agent.alive) this.ride(rootQ);
@@ -498,6 +516,7 @@ export class SkinnedHuman {
       this.placeHand('l', r.handL.getWorldPosition(A.pos), r.handL.getWorldQuaternion(A.q), rootQ);
       this.handPose.l = 'fist';
     } else if (sh && agent.shieldMesh) {
+      agent.shieldMesh.updateWorldMatrix(true, false);
       const grip = agent.shieldMesh.localToWorld(A.pos.set(0, 0, -0.05));
       // hold the shield's handle: knuckles along the shield's up axis
       const q = agent.shieldMesh.getWorldQuaternion(A.q).multiply(A.q2.setFromAxisAngle(X, -Math.PI / 2));
@@ -601,26 +620,35 @@ function worldQuat(o, out) {
   return out;
 }
 
+// Recompute a bone's world matrix from its (up to date) parent's, without
+// touching its children: the pose code walks down each chain in order and
+// the renderer updates everything once more before drawing.
+function refresh(bone) {
+  bone.updateMatrix();
+  bone.matrixWorld.multiplyMatrices(bone.parent.matrixWorld, bone.matrix);
+}
+
 // rotate a bone by the world rotation R about its own pivot
 function rotateWorld(bone, R) {
   worldQuat(bone.parent, RW.p);
   // local' = P^-1 * R * P * local
   RW.inv.copy(RW.p).invert();
   bone.quaternion.premultiply(RW.p).premultiply(R).premultiply(RW.inv);
-  bone.updateMatrixWorld(true);
+  refresh(bone);
 }
 
 function setWorldQuat(bone, q) {
   worldQuat(bone.parent, SQ.p);
   bone.quaternion.copy(SQ.p.invert()).multiply(q);
-  bone.updateMatrixWorld(true);
+  refresh(bone);
 }
 
 // rotate `bone` (minimally) so that its local direction `localDir` points at `target`
 function aim(bone, localDir, target) {
+  refresh(bone);
   const q = worldQuat(bone, AI.q);
   const from = AI.from.copy(localDir).applyQuaternion(q).normalize();
-  const pos = bone.getWorldPosition(AI.pos);
+  const pos = AI.pos.setFromMatrixPosition(bone.matrixWorld);
   const to = AI.to.subVectors(target, pos).normalize();
   rotateWorld(bone, AI.r.setFromUnitVectors(from, to));
 }
@@ -628,7 +656,8 @@ function aim(bone, localDir, target) {
 // Two-bone IK: put the end of the limb at `target`, bending in the plane that
 // contains `pole` and keeping the middle joint a hinge.
 function solveLimb(upper, lower, end, info, target, pole) {
-  const S = upper.getWorldPosition(SL.S);
+  upper.updateWorldMatrix(true, false);
+  const S = SL.S.setFromMatrixPosition(upper.matrixWorld);
   const { a, b } = info;
   const dir = SL.dir.subVectors(target, S);
   let d = dir.length();

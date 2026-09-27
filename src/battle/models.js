@@ -2,6 +2,7 @@
 // Every model is built from primitive shapes merged into vertex-coloured
 // geometries so that a single shared material can be used.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // Two shared materials: a cheap Lambert one for the low preset and a PBR one
 // that reads a per-vertex `metal` attribute, so that steel parts shine and
@@ -172,14 +173,38 @@ function cached(key, fn) {
   return g;
 }
 
-export function mesh(geo) {
-  return meshOf(geo);
-}
-
-function meshOf(geo) {
-  const m = new THREE.Mesh(geo, current);
+// The rigid parts of a rig drawn as one skinned mesh: the vertices of each
+// part follow the group it hangs from (weight 1), so the animation code still
+// moves the groups but the whole model costs one draw call. `parts` are
+// [group, geometry] pairs; `key` names the combination for the cache;
+// `sphere` holds the model in any pose (for culling), in the root's space.
+function rigidSkin(root, parts, key, sphere) {
+  root.updateMatrixWorld(true);
+  const toRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const rest = parts.map(([group]) => new THREE.Matrix4().multiplyMatrices(toRoot, group.matrixWorld));
+  const geo = cached(`rigid:${key}`, () =>
+    mergeGeometries(
+      parts.map(([, g], i) => {
+        const c = g.clone().applyMatrix4(rest[i]);
+        const n = c.attributes.position.count;
+        const index = new Uint16Array(n * 4);
+        const weight = new Float32Array(n * 4);
+        for (let k = 0; k < n; k++) {
+          index[k * 4] = i;
+          weight[k * 4] = 1;
+        }
+        c.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(index, 4));
+        c.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weight, 4));
+        return c;
+      }),
+    ),
+  );
+  const m = new THREE.SkinnedMesh(geo, current);
   m.castShadow = true;
   m.receiveShadow = true;
+  m.boundingSphere = sphere;
+  root.add(m);
+  m.bind(new THREE.Skeleton(parts.map(([group]) => group), rest.map((r) => r.clone().invert())), new THREE.Matrix4());
   return m;
 }
 
@@ -360,9 +385,18 @@ function armGeo(sleeve, skin, glove) {
 // The pose rig of a soldier: a hierarchy of groups that the animation code
 // moves. With `spec.driverOnly` it has no meshes of its own (a skinned
 // character follows it instead).
+const HUMAN_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1, 0), 1.3);
+
 export function buildHuman(spec) {
   const show = !spec.driverOnly;
-  const mesh = (geo) => (show ? meshOf(geo) : new THREE.Object3D());
+  const parts = [];
+  const key = [];
+  const mesh = (geo, group, name) => {
+    if (show) {
+      parts.push([group, geo]);
+      key.push(name);
+    }
+  };
   const root = new THREE.Group();
   const hips = new THREE.Group();
   hips.position.y = 0.92;
@@ -373,23 +407,23 @@ export function buildHuman(spec) {
   const legR = new THREE.Group();
   legL.position.set(0.1, 0, 0);
   legR.position.set(-0.1, 0, 0);
-  legL.add(mesh(legGeo(pants, boots)));
-  legR.add(mesh(legGeo(pants, boots)));
+  mesh(legGeo(pants, boots), legL, `leg:${pants}:${boots}`);
+  mesh(legGeo(pants, boots), legR, '');
   hips.add(legL, legR);
   const torso = new THREE.Group();
   hips.add(torso);
-  torso.add(mesh(torsoGeo(spec.look, spec.team, spec.team2)));
+  mesh(torsoGeo(spec.look, spec.team, spec.team2), torso, `torso:${spec.look}:${spec.team}:${spec.team2}`);
   const neck = new THREE.Group();
   neck.position.y = 0.6;
   torso.add(neck);
-  neck.add(mesh(headGeo(spec.skin, spec.hair, !!spec.beard)));
+  mesh(headGeo(spec.skin, spec.hair, !!spec.beard), neck, `head:${spec.skin}:${spec.hair}:${!!spec.beard}`);
   const hg = show ? helmetGeo(spec.helmet, spec.team) : null;
-  if (hg) neck.add(mesh(hg));
+  if (hg) mesh(hg, neck, `helmet:${spec.helmet}:${spec.team}`);
   const sleeve = ARMOR_COLORS[spec.look] || spec.team;
   const glove = spec.look === 'mail' || spec.look === 'plate' || spec.look === 'lamellar';
   const armR = new THREE.Group();
   armR.position.set(-0.28, 0.53, 0);
-  armR.add(mesh(armGeo(sleeve, spec.skin, glove)));
+  mesh(armGeo(sleeve, spec.skin, glove), armR, `arm:${sleeve}:${spec.skin}:${glove}`);
   const handR = new THREE.Group();
   handR.position.y = -0.6;
   armR.add(handR);
@@ -397,7 +431,7 @@ export function buildHuman(spec) {
   handR.add(wristR);
   const armL = new THREE.Group();
   armL.position.set(0.28, 0.53, 0);
-  armL.add(mesh(armGeo(sleeve, spec.skin, glove)));
+  mesh(armGeo(sleeve, spec.skin, glove), armL, '');
   const handL = new THREE.Group();
   handL.position.y = -0.6;
   armL.add(handL);
@@ -407,6 +441,7 @@ export function buildHuman(spec) {
   const backMount = new THREE.Group();
   backMount.position.set(0, 0.35, -0.16);
   torso.add(backMount);
+  if (show) rigidSkin(root, parts, `human:${key.join('|')}`, HUMAN_SPHERE);
   return { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount };
 }
 
@@ -685,19 +720,22 @@ function horseLegGeo(coat, hind) {
   });
 }
 
+const HORSE_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.1, 0.1), 1.9);
+
 export function buildHorse(coat, team, barding) {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  body.add(mesh(horseBodyGeo(coat, team, barding)));
+  const parts = [[body, horseBodyGeo(coat, team, barding)]];
   const legs = [];
   for (const [x, z] of [[0.18, 0.6], [-0.18, 0.6], [0.18, -0.58], [-0.18, -0.58]]) {
     const l = new THREE.Group();
     l.position.set(x, 1.1, z);
-    l.add(mesh(horseLegGeo(coat, z < 0)));
+    parts.push([l, horseLegGeo(coat, z < 0)]);
     body.add(l);
     legs.push(l);
   }
+  rigidSkin(root, parts, `horse:${coat}:${team}:${barding}`, HORSE_SPHERE);
   return { root, body, legs };
 }
 
