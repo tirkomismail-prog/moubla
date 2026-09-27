@@ -22,8 +22,7 @@ export class BattleInput {
     on(document, 'pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
       if (!this.locked) {
-        this.lmb = false;
-        this.rmb = false;
+        this.releaseButtons();
         battle.onUnlock();
       } else battle.onLock();
     });
@@ -64,7 +63,7 @@ export class BattleInput {
       battle.playerNextWeapon(e.deltaY > 0 ? 1 : -1);
     }, { passive: true });
     on(window, 'keydown', (e) => {
-      if (e.code === 'Tab' || e.code.startsWith('F') && e.code.length <= 3) e.preventDefault();
+      if (e.code === 'Tab' || e.code === 'F1' || e.code === 'F2' || e.code === 'F3') e.preventDefault();
       if (e.repeat) return;
       this.keys.add(e.code);
       battle.onKey(e.code);
@@ -72,9 +71,15 @@ export class BattleInput {
     on(window, 'keyup', (e) => this.keys.delete(e.code));
     on(window, 'blur', () => {
       this.keys.clear();
-      this.lmb = false;
-      this.rmb = false;
+      this.releaseButtons();
     });
+  }
+
+  releaseButtons() {
+    if (this.lmb) this.battle.playerAttackRelease();
+    if (this.rmb) this.battle.playerBlockRelease();
+    this.lmb = false;
+    this.rmb = false;
   }
 
   lock() {

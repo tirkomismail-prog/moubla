@@ -4,7 +4,7 @@ import { plural, formatHour } from '../core/util.js';
 import { FACTIONS, FACTION_IDS } from '../data/factions.js';
 import { ITEMS, SLOT_NAMES, describeItem, isEquipment } from '../data/items.js';
 import { TROOPS, TYPE_NAMES } from '../data/troops.js';
-import { ATTRIBUTES, SKILLS, xpForNextLevel, playerMaxHp, maxSkillLevel } from '../data/character.js';
+import { ATTRIBUTES, SKILLS, xpForNextLevel, playerMaxHp, maxSkillLevel, hiredCompanions, companionWage } from '../data/character.js';
 import { totalCount, woundedCount, upgradableCount, upgradeStack, removeTroops, addTroops, stacksWages } from '../world/party.js';
 import { invAdd, invRemove, invLoad, CARRY_CAPACITY, foodServings } from '../world/economy.js';
 import { warKey } from '../world/world.js';
@@ -65,6 +65,22 @@ export const panelScreens = {
       });
       if (!pp.troops.length) table.append(h('tr', null, h('td', { colSpan: 6, class: 'muted' }, 'Ви подорожуєте самі. Наберіть добровольців у селах або найміть найманців у таверні.')));
 
+      const comps = hiredCompanions(st);
+      const heroes = h('table', { class: 'list' }, h('tr', null, h('th', null, 'Супутники'), h('th', null, 'Здоров\u2019я'), h('th', null, 'Навички'), h('th', null, '')));
+      for (const c of comps) {
+        heroes.append(h('tr', null,
+          h('td', null, h('b', null, c.def.name), h('div', { class: 'muted', style: { fontSize: '12px' } }, `Рівень ${c.def.level} · платня ${companionWage(c.def)}`)),
+          h('td', { style: { width: '120px' } }, bar(c.st.hp / c.def.hp), h('span', { style: { fontSize: '12px' } }, `${Math.round(c.st.hp)} / ${c.def.hp}`)),
+          h('td', { style: { fontSize: '13px' } }, Object.entries(c.def.skills).map(([k, v]) => `${SKILLS[k].name} ${v}`).join(', ')),
+          h('td', { class: 'num' }, btn('Відпустити', () => {
+            if (!confirm(`Відпустити ${c.def.name}?`)) return;
+            c.st.hired = false;
+            const towns = st.settlements.filter((x) => x.kind === 'town');
+            c.st.location = towns[Math.floor(Math.random() * towns.length)].id;
+            render();
+          }, 'tiny')),
+        ));
+      }
       const pris = h('table', { class: 'list' }, h('tr', null, h('th', null, 'Полонені'), h('th', { class: 'num' }, 'К-сть'), h('th', null, '')));
       for (const p of pp.prisoners) {
         const t = TROOPS[p.id];
@@ -74,7 +90,7 @@ export const panelScreens = {
               if (world.isPlayerFull()) return;
               // prisoners are reluctant: only some agree
               const willing = Math.max(1, Math.round(p.count * (0.3 + pl.skills.leadership * 0.05)));
-              const n = Math.min(willing, world.partyLimit() - totalCount(pp.troops));
+              const n = Math.min(willing, world.partySpace());
               removeTroops(pp.prisoners, p.id, n);
               addTroops(pp.troops, p.id, n);
               world.message(`${n} полонених погодилися служити вам.`, 'good');
@@ -86,9 +102,10 @@ export const panelScreens = {
       const food = foodServings(pl.inventory);
       const perDay = Math.ceil((total + 1) / 3);
       const summary = h('p', null,
-        `Розмір загону: `, h('b', null, `${total + 1} / ${limit + 1}`), ` · Поранені: ${woundedCount(pp.troops)} · Платня: `, h('b', { class: 'gold' }, world.weeklyWages()), ' на тиждень · Мораль: ', h('b', null, world.playerMorale()),
+        `Розмір загону: `, h('b', null, `${total + 1 + comps.length} / ${limit + 1}`), ` · Поранені: ${woundedCount(pp.troops)} · Платня: `, h('b', { class: 'gold' }, world.weeklyWages()), ' на тиждень · Мораль: ', h('b', null, world.playerMorale()),
         ` · Провізія: ${food} порцій (${Math.floor(food / perDay)} ${plural(Math.floor(food / perDay), 'день', 'дні', 'днів')})`);
       const body = h('div', null, summary, table,
+        comps.length ? h('div', null, h('div', { class: 'section-title' }, 'Супутники'), heroes) : null,
         pp.prisoners.length ? h('div', null, h('div', { class: 'section-title' }, `Полонені (${totalCount(pp.prisoners)} / ${world.prisonerLimit()})`), pris) : null,
         h('p', { class: 'muted', style: { fontSize: '13px' } }, 'Воїни отримують досвід у боях (і від навички «Тренер»). Порядок у списку визначає, хто першим виходить на поле бою.'),
       );

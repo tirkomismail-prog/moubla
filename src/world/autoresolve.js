@@ -76,7 +76,8 @@ export function autoResolve(sides, rand = defaultRng, maxRounds = 60) {
     }
   }
   let winner;
-  if (!alive[1].length && alive[0].length) winner = 0;
+  if (!alive[0].length && !alive[1].length) winner = 1; // nobody fought: the defender holds
+  else if (!alive[1].length && alive[0].length) winner = 0;
   else if (!alive[0].length && alive[1].length) winner = 1;
   else {
     // ran out of rounds: side with more remaining strength wins, the loser flees

@@ -1,3 +1,5 @@
+import { COMPANIONS } from './companions.js';
+
 // Player character: attributes, skills, backgrounds and derived stats.
 
 export const ATTRIBUTES = {
@@ -88,4 +90,23 @@ export function partyLimit(state) {
 
 export function prisonerLimit(state) {
   return 5 + state.player.skills.prisoner * 5;
+}
+
+// Party-wide skills (surgery, trade...) use the best value in the party.
+export function partySkill(state, name) {
+  let v = state.player.skills[name] || 0;
+  for (const [id, c] of Object.entries(state.companions || {})) {
+    if (c.hired && COMPANIONS[id]) v = Math.max(v, COMPANIONS[id].skills[name] || 0);
+  }
+  return v;
+}
+
+export function hiredCompanions(state) {
+  return Object.entries(state.companions || {})
+    .filter(([id, c]) => c.hired && COMPANIONS[id])
+    .map(([id, c]) => ({ id, def: COMPANIONS[id], st: c }));
+}
+
+export function companionWage(def) {
+  return def.level * 8;
 }

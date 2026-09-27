@@ -514,7 +514,11 @@ export class MapView {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    // label
+    // label (village names are hidden when zoomed far out)
+    if (s.kind === 'village' && this.cam.zoom < 0.55) {
+      ctx.restore();
+      return;
+    }
     const fs = s.kind === 'village' ? 10 : 12.5;
     ctx.font = `${s.kind === 'village' ? '' : 'bold '}${fs}px Alegreya, Georgia, serif`;
     ctx.textAlign = 'center';

@@ -60,18 +60,25 @@ export class Battle {
     this.teamAiT = 0;
     this.extraLosses = [new Map(), new Map()];
 
-    this.setupRenderer();
-    this.fx = new Effects(this.scene);
-    this.terrain = new BattleTerrain(config.kind, config.terrain);
-    this.terrain.build(this.scene);
-    this.buildObstacleGrid();
-    this.setupLights(config.hour ?? 12);
-    this.projectiles = new Projectiles(this);
-    this.hud = new BattleHud(this, root);
-    this.input = new BattleInput(this, this.renderer.domElement);
-    this.setupTeams();
-    this.spawnInitial();
-    this.showStartOverlay();
+    try {
+      this.setupRenderer();
+      this.fx = new Effects(this.scene);
+      this.terrain = new BattleTerrain(config.kind, config.terrain);
+      this.terrain.build(this.scene);
+      this.buildObstacleGrid();
+      this.setupLights(config.hour ?? 12);
+      this.projectiles = new Projectiles(this);
+      this.hud = new BattleHud(this, root);
+      this.input = new BattleInput(this, this.renderer.domElement);
+      this.setupTeams();
+      this.spawnInitial();
+      this.showStartOverlay();
+    } catch (e) {
+      if (this.input) this.input.dispose();
+      if (this.renderer) this.renderer.dispose();
+      root.innerHTML = '';
+      throw e;
+    }
     this.onResize = () => this.resize();
     window.addEventListener('resize', this.onResize);
     window.__battle = this;
@@ -369,7 +376,32 @@ export class Battle {
       this.agents.push(p);
       this.camYaw = b0.yaw;
     }
-    for (let s = 0; s < 2; s++) this.spawnWave(s, this.teams[s].cap - (s === 0 && hero ? 1 : 0), true);
+    // companions fight next to the player
+    this.companions = [];
+    const comps = cfg.sides[0].companions || [];
+    comps.forEach((c, i) => {
+      const eq = c.equipment;
+      const firstRanged = eq.w1 && ITEMS[eq.w1].slot === 'ranged';
+      const group = eq.horse && cfg.kind !== 'siege' ? 'cav' : firstRanged ? 'arch' : 'inf';
+      const side = i % 2 ? 1 : -1;
+      const a = new Agent(this, {
+        team: 0,
+        key: c.key,
+        hero: c,
+        x: b0.x + Math.cos(b0.yaw) * side * (2 + i),
+        z: b0.z - Math.sin(b0.yaw) * side * (2 + i),
+        yaw: b0.yaw,
+        colors: { team: this.colorsFor(0).team, team2: '#f5d76e' },
+        noHorse: cfg.kind === 'siege',
+        group,
+        name: c.name,
+        preferRanged: firstRanged,
+      });
+      a.companionId = c.id;
+      this.companions.push(a);
+      this.agents.push(a);
+    });
+    for (let s = 0; s < 2; s++) this.spawnWave(s, this.teams[s].cap - (s === 0 && hero ? 1 + comps.length : 0), true);
     for (let s = 0; s < 2; s++) for (const g of ['inf', 'arch', 'cav']) this.assignSlots(s, g);
     this.rebuildGrid();
     // place everyone at their slots at the start
@@ -786,7 +818,9 @@ export class Battle {
   }
 
   onDeath(a, killer, dtype) {
-    if (a.isPlayer) {
+    if (a.companionId) {
+      this.hud.message(`${a.name} втрачає свідомість`, '#ffb0a0');
+    } else if (a.isPlayer) {
       this.playerDown = true;
       this.hud.centerMsg('Вас повалено!', 3);
       this.hud.message('Ви втратили свідомість.', '#ff9a8a');
@@ -1271,8 +1305,9 @@ export class Battle {
       for (const e of this.teams[s].reserve) stacks.push({ key: `r${stacks.length}`, troopId: e.troopId, count: 1, entry: e });
       return stacks;
     });
+    const heroes = (this.companions || []).filter((a) => a.alive).map((a) => ({ key: `comp:${a.companionId}`, hp: a.hp, power: 12 + a.tier * 2, armor: a.bodyArmor }));
     const res = autoResolve([
-      { stacks: sides[0], bonus: 1 + this.heroSkill('tactics') * 0.04, woundChance: this.woundChance(0) },
+      { stacks: sides[0], heroes, bonus: 1 + this.heroSkill('tactics') * 0.04, woundChance: this.woundChance(0) },
       { stacks: sides[1], bonus: this.config.kind === 'siege' ? 1.3 : 1, woundChance: this.woundChance(1) },
     ]);
     for (let s = 0; s < 2; s++) {
@@ -1284,6 +1319,7 @@ export class Battle {
         st.entry.wounded = wounded;
       }
     }
+    for (const a of this.companions || []) if (res.heroesDown.has(`comp:${a.companionId}`)) a.hp = 1;
     this.finish(res.winner === 0 ? 'victory' : 'defeat');
   }
 
@@ -1306,6 +1342,7 @@ export class Battle {
       playerDown: this.playerDown,
       playerKills: this.playerKills,
       playerHp: this.player ? (this.player.alive ? this.player.hp : 3) : undefined,
+      companionHp: Object.fromEntries((this.companions || []).map((a) => [a.companionId, a.alive ? a.hp : 1])),
     };
     this.dispose();
     this.onFinish(result);

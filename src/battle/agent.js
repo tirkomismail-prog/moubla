@@ -150,9 +150,9 @@ export class Agent {
       this.rpower = 1 + h.skills.power_draw * 0.1;
       this.runSpeed = 4.7 * (1 + h.skills.athletics * 0.04);
       this.riding = h.skills.riding;
-      this.blockSkill = 0.6;
-      this.aimErr = 0.012;
-      this.tier = 3;
+      this.blockSkill = this.isPlayer ? 0.6 : Math.min(0.85, 0.35 + h.level * 0.05);
+      this.aimErr = this.isPlayer ? 0.012 : Math.max(0.015, 0.05 - (h.skills.power_draw || 0) * 0.006);
+      this.tier = Math.max(3, Math.round(h.level / 2));
     } else if (this.troopId) {
       const t = TROOPS[this.troopId];
       this.maxHp = t.hp;
@@ -190,7 +190,7 @@ export class Agent {
     const meleeIdx = this.weapons.findIndex((w) => ITEMS[w].slot === 'melee');
     if (!this.isPlayer) {
       const t = this.troopId ? TROOPS[this.troopId] : null;
-      if (t && (t.type === 'arch' || t.type === 'harch') && rangedIdx >= 0) this.wi = rangedIdx;
+      if (((t && (t.type === 'arch' || t.type === 'harch')) || opts.preferRanged) && rangedIdx >= 0) this.wi = rangedIdx;
       else if (meleeIdx >= 0) this.wi = meleeIdx;
     }
 

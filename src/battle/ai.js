@@ -111,6 +111,9 @@ export function aiControl(battle, a, dt) {
 
   defend(battle, a, t, dist);
 
+  // an order to hold fire (or losing the target) lowers drawn bows
+  if ((a.action.s === 'draw' || a.action.s === 'aim') && (!g.fire || !t)) a.setAction('idle');
+
   // foot archers holding a position walk to it first, then shoot from there
   if (t && !a.horse && a.isRanged() && a.hasAmmo() && g.fire && g.order !== 'charge') {
     const st = slotTarget(battle, a);

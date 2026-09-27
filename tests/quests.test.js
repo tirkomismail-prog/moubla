@@ -1,7 +1,11 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
+import { rng } from '../src/core/rng.js';
+
+// gameplay randomness uses a shared generator: make it reproducible in tests
+beforeEach(() => rng.reseed(12345));
 import assert from 'node:assert/strict';
 import { createNewState, World } from '../src/world/world.js';
-import { acceptQuest, completeDelivery, deliverableQuests } from '../src/world/quests.js';
+import { acceptQuest, completeDelivery, deliverableQuests, generateQuests } from '../src/world/quests.js';
 import { autoFieldBattle } from '../src/game/conflict.js';
 import { addTroops } from '../src/world/party.js';
 import { invCount } from '../src/world/economy.js';
@@ -9,6 +13,12 @@ import { invCount } from '../src/world/economy.js';
 function setup(seed = 11) {
   const state = createNewState({ seed, background: 'merchant' });
   const world = new World(state);
+  // make sure both quest types are on offer
+  for (let i = 0; i < 30; i++) {
+    const has = (type) => state.quests.some((q) => q.type === type && q.status === 'offered' && !world.isHostile(world.sById.get(q.giver).faction, 'player'));
+    if (has('delivery') && has('bounty')) break;
+    generateQuests(world);
+  }
   return { state, world };
 }
 

@@ -14,6 +14,9 @@ import {
 import { questsOffered, acceptQuest, deliverableQuests, completeDelivery } from '../world/quests.js';
 import { startPlayerSiege, startSiegeAssault, startArena, siegeDefenders, applySiegeResult } from '../game/conflict.js';
 import { autoResolve } from '../world/autoresolve.js';
+import { partySkill, SKILLS, companionWage } from '../data/character.js';
+import { COMPANIONS } from '../data/companions.js';
+import { companionHeroes } from '../game/conflict.js';
 
 const KIND_NAMES = { town: 'Місто', castle: 'Замок', village: 'Село' };
 const MERC_PRICE = [0, 25, 60, 120, 210, 330];
@@ -77,7 +80,7 @@ export const settlementScreens = {
     const opts = [];
     if (hostile) {
       if (s.kind !== 'village') {
-        opts.push({ label: '⚔ Взяти в облогу', onClick: () => {
+        opts.push({ label: '⚔ Взяти в облогу', disabled: !!(s.siege && !s.siege.player), title: s.siege ? 'Місто вже в облозі' : '', onClick: () => {
           if (healthyCount(st.party.troops) < 3 && !confirm('У вас замало воїнів для облоги. Все одно розпочати?')) return;
           startPlayerSiege(world, s);
           leave();
@@ -250,7 +253,7 @@ export const settlementScreens = {
       if (s.tavern && s.tavern.count > 0) {
         const t = TROOPS[s.tavern.merc];
         const price = MERC_PRICE[t.tier];
-        const space = world.partyLimit() - totalCount(st.party.troops);
+        const space = world.partySpace();
         const n = Math.max(0, Math.min(s.tavern.count, space, Math.floor(pl.gold / price)));
         parts.push(h('p', null, `Загін найманців шукає роботу: ${t.name} ×${s.tavern.count} (${TYPE_NAMES[t.type]}, рівень ${t.tier}). Ціна: ${price} золота за кожного, платня ${t.wage}/тиждень.`));
         parts.push(h('div', null,
@@ -264,6 +267,26 @@ export const settlementScreens = {
           space <= 0 ? h('span', { class: 'bad' }, ' Загін переповнений.') : null,
         ));
       } else parts.push(h('p', { class: 'muted' }, 'Найманців зараз немає. Загляньте наступного тижня.'));
+      // companions looking for work
+      const here = Object.entries(st.companions || {}).filter(([, c]) => !c.hired && c.location === s.id);
+      for (const [id, c] of here) {
+        const def = COMPANIONS[id];
+        const skills = Object.entries(def.skills).map(([k, v]) => `${SKILLS[k].name} ${v}`).join(', ');
+        parts.push(h('div', { class: 'section-title' }, 'Мандрівний герой'));
+        parts.push(h('div', { class: 'slot' },
+          h('div', { class: 'item-name' }, `${def.name} — рівень ${def.level}`),
+          h('p', { style: { margin: '4px 0' } }, `«${def.story}»`),
+          h('div', { class: 'item-desc' }, `Навички: ${skills}. Платня ${companionWage(def)}/тиждень.`),
+          btn(`Запросити до загону (${def.cost} зол.)`, () => {
+            if (pl.gold < def.cost || world.isPlayerFull()) return;
+            pl.gold -= def.cost;
+            c.hired = true;
+            c.location = null;
+            world.message(`${def.name} приєднується до вашого загону!`, 'good');
+            render();
+          }, 'primary small', { disabled: pl.gold < def.cost || world.isPlayerFull(), title: world.isPlayerFull() ? 'Загін переповнений' : '' }),
+        ));
+      }
       // ransom broker
       parts.push(h('div', { class: 'section-title' }, 'Посередник викупу'));
       if (st.party.prisoners.length) {
@@ -304,7 +327,7 @@ export const settlementScreens = {
     let win;
     const render = () => {
       const rel = FACTIONS[s.faction] ? st.factions[s.faction].relation : 0;
-      const space = world.partyLimit() - totalCount(st.party.troops);
+      const space = world.partySpace();
       const n = Math.max(0, Math.min(s.volunteers, space, Math.floor(pl.gold / price)));
       const lines = [];
       if (rel < -5 && s.owner !== 'player') lines.push(h('p', { class: 'bad' }, 'Селяни не довіряють вам і відмовляються йти до загону.'));
@@ -437,7 +460,7 @@ export const settlementScreens = {
         return t;
       };
       const move = (from, to, id, n) => {
-        if (to === st.party.troops) n = Math.min(n, world.partyLimit() - totalCount(st.party.troops));
+        if (to === st.party.troops) n = Math.min(n, world.partySpace());
         const moved = removeTroops(from, id, n, false);
         addTroops(to, id, moved);
         render();
@@ -504,7 +527,7 @@ export const settlementScreens = {
     const st = world.state;
     const defenders = siegeDefenders(world, s);
     const res = autoResolve([
-      { stacks: st.party.troops.map((t) => ({ key: 'player', troopId: t.id, count: t.count - t.wounded })), bonus: 1 + st.player.skills.tactics * 0.04, woundChance: 0.25 + st.player.skills.surgery * 0.05 },
+      { stacks: st.party.troops.map((t) => ({ key: 'player', troopId: t.id, count: t.count - t.wounded })), bonus: 1 + partySkill(st, 'tactics') * 0.04, woundChance: 0.25 + partySkill(st, 'surgery') * 0.05, heroes: companionHeroes(world) },
       {
         stacks: [
           ...s.garrison.map((t) => ({ key: 'garrison', troopId: t.id, count: t.count - t.wounded })),
@@ -514,7 +537,7 @@ export const settlementScreens = {
         woundChance: 0.3,
       },
     ]);
-    const result = { outcome: res.winner === 0 ? 'victory' : 'autoDefeat', losses: res.losses, playerKills: [], auto: true };
+    const result = { outcome: res.winner === 0 ? 'victory' : 'autoDefeat', losses: res.losses, playerKills: [], auto: true, heroesDown: [...res.heroesDown] };
     const summary = applySiegeResult(game, s, defenders, result);
     this.showBattleResult(summary);
   },

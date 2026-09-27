@@ -174,7 +174,7 @@ class Game {
   }
 
   autosave() {
-    if (this.world && this.mode === 'map') this.saveGame('auto');
+    if (this.world && this.mode === 'map' && !this.world.skipping) this.saveGame('auto');
   }
 
   listSaves() {
@@ -316,6 +316,8 @@ class Game {
       if (this.hud) this.hud.show(true);
       this.mode = 'map';
       this.ui.toast(`Не вдалося почати битву: ${e.message}`, 6000);
+      // release the parties involved as if the player had withdrawn
+      onFinish({ outcome: 'retreat', losses: [new Map(), new Map()], playerKills: [], aborted: true });
     }
   }
 

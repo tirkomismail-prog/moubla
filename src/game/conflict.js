@@ -5,7 +5,7 @@ import { dist, clamp } from '../core/util.js';
 import { TROOPS } from '../data/troops.js';
 import { ITEMS } from '../data/items.js';
 import { FACTIONS, factionInfo } from '../data/factions.js';
-import { playerMaxHp } from '../data/character.js';
+import { playerMaxHp, partySkill, hiredCompanions } from '../data/character.js';
 import { BIOME_BATTLE } from '../world/terrain.js';
 import { autoResolve } from '../world/autoresolve.js';
 import {
@@ -16,16 +16,61 @@ import { warKey } from '../world/world.js';
 
 export function playerHero(world) {
   const p = world.state.player;
+  const skills = { ...p.skills };
+  // party-wide skills (surgery, tactics...) come from the best member
+  for (const k of ['surgery', 'tactics', 'looting']) skills[k] = partySkill(world.state, k);
   return {
     key: 'player',
     name: p.name,
     hp: p.hp,
     maxHp: playerMaxHp(p),
     equipment: { ...p.equipment },
-    skills: { ...p.skills },
+    skills,
     attrs: { ...p.attrs },
     level: p.level,
   };
+}
+
+// Battle specs for hired companions.
+export function companionSpecs(world) {
+  return hiredCompanions(world.state)
+    .filter((c) => c.st.hp > 5)
+    .map((c) => {
+      const skills = {};
+      for (const k of Object.keys(world.state.player.skills)) skills[k] = c.def.skills[k] || 0;
+      const a = 6 + Math.round(c.def.level * 0.6);
+      return {
+        key: `comp:${c.id}`,
+        id: c.id,
+        name: c.def.name,
+        hp: c.st.hp,
+        maxHp: c.def.hp,
+        equipment: { ...c.def.equipment },
+        skills,
+        attrs: { str: a, agi: a, int: 6, cha: 6 },
+        level: c.def.level,
+      };
+    });
+}
+
+// Companions as abstract heroes for auto-resolve.
+export function companionHeroes(world) {
+  return hiredCompanions(world.state)
+    .filter((c) => c.st.hp > 5)
+    .map((c) => ({ key: `comp:${c.id}`, hp: c.st.hp, power: 12 + c.def.level * 2, armor: 20 }));
+}
+
+function applyCompanionResult(world, result) {
+  const st = world.state;
+  if (result.companionHp) {
+    for (const [id, hp] of Object.entries(result.companionHp)) if (st.companions[id]) st.companions[id].hp = Math.max(1, Math.round(hp));
+  }
+  if (result.heroesDown) {
+    for (const key of result.heroesDown) {
+      const id = String(key).startsWith('comp:') ? key.slice(5) : null;
+      if (id && st.companions[id]) st.companions[id].hp = 1;
+    }
+  }
 }
 
 function unitsOf(parties) {
@@ -64,7 +109,7 @@ export function startFieldBattle(game, { enemies, allies = [], mapBattle = null 
     terrain: battleTerrain(world, pp.x, pp.y),
     hour: st.time % 24,
     sides: [
-      { name: 'Ваші сили', units: [...unitsOf([pp]), ...unitsOf(allies)], hero: playerHero(world), playerKey: 'player' },
+      { name: 'Ваші сили', units: [...unitsOf([pp]), ...unitsOf(allies)], hero: playerHero(world), companions: companionSpecs(world), playerKey: 'player' },
       { name: enemyNames, units: unitsOf(enemies), hero: null },
     ],
     factionColors: [allyColor(enemies[0]?.faction), factionInfo(enemies[0]?.faction).color],
@@ -82,13 +127,13 @@ export function startFieldBattle(game, { enemies, allies = [], mapBattle = null 
 export function autoFieldBattle(game, { enemies, allies = [], mapBattle = null }) {
   const world = game.world;
   const pp = world.state.party;
-  const tactics = world.state.player.skills.tactics;
+  const tactics = partySkill(world.state, 'tactics');
   const res = autoResolve([
     {
       stacks: [...unitsOf([pp]), ...unitsOf(allies)].map((u) => ({ key: u.key, troopId: u.troopId, count: u.count })),
-      heroes: [],
+      heroes: companionHeroes(world),
       bonus: 1 + tactics * 0.04,
-      woundChance: 0.25 + world.state.player.skills.surgery * 0.05,
+      woundChance: 0.25 + partySkill(world.state, 'surgery') * 0.05,
     },
     { stacks: unitsOf(enemies).map((u) => ({ key: u.key, troopId: u.troopId, count: u.count })), heroes: [], bonus: 1, woundChance: 0.3 },
   ]);
@@ -98,6 +143,7 @@ export function autoFieldBattle(game, { enemies, allies = [], mapBattle = null }
     playerDown: false,
     playerKills: [],
     auto: true,
+    heroesDown: [...res.heroesDown],
   };
   // on an automatic defeat the player escapes with whatever is left
   if (res.winner === 1) result.outcome = 'autoDefeat';
@@ -156,6 +202,7 @@ export function applyFieldResult(game, ctx, result) {
     mergeLoss(summary.enemyLoss, l);
   }
   if (result.playerHp != null) pl.hp = clamp(result.playerHp, 1, playerMaxHp(pl));
+  applyCompanionResult(world, result);
 
   const enemyDown = lossTotals(summary.enemyLoss);
   let tierSum = 0;
@@ -165,7 +212,7 @@ export function applyFieldResult(game, ctx, result) {
     st.stats.won++;
     pl.battlesWon++;
     // loot
-    const looting = pl.skills.looting;
+    const looting = partySkill(st, 'looting');
     for (const e of enemies) {
       summary.gold += Math.round((e.gold || 0) * (0.5 + looting * 0.08));
       if (e.goods) for (const g of e.goods) summary.items.push([g.id, g.qty]);
@@ -184,14 +231,17 @@ export function applyFieldResult(game, ctx, result) {
       }
     }
     for (const [id, n] of Object.entries(lootCounts)) summary.items.push([id, n]);
-    // prisoners: enemy wounded
+    // prisoners: enemy wounded (taken out of the defeated parties)
     const limit = world.prisonerLimit();
     let have = totalCount(pp.prisoners);
-    for (const [id, n] of Object.entries(summary.enemyLoss.wounded)) {
-      const take = Math.min(n, Math.max(0, limit - have));
-      if (take > 0) {
+    for (const e of enemies) {
+      for (const stck of [...e.troops]) {
+        const take = Math.min(stck.wounded, Math.max(0, limit - have));
+        if (take <= 0) continue;
+        const id = stck.id;
+        removeTroops(e.troops, id, take, true);
         addTroops(pp.prisoners, id, take);
-        summary.prisoners[id] = take;
+        summary.prisoners[id] = (summary.prisoners[id] || 0) + take;
         have += take;
       }
     }
@@ -211,6 +261,7 @@ export function applyFieldResult(game, ctx, result) {
       else {
         world.flee(e, pp);
         e.fleeUntil = st.time + 8;
+        e.fledFrom = 'player';
       }
       if (e.lordId) summary.notes.push(`${world.lById.get(e.lordId).name} втік з поля бою.`);
     }
@@ -256,6 +307,7 @@ export function applyFieldResult(game, ctx, result) {
     for (const e of [...pl.inventory]) {
       if (ITEMS[e.id].type === 'good' && rng.chance(0.6)) pl.inventory.splice(pl.inventory.indexOf(e), 1);
     }
+    for (const e of enemies) if (healthyCount(e.troops) <= 0) world.removeParty(e, true);
     const days = rng.int(1, 3);
     world.skipTime(days * 24);
     const town = world.respawnPlayerAfterDefeat();
@@ -263,7 +315,6 @@ export function applyFieldResult(game, ctx, result) {
     pp.moraleBoost = 0;
     summary.notes.push(`Вас узяли в полон. Втрачено ${lostGold} золота${lostTroops ? ` і весь загін (${lostTroops})` : ''}.`);
     summary.notes.push(`Через ${days} ${days === 1 ? 'день' : 'дні'} вам вдалося втекти. Ви дісталися до ${town.name}.`);
-    for (const e of enemies) if (healthyCount(e.troops) <= 0) world.removeParty(e, true);
   }
 
   // experience
@@ -327,8 +378,10 @@ function nudgeAway(world, pp, from) {
 // ---------------------------------------------------------------------------
 
 export function startPlayerSiege(world, s) {
+  if (s.siege && !s.siege.player) return false;
   s.siege = { faction: world.playerSide(), parties: [], start: world.state.time, player: true };
   world.message(`Ви взяли в облогу ${s.name}.`, 'war');
+  return true;
 }
 
 export function siegeDefenders(world, s) {
@@ -345,7 +398,7 @@ export function startSiegeAssault(game, s) {
     terrain: battleTerrain(world, s.x, s.y),
     hour: st.time % 24,
     sides: [
-      { name: 'Ваші сили', units: unitsOf([st.party]), hero: playerHero(world), playerKey: 'player' },
+      { name: 'Ваші сили', units: unitsOf([st.party]), hero: playerHero(world), companions: companionSpecs(world), playerKey: 'player' },
       { name: `Гарнізон ${s.name}`, units: [...garrisonUnits, ...unitsOf(defenders)], hero: null },
     ],
     factionColors: [allyColor(s.faction), factionInfo(s.faction).color],
@@ -362,7 +415,7 @@ export function startSiegeAssault(game, s) {
 export function applySiegeResult(game, s, defenders, result) {
   const world = game.world;
   const st = world.state;
-  const garrisonParty = { id: 'garrison', troops: s.garrison, gold: s.kind === 'town' ? 900 : 400, kind: 'garrison', faction: s.faction, prisoners: [] };
+  const garrisonParty = { id: 'garrison', x: s.x, y: s.y, troops: s.garrison, gold: s.kind === 'town' ? 900 : 400, kind: 'garrison', faction: s.faction, prisoners: [] };
   const fakeEnemies = [garrisonParty, ...defenders];
   // reuse the field result logic without removing the garrison "party"
   const origRemove = world.removeParty.bind(world);

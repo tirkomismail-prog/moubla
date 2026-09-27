@@ -5,7 +5,8 @@ import { clamp, dist, dist2, plural } from '../core/util.js';
 import { FACTIONS, FACTION_IDS, factionInfo } from '../data/factions.js';
 import { TROOPS, RECRUITS, FACTION_TREES, MERCENARY_POOL, randomFactionTroop } from '../data/troops.js';
 import { ITEMS, GOOD_IDS, FOOD_IDS } from '../data/items.js';
-import { BACKGROUNDS, BASE_ATTRS, SKILLS, xpForNextLevel, playerMaxHp, partyLimit, prisonerLimit } from '../data/character.js';
+import { BACKGROUNDS, BASE_ATTRS, SKILLS, xpForNextLevel, playerMaxHp, partyLimit, prisonerLimit, partySkill, hiredCompanions, companionWage } from '../data/character.js';
+import { COMPANIONS } from '../data/companions.js';
 import { TerrainGen, NavGrid, WORLD_W, WORLD_H, BIOME, CELL } from './terrain.js';
 import { Pathfinder } from './pathfind.js';
 import { autoResolve } from './autoresolve.js';
@@ -181,6 +182,14 @@ function makePlayer(name, bgId) {
   return p;
 }
 
+function initCompanions(state, r) {
+  state.companions = {};
+  const towns = state.settlements.filter((s) => s.kind === 'town');
+  for (const [id, def] of Object.entries(COMPANIONS)) {
+    state.companions[id] = { hired: false, location: r.pick(towns).id, hp: def.hp };
+  }
+}
+
 export function createNewState({ seed = (Math.random() * 1e9) | 0, name, background = 'knight' } = {}) {
   const r = new Rng(seed);
   const gen = new TerrainGen(seed);
@@ -251,6 +260,7 @@ export function createNewState({ seed = (Math.random() * 1e9) | 0, name, backgro
   state.party.y = start.y - 4;
   state.startTown = start.id;
   for (const [id, n] of BACKGROUNDS[background].troops) addTroops(state.party.troops, id, n);
+  initCompanions(state, r);
   return state;
 }
 
@@ -266,8 +276,13 @@ export class World {
     this.pf = new Pathfinder(this.nav);
     this.listeners = {};
     this.roads = [];
+    // transient flags must not survive a save/load
+    for (const p of state.parties) p.held = false;
+    for (const b of state.battles) b.playerJoined = false;
+    state.party.resting = false;
     this.index();
     this.buildRoads();
+    if (!state.companions) initCompanions(state, rng);
     if (!state.initialized) this.populate();
   }
 
@@ -390,7 +405,11 @@ export class World {
   }
 
   strength(p) {
-    if (p.id === 'player') return stacksStrength(p.troops) + this.heroPower() * (this.state.player.hp > 15 ? 1 : 0.3);
+    if (p.id === 'player') {
+      let s = stacksStrength(p.troops) + this.heroPower() * (this.state.player.hp > 15 ? 1 : 0.3);
+      for (const c of hiredCompanions(this.state)) s += (10 + c.def.level * 2) * (c.st.hp > 15 ? 1 : 0.3);
+      return s;
+    }
     return stacksStrength(p.troops) + (p.lordId ? 25 : 0);
   }
 
@@ -404,15 +423,17 @@ export class World {
   partySpeed(p) {
     const st = this.state;
     const isPlayer = p.id === 'player';
-    const total = totalCount(p.troops) + (isPlayer ? 1 : 0);
+    const comps = isPlayer ? hiredCompanions(st) : [];
+    const total = totalCount(p.troops) + (isPlayer ? 1 + comps.length : 0);
     let mf = mountedFraction(p.troops);
     if (isPlayer) {
       const t = totalCount(p.troops);
-      mf = (mf * t + (st.player.equipment.horse ? 1 : 0)) / (t + 1);
+      const riders = (st.player.equipment.horse ? 1 : 0) + comps.filter((c) => c.def.equipment.horse).length;
+      mf = (mf * t + riders) / (t + 1 + comps.length);
     }
     const wf = total ? woundedCount(p.troops) / total : 0;
     let s = BASE_SPEED * (1 - Math.min(0.35, total / 260)) * (1 + 0.32 * mf) * (1 - 0.3 * wf);
-    if (isPlayer) s *= 1 + st.player.skills.pathfinding * 0.03;
+    if (isPlayer) s *= 1 + partySkill(st, 'pathfinding') * 0.03;
     if (p.kind === 'caravan') s *= 0.82;
     if (p.kind === 'bandit') s *= 1.02;
     if (p.ai?.mode === 'flee') s *= 1.05;
@@ -430,6 +451,7 @@ export class World {
 
   removeParty(p, byPlayer = false) {
     const st = this.state;
+    if (!this.pById.has(p.id)) return;
     const i = st.parties.indexOf(p);
     if (i >= 0) st.parties.splice(i, 1);
     this.pById.delete(p.id);
@@ -634,11 +656,16 @@ export class World {
     const st = this.state;
     this.stopPlayer();
     st.party.graceUntil = Math.max(st.party.graceUntil, st.time + hours + 2);
-    let left = hours;
-    while (left > 1e-6) {
-      const dt = Math.min(0.25, left);
-      left -= dt;
-      this.tick(dt);
+    this.skipping = true;
+    try {
+      let left = hours;
+      while (left > 1e-6) {
+        const dt = Math.min(0.25, left);
+        left -= dt;
+        this.tick(dt);
+      }
+    } finally {
+      this.skipping = false;
     }
   }
 
@@ -745,7 +772,7 @@ export class World {
     // besieging parties stay put
     if (p.ai.mode === 'siege' && p.ai.besieging) {
       const s = this.sById.get(p.ai.besieging);
-      if (s && s.siege && this.isHostile(p.faction, s.faction)) {
+      if (s && s.siege && s.siege.parties.includes(p.id) && this.isHostile(p.faction, s.faction)) {
         // abandon siege if a much stronger enemy approaches
         const threat = this.visibleHostiles(p).find((o) => this.strength(o) > myStr * 1.4 && dist(o.x, o.y, p.x, p.y) < 80);
         if (!threat) return;
@@ -764,6 +791,12 @@ export class World {
       p.ai.mode = 'idle';
     }
 
+    // recently beaten parties keep running away for a while
+    if (p.fleeUntil && st.time < p.fleeUntil) {
+      if (!p.ai.path || p.ai.pi >= p.ai.path.length) this.flee(p, p.fledFrom === 'player' ? st.party : p);
+      p.ai.mode = 'flee';
+      return;
+    }
     const hostiles = this.visibleHostiles(p);
     // flee from stronger enemies
     let worst = null;
@@ -925,6 +958,10 @@ export class World {
         return;
       }
       if (dist(dest.x, dest.y, p.x, p.y) > 30) return;
+      if (dest.siege && dest.siege.faction !== p.faction) {
+        p.ai.mode = 'idle';
+        return;
+      }
       p.ai.besieging = dest.id;
       if (!dest.siege) {
         dest.siege = { faction: p.faction, parties: [p.id], start: st.time };
@@ -1025,6 +1062,12 @@ export class World {
   // Auto-resolve a map battle. Also used for "send troops" by the player.
   resolveAiBattle(b) {
     const sides = b.sides.map((ids) => ids.map((id) => this.pById.get(id)).filter(Boolean));
+    if (sides.some((ps) => ps.every((p) => healthyCount(p.troops) === 0))) {
+      // nobody able to fight on one side: the battle just breaks up
+      for (const ps of sides) for (const p of ps) if (healthyCount(p.troops) === 0 && p.kind !== 'lord') this.removeParty(p);
+      this.endBattle(b);
+      return;
+    }
     const res = autoResolve(sides.map((ps) => ({
       stacks: ps.flatMap((p) => p.troops.map((s) => ({ key: p.id, troopId: s.id, count: s.count - s.wounded }))),
       heroes: [],
@@ -1071,6 +1114,9 @@ export class World {
     const p = st.player;
     const max = playerMaxHp(p);
     if (p.hp < max) p.hp = Math.min(max, p.hp + max * (st.party.resting ? 0.045 : 0.012));
+    for (const c of hiredCompanions(st)) {
+      if (c.st.hp < c.def.hp) c.st.hp = Math.min(c.def.hp, c.st.hp + c.def.hp * (st.party.resting ? 0.045 : 0.015));
+    }
     this.updateSieges();
     if (hour % 24 === 0) this.daily();
   }
@@ -1082,7 +1128,7 @@ export class World {
     const pp = st.party;
 
     // food
-    const eaters = totalCount(pp.troops) + Math.ceil(totalCount(pp.prisoners) / 2) + 1;
+    const eaters = totalCount(pp.troops) + Math.ceil(totalCount(pp.prisoners) / 2) + 1 + this.companionCount();
     const need = Math.ceil(eaters / 3);
     const missing = consumeFood(pl.inventory, need);
     if (missing > 0) {
@@ -1096,12 +1142,13 @@ export class World {
     // healing & training
     for (const s of pp.troops) {
       if (s.wounded) {
-        const heal = Math.max(rng.chance(0.6) ? 1 : 0, Math.floor(s.wounded * (0.18 + pl.skills.surgery * 0.04)));
+        const heal = Math.max(rng.chance(0.6) ? 1 : 0, Math.floor(s.wounded * (0.18 + partySkill(st, 'surgery') * 0.04)));
         s.wounded = Math.max(0, s.wounded - heal);
       }
-      if (pl.skills.trainer) {
+      const trainer = partySkill(st, 'trainer');
+      if (trainer) {
         const t = TROOPS[s.id];
-        if (t.tier <= pl.level / 3 + 2) addStackXp(s, s.count * pl.skills.trainer * 2);
+        if (t.tier <= pl.level / 3 + 2) addStackXp(s, s.count * trainer * 2);
       }
     }
 
@@ -1210,13 +1257,21 @@ export class World {
       }
       if (s.kind !== 'village') for (const g of s.garrison) g.wounded = 0;
     }
+    // companions who are not hired wander to other taverns
+    const towns = st.settlements.filter((s) => s.kind === 'town');
+    for (const c of Object.values(st.companions || {})) if (!c.hired && rng.chance(0.5)) c.location = rng.pick(towns).id;
     generateQuests(this);
+  }
+
+  companionCount() {
+    return hiredCompanions(this.state).length;
   }
 
   weeklyWages() {
     const st = this.state;
     let w = stacksWages(st.party.troops) * (1 - st.player.skills.leadership * 0.05);
     for (const s of st.settlements) if (s.owner === 'player') w += stacksWages(s.garrison) * 0.5;
+    for (const c of hiredCompanions(st)) w += companionWage(c.def);
     return Math.round(w);
   }
 
@@ -1241,7 +1296,7 @@ export class World {
   playerMorale() {
     const st = this.state;
     const pl = st.player;
-    const size = totalCount(st.party.troops);
+    const size = totalCount(st.party.troops) + this.companionCount();
     let m = 50 + pl.skills.leadership * 6 + foodMorale(pl.inventory) + st.party.moraleBoost - Math.max(0, size - 10) * 0.35;
     if (foodServings(pl.inventory) <= 0) m -= 25;
     return Math.round(clamp(m, 0, 100));
@@ -1310,7 +1365,15 @@ export class World {
     const st = this.state;
     for (const s of st.settlements) {
       if (!s.siege) continue;
-      if (s.siege.player) continue; // player siege handled via UI
+      if (s.siege.player) {
+        // the player's own siege lasts only while the party stays at the walls
+        const pp = st.party;
+        if (dist(pp.x, pp.y, s.x, s.y) > 70 || !this.isHostile(s.faction, 'player')) {
+          s.siege = null;
+          this.message(`Облогу ${s.name} знято.`, 'info');
+        }
+        continue;
+      }
       s.siege.parties = s.siege.parties.filter((id) => {
         const p = this.pById.get(id);
         return p && p.ai.besieging === s.id && !p.battleId;
@@ -1465,7 +1528,11 @@ export class World {
   }
 
   isPlayerFull() {
-    return totalCount(this.state.party.troops) >= this.partyLimit();
+    return totalCount(this.state.party.troops) + this.companionCount() >= this.partyLimit();
+  }
+
+  partySpace() {
+    return Math.max(0, this.partyLimit() - totalCount(this.state.party.troops) - this.companionCount());
   }
 
   carryFood() {
@@ -1491,6 +1558,7 @@ export class World {
   // Place the player party after a defeat near a friendly town.
   respawnPlayerAfterDefeat() {
     const st = this.state;
+    for (const s of st.settlements) if (s.siege && s.siege.player) s.siege = null;
     const towns = st.settlements.filter((s) => s.kind === 'town' && !this.isHostile(s.faction, 'player'));
     const pool = towns.length ? towns : st.settlements;
     const pp = st.party;

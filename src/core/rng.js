@@ -16,6 +16,10 @@ export class Rng {
     this.seed = seed >>> 0;
     this.next = mulberry32(this.seed);
   }
+  reseed(seed) {
+    this.seed = seed >>> 0;
+    this.next = mulberry32(this.seed);
+  }
   float() {
     return this.next();
   }

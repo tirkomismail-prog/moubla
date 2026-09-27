@@ -1,4 +1,8 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
+import { rng } from '../src/core/rng.js';
+
+// gameplay randomness uses a shared generator: make it reproducible in tests
+beforeEach(() => rng.reseed(12345));
 import assert from 'node:assert/strict';
 import { createNewState, World } from '../src/world/world.js';
 

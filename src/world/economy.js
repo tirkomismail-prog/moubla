@@ -1,6 +1,7 @@
 // Markets, shops, prices and inventory helpers.
 import { ITEMS, GOOD_IDS, FOOD_IDS, isEquipment } from '../data/items.js';
 import { TROOPS, FACTION_TREES } from '../data/troops.js';
+import { partySkill } from '../data/character.js';
 
 export const CARRY_CAPACITY = 60;
 
@@ -109,7 +110,7 @@ export function driftMarket(settlement) {
 
 export function buyPrice(state, settlement, id) {
   const it = ITEMS[id];
-  const trade = state.player.skills.trade;
+  const trade = partySkill(state, 'trade');
   let mod = 1;
   if (it.type === 'good' || it.type === 'food') mod = settlement.market ? settlement.market[id] ?? 1 : 1;
   return Math.max(1, Math.round(it.price * mod * (1.1 - trade * 0.012)));
@@ -117,7 +118,7 @@ export function buyPrice(state, settlement, id) {
 
 export function sellPrice(state, settlement, id) {
   const it = ITEMS[id];
-  const trade = state.player.skills.trade;
+  const trade = partySkill(state, 'trade');
   if (it.type === 'good' || it.type === 'food') {
     const mod = settlement.market ? settlement.market[id] ?? 1 : 1;
     return Math.max(1, Math.round(it.price * mod * (0.88 + trade * 0.012)));
@@ -156,5 +157,5 @@ export function refreshShop(rng, settlement) {
 
 export function ransomPrice(state, troopId) {
   const t = TROOPS[troopId];
-  return Math.round((15 + t.tier * t.tier * 12) * (1 + state.player.skills.trade * 0.03));
+  return Math.round((15 + t.tier * t.tier * 12) * (1 + partySkill(state, 'trade') * 0.03));
 }

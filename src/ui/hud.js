@@ -65,7 +65,7 @@ export class MapHud {
     const html = `
       <div class="stat">День <b>${day}</b> · ${text}${world.isNight() ? ' ☾' : ' ☀'}</div>
       <div class="stat">Золото <b>${p.gold}</b></div>
-      <div class="stat">Загін <b>${totalCount(st.party.troops) + 1}</b>/${world.partyLimit() + 1}${wounded ? ` <span style="color:#f99">(${wounded} пор.)</span>` : ''}</div>
+      <div class="stat">Загін <b>${totalCount(st.party.troops) + 1 + world.companionCount()}</b>/${world.partyLimit() + 1}${wounded ? ` <span style="color:#f99">(${wounded} пор.)</span>` : ''}</div>
       <div class="stat">Провізія <b>${food}</b> (${days} ${plural(days, 'день', 'дні', 'днів')})</div>
       <div class="stat">Мораль <b>${morale}</b></div>
       <div class="stat">Здоров'я <b>${Math.round(p.hp)}</b>/${playerMaxHp(p)}</div>`;
