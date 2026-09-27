@@ -440,6 +440,7 @@ export class Agent {
 
   takeDamage(amount, attacker, dtype, opts = {}) {
     if (!this.alive) return;
+    if (this.isPlayer) amount *= this.battle.settings.playerDamage ?? 1;
     this.hp -= amount;
     this.lastHitBy = attacker;
     if (this.hp <= 0) {

@@ -110,6 +110,7 @@ export class UI {
       row('Чутливість миші', range('sensitivity', 0.3, 2.5, 0.1, (v) => v.toFixed(1))),
       row('Інвертувати вісь Y', check('invertY')),
       row('Автоматичний напрям блоку', check('autoBlock')),
+      row('Шкода, яку отримує гравець', range('playerDamage', 0.25, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
       row('Тіні в битвах', check('shadows')),
       row('Якість графіки (роздільність)', range('quality', 0.5, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
       row('Гучність', range('volume', 0, 1, 0.05, (v) => `${Math.round(v * 100)}%`)),

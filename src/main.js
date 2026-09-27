@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   quality: 1,
   volume: 0.6,
   mapSpeed: 1,
+  playerDamage: 0.75,
 };
 
 function safeStorage() {
