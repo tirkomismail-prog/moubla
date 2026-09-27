@@ -462,6 +462,8 @@ export class Agent {
 
   killHorse(attacker) {
     const h = this.horse;
+    if (this.isPlayer) this.battle.hud.message(`Ваш кінь загинув!`, '#ff9a8a');
+    else if (attacker && attacker.isPlayer) this.battle.hud.message('Ви вбили коня під вершником', '#ffe9b0');
     h.alive = false;
     h.rider = null;
     this.battle.addCorpseHorse(h);

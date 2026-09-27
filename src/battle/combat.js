@@ -108,6 +108,6 @@ export function speedBonus(att, target, lance = false) {
   const dz = target.pos.z - att.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   const rel = ((att.vel.x - target.vel.x) * dx + (att.vel.z - target.vel.z) * dz) / d;
-  if (lance) return clamp(1 + rel * 0.13, 0.6, 3);
+  if (lance) return clamp(1 + rel * 0.12, 0.6, 2.6);
   return clamp(1 + rel * 0.05, 0.75, 1.7);
 }

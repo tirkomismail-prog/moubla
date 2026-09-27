@@ -648,14 +648,14 @@ export class Battle {
     const dz = t.pos.z - att.pos.z;
     const d = Math.hypot(dx, dz) || 1;
     const push = dir === 'thrust' || dir === 'overhead' ? 1.6 : 1.1;
-    t.takeDamage(dmg, att, dtype, { push: [(dx / d) * push, (dz / d) * push] });
-    this.sound(dmg > 20 ? 'hitHeavy' : 'hit', t);
-    if (t.alive && Math.random() < 0.3) this.sound('grunt', t);
     if (att.isPlayer) this.hud.message(`Завдано ${Math.round(dmg)} шкоди${head ? ' (в голову)' : ''}`, '#ffe9b0');
     if (t.isPlayer) {
       this.hud.message(`Отримано ${Math.round(dmg)} шкоди`, '#ff9a8a');
       this.hud.damageFlash();
     }
+    t.takeDamage(dmg, att, dtype, { push: [(dx / d) * push, (dz / d) * push] });
+    this.sound(dmg > 20 ? 'hitHeavy' : 'hit', t);
+    if (t.alive && Math.random() < 0.3) this.sound('grunt', t);
   }
 
   resolveCouch(att) {

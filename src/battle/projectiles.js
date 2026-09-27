@@ -203,16 +203,16 @@ export class Projectiles {
     const raw = p.dmg * (0.5 + speedF * 0.5) * (0.9 + Math.random() * 0.2);
     if (horse) {
       const dmg = computeDamage(raw, p.dtype, a.horse.armor);
-      a.damageHorse(dmg, p.owner);
       battle.onRangedHit(p.owner, a, dmg, true);
+      a.damageHorse(dmg, p.owner);
       battle.sound('arrowHit', a);
       return;
     }
     const head = hy > 1.45 && !a.horse ? true : a.horse && hy > 0.75;
     const armor = head ? a.headArmor : a.bodyArmor;
     const dmg = computeDamage(raw, p.dtype, armor) * (head ? 1.6 : 1);
-    a.takeDamage(dmg, p.owner, p.dtype, { noStun: dmg < 8 });
     battle.onRangedHit(p.owner, a, dmg, false, head);
+    a.takeDamage(dmg, p.owner, p.dtype, { noStun: dmg < 8 });
     battle.sound('hit', a);
   }
 

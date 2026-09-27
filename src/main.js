@@ -270,7 +270,7 @@ class Game {
     return new Promise((resolve) => {
       let left = hours;
       const step = () => {
-        const chunk = Math.min(left, 0.4);
+        const chunk = Math.min(left, 1);
         left -= chunk;
         const ev = w.advance(chunk);
         if (this.hud) this.hud.update();

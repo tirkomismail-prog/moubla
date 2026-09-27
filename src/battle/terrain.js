@@ -237,7 +237,7 @@ export class BattleTerrain {
       // keep spawn areas and the centre mostly clear
       if (Math.abs(x) < 70 && Math.abs(z) > 55 && Math.abs(z) < 100) return false;
       if (this.fort && this.level(x, z) !== 0) return false;
-      if (this.fort && Math.abs(x) < 45 && z < -5 && z > -110) return false;
+      if (this.fort && Math.abs(x) < 55 && z > -110 && z < 80) return false;
       return true;
     };
     const place = (arr, n, minR) => {
