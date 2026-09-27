@@ -633,7 +633,9 @@ export class Battle {
     }
     const [base, dtype] = attackDamage(w, dir);
     const sb = speedBonus(att, t);
-    const raw = base * att.power * sb * (0.9 + Math.random() * 0.2);
+    // holding the swing a moment longer adds some power
+    const hold = 1 + Math.min(0.18, (att.action.holdT || 0) * 0.3);
+    const raw = base * att.power * sb * hold * (0.9 + Math.random() * 0.2);
     this.applyHit(att, t, raw, dtype, hit.horse, dir === 'overhead' || (dir === 'thrust' && Math.random() < 0.25), dir);
   }
 
@@ -1193,8 +1195,9 @@ export class Battle {
     dt = Math.min(dt, 0.05);
     if (!this.paused && !this.ended) {
       const steps = dt > 0.025 ? 2 : 1;
-      for (let i = 0; i < steps; i++) this.step(dt / steps);
+      for (let i = 0; i < steps && !this.ended; i++) this.step(dt / steps);
     }
+    if (this.ended) return; // disposed inside step()
     this.updateCamera(dt);
     for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(this.paused ? 0 : dt);
     if (!this.paused) this.fx.update(dt);

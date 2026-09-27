@@ -337,7 +337,8 @@ export class Agent {
     const w = this.weapon;
     const speed = w.speed * this.atkSpeed;
     const a = this.action;
-    this.setAction('swing', T.swing / speed, { dir: a.dir, id: a.id, hitDone: false });
+    const holdT = a.s === 'hold' ? a.t : 0;
+    this.setAction('swing', T.swing / speed, { dir: a.dir, id: a.id, hitDone: false, holdT });
     this.battle.sound('swing', this);
   }
 

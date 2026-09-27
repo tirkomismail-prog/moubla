@@ -247,8 +247,8 @@ export function createNewState({ seed = (Math.random() * 1e9) | 0, name, backgro
   // player start: a random town of a random faction
   const towns = state.settlements.filter((s) => s.kind === 'town');
   const start = r.pick(towns);
-  state.party.x = start.x + 14;
-  state.party.y = start.y + 10;
+  state.party.x = start.x + 26;
+  state.party.y = start.y - 4;
   state.startTown = start.id;
   for (const [id, n] of BACKGROUNDS[background].troops) addTroops(state.party.troops, id, n);
   return state;
@@ -1495,8 +1495,8 @@ export class World {
     const pool = towns.length ? towns : st.settlements;
     const pp = st.party;
     const t = pool.sort((a, b) => dist2(a.x, a.y, pp.x, pp.y) - dist2(b.x, b.y, pp.x, pp.y))[0];
-    pp.x = t.x + 16;
-    pp.y = t.y + 12;
+    pp.x = t.x + 26;
+    pp.y = t.y - 4;
     pp.path = null;
     pp.target = null;
     pp.graceUntil = st.time + 24;
