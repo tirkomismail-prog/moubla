@@ -173,6 +173,10 @@ function cached(key, fn) {
 }
 
 export function mesh(geo) {
+  return meshOf(geo);
+}
+
+function meshOf(geo) {
   const m = new THREE.Mesh(geo, current);
   m.castShadow = true;
   m.receiveShadow = true;
@@ -264,7 +268,7 @@ function headGeo(skin, hair, beard) {
   });
 }
 
-function helmetGeo(look, team) {
+export function helmetGeo(look, team) {
   if (!look) return null;
   return cached(`helm:${look}:${team}`, () => {
     const b = new GeoBuilder();
@@ -353,7 +357,12 @@ function armGeo(sleeve, skin, glove) {
   });
 }
 
+// The pose rig of a soldier: a hierarchy of groups that the animation code
+// moves. With `spec.driverOnly` it has no meshes of its own (a skinned
+// character follows it instead).
 export function buildHuman(spec) {
+  const show = !spec.driverOnly;
+  const mesh = (geo) => (show ? meshOf(geo) : new THREE.Object3D());
   const root = new THREE.Group();
   const hips = new THREE.Group();
   hips.position.y = 0.92;
@@ -374,7 +383,7 @@ export function buildHuman(spec) {
   neck.position.y = 0.6;
   torso.add(neck);
   neck.add(mesh(headGeo(spec.skin, spec.hair, !!spec.beard)));
-  const hg = helmetGeo(spec.helmet, spec.team);
+  const hg = show ? helmetGeo(spec.helmet, spec.team) : null;
   if (hg) neck.add(mesh(hg));
   const sleeve = ARMOR_COLORS[spec.look] || spec.team;
   const glove = spec.look === 'mail' || spec.look === 'plate' || spec.look === 'lamellar';

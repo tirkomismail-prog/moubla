@@ -5,6 +5,7 @@ import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, mesh, armQuat, pickSkin, pickHair } from './models.js';
 import { T, allowedDir } from './combat.js';
+import { SkinnedHuman, charactersReady } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
 
 const Q = (arm, hint) => armQuat(arm, hint);
@@ -69,8 +70,6 @@ const SHIELD_POSE = {
   back: { pos: new THREE.Vector3(0, 0.3, -0.19), rotY: Math.PI, rotX: 0 },
   ride: { pos: new THREE.Vector3(0.36, 0.14, 0.12), rotY: 1.25, rotX: 0 },
 };
-const SHOULDER_L = new THREE.Vector3(0.28, 0.53, 0);
-const SHOULDER_R = new THREE.Vector3(-0.28, 0.53, 0);
 
 const tmpQ = new THREE.Quaternion();
 const tmpQ2 = new THREE.Quaternion();
@@ -197,7 +196,7 @@ export class Agent {
     // visuals
     const colors = opts.colors || { team: '#888888', team2: '#dddddd' };
     const r1 = Math.random;
-    this.rig = buildHuman({
+    const spec = {
       look: this.armorItem ? this.armorItem.look : 'cloth',
       helmet: this.helmItem ? this.helmItem.look : null,
       team: colors.team,
@@ -206,7 +205,15 @@ export class Agent {
       hair: pickHair(r1),
       beard: r1() < 0.45,
       pants: ['#4a3a2a', '#3a3a44', '#5a4a3a', '#2e3a2a'][Math.floor(r1() * 4)],
-    });
+    };
+    // realistic skinned body (medium/high graphics) or the procedural one
+    spec.driverOnly = !!(battle.gfx && battle.gfx.standard && charactersReady());
+    this.rig = buildHuman(spec);
+    if (spec.driverOnly) {
+      this.body = new SkinnedHuman(spec);
+      this.rig.root.add(this.body.object);
+      this.body.fitDriver(this.rig);
+    }
     this.rig.root.rotation.order = 'YXZ';
     this.rig.torso.rotation.order = 'YXZ';
     battle.scene.add(this.rig.root);
@@ -284,7 +291,8 @@ export class Agent {
     for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh]) if (m && m.parent) m.parent.remove(m);
     const w = this.weapon;
     this.weaponMesh = mesh(weaponGeo(w.model));
-    if (w.cls === 'bow') r.handL.add(this.weaponMesh);
+    if (this.body) this.body.attach(this.weaponMesh, w.cls === 'bow' ? 'l' : 'r');
+    else if (w.cls === 'bow') r.handL.add(this.weaponMesh);
     else r.wristR.add(this.weaponMesh);
     if (this.shield) {
       const it = ITEMS[this.shield];
@@ -716,6 +724,12 @@ export class Agent {
   }
 
   animate(dt) {
+    this.animateRig(dt);
+    if (this.body) this.body.update(this, dt);
+  }
+
+  // Pose the (procedural) rig; a skinned body then follows it.
+  animateRig(dt) {
     const r = this.rig;
     const root = r.root;
     if (!this.alive) {
@@ -801,14 +815,14 @@ export class Agent {
       r.armL.quaternion.copy(LEFT.xbow);
     } else if (sh) {
       // point the left arm at the shield grip
-      tmpV.copy(r.shieldMount.position).sub(SHOULDER_L);
+      tmpV.copy(r.shieldMount.position).sub(r.armL.position);
       armQuat([tmpV.x, tmpV.y, tmpV.z], [0, 0, 1], tmpQ);
       r.armL.quaternion.copy(tmpQ);
     } else if (w.twoHanded || w.cls === 'spear') {
       // left hand follows the right hand
-      tmpV2.set(0, -0.6, 0).applyQuaternion(pose.q).add(SHOULDER_R);
+      tmpV2.copy(r.handR.position).applyQuaternion(pose.q).add(r.armR.position);
       if (pose.wrist) tmpV2.addScaledVector(tmpV.set(0, 0, 0.25).applyQuaternion(pose.q), 0);
-      tmpV.copy(tmpV2).sub(SHOULDER_L);
+      tmpV.copy(tmpV2).sub(r.armL.position);
       armQuat([tmpV.x, tmpV.y, tmpV.z], [0, 0, 1], tmpQ);
       r.armL.quaternion.copy(tmpQ);
     } else if (w.lance && this.horse) {

@@ -5,6 +5,7 @@ import { UI } from './ui/ui.js';
 import { MapHud } from './ui/hud.js';
 import { Sfx } from './core/audio.js';
 import { Battle } from './battle/battle.js';
+import { loadCharacters, charactersReady } from './battle/character.js';
 import { setUidCounter } from './core/util.js';
 import { FACTIONS } from './data/factions.js';
 import * as conflict from './game/conflict.js';
@@ -72,6 +73,8 @@ class Game {
     this.bindKeys();
     window.addEventListener('pointerdown', () => this.sfx.resume(), { once: false });
     this.ui.showMainMenu();
+    // realistic soldier models (packed in dist/characters.js); parsed once
+    this.charactersLoading = loadCharacters();
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -291,6 +294,16 @@ class Game {
   // ---- battles -----------------------------------------------------------------------------
 
   startBattle(config, onFinish) {
+    if (!charactersReady() && this.charactersLoading && !this._waitedCharacters) {
+      // the models are still being parsed (a moment after start-up): wait for them
+      this._waitedCharacters = true;
+      const done = this.ui.loading('Підготовка битви…');
+      this.charactersLoading.then(() => {
+        done();
+        this.startBattle(config, onFinish);
+      });
+      return;
+    }
     this.ui.windows.closeAll();
     this.mode = 'battle';
     this.waiting = false;
