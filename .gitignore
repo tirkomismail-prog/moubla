@@ -4,3 +4,5 @@ node_modules/
 dist/*.map
 __pycache__/
 *.pyc
+research_notes/
+reports/
