@@ -7,6 +7,12 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { helmetGeo, mesh as vcMesh } from './models.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
+import { applyPattern as patternFor } from './fabric.js';
+
+// Procedural surface detail (fabric.js) is still an experiment: its bump and
+// colour strength need tuning before it looks right, so it is off for now.
+const SURFACE_DETAIL = false;
+const applyPattern = (material, kind) => (SURFACE_DETAIL ? patternFor(material, kind) : material);
 
 const state = { status: 'idle', promise: null, t: null };
 
@@ -203,17 +209,20 @@ const METALS = {
 };
 const CLOTH = { padded: '#cdbf9a', leather: '#6f4c2e' };
 
-function clothMat(color, roughness = 0.9) {
-  return material(`cloth:${color}:${roughness}`, () => new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 }));
+function clothMat(color, roughness = 0.9, pattern = 'wool') {
+  return material(`cloth:${color}:${roughness}:${pattern}`, () =>
+    applyPattern(new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 }), pattern));
 }
 
 function metalMat(kind) {
   const p = METALS[kind];
-  return material(`metal:${kind}`, () => new THREE.MeshStandardMaterial({ color: p.color, roughness: p.roughness, metalness: p.metalness }));
+  return material(`metal:${kind}`, () =>
+    applyPattern(new THREE.MeshStandardMaterial({ color: p.color, roughness: p.roughness, metalness: p.metalness }), kind));
 }
 
 function skinMat(color) {
-  return material(`skin:${color}`, () => new THREE.MeshStandardMaterial({ color, roughness: 0.58, metalness: 0, vertexColors: true }));
+  return material(`skin:${color}`, () =>
+    applyPattern(new THREE.MeshStandardMaterial({ color, roughness: 0.58, metalness: 0, vertexColors: true }), 'skin'));
 }
 
 // Hair and beards: vertex alpha says how far from the edge of the shell a
@@ -256,16 +265,18 @@ function partMaterial(part, spec) {
       return EYE_MAT();
     case 'Shirt':
       if (METALS[look]) return metalMat(look);
-      return clothMat(CLOTH[look] || spec.team, look === 'leather' ? 0.7 : 0.92);
+      if (look === 'padded') return clothMat(CLOTH.padded, 0.9, 'quilt');
+      if (look === 'leather') return clothMat(CLOTH.leather, 0.62, 'leather');
+      return clothMat(spec.team, 0.92, 'wool');
     case 'Skirt':
-      if (look === 'padded') return clothMat(CLOTH.padded);
-      return clothMat(spec.team);
+      if (look === 'padded') return clothMat(CLOTH.padded, 0.9, 'quilt');
+      return clothMat(spec.team, 0.92, 'wool');
     case 'Hose':
-      return look === 'plate' ? metalMat('plate') : look === 'mail' ? metalMat('mail') : clothMat(spec.pants);
+      return look === 'plate' ? metalMat('plate') : look === 'mail' ? metalMat('mail') : clothMat(spec.pants, 0.9, 'knit');
     case 'Boots':
-      return look === 'plate' ? metalMat('plate') : clothMat('#3b2819', 0.65);
+      return look === 'plate' ? metalMat('plate') : clothMat('#3b2819', 0.6, 'leather');
     case 'Belt':
-      return clothMat('#4a2f1b', 0.55);
+      return clothMat('#4a2f1b', 0.5, 'leather');
     default:
       return clothMat('#888888');
   }
