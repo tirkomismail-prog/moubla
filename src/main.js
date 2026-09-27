@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   invertY: false,
   autoBlock: true,
   shadows: true,
+  graphics: 'medium',
   quality: 1,
   volume: 0.6,
   mapSpeed: 1,

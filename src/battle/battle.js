@@ -11,6 +11,8 @@ import { Projectiles } from './projectiles.js';
 import { BattleHud } from './hud.js';
 import { BattleInput } from './input.js';
 import { Effects } from './effects.js';
+import { gfxPreset, Environment, PostFX } from './graphics.js';
+import { setMaterialQuality } from './models.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
 import { h } from '../ui/dom.js';
@@ -60,11 +62,13 @@ export class Battle {
     this.teamAiT = 0;
     this.extraLosses = [new Map(), new Map()];
 
+    this.gfx = gfxPreset(this.settings);
+    setMaterialQuality(this.gfx.standard);
     try {
       this.setupRenderer();
       this.fx = new Effects(this.scene);
       this.terrain = new BattleTerrain(config.kind, config.terrain);
-      this.terrain.build(this.scene);
+      this.terrain.build(this.scene, this.gfx);
       this.buildObstacleGrid();
       this.setupLights(config.hour ?? 12);
       this.projectiles = new Projectiles(this);
@@ -90,77 +94,27 @@ export class Battle {
     const r = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2) * (this.settings.quality || 1));
     r.setSize(window.innerWidth, window.innerHeight);
-    r.shadowMap.enabled = !!this.settings.shadows;
+    r.shadowMap.enabled = this.gfx.shadows && this.settings.shadows !== false;
     r.shadowMap.type = THREE.PCFShadowMap;
     this.root.append(r.domElement);
     this.renderer = r;
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 1500);
+    this.camera = new THREE.PerspectiveCamera(64, window.innerWidth / window.innerHeight, 0.1, 1500);
   }
 
   resize() {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    if (this.post) this.post.resize(window.innerWidth, window.innerHeight);
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
   }
 
   setupLights(hour) {
-    const pal = this.terrain.pal;
-    let sunCol = '#fff4e0';
-    let sunI = 2.3;
-    let hemiI = 1.25;
-    let sky = pal.sky;
-    let fogCol = pal.fog;
-    let elev = 0.9;
-    if (hour < 5 || hour >= 21) {
-      sunCol = '#9fb4ff';
-      sunI = 0.55;
-      hemiI = 0.45;
-      sky = ['#0b1430', '#26345a'];
-      fogCol = '#1c2644';
-      elev = 0.8;
-    } else if (hour < 7.5 || hour >= 18.5) {
-      sunCol = '#ffb070';
-      sunI = 1.6;
-      hemiI = 0.85;
-      sky = ['#5a6aa0', '#f0a870'];
-      fogCol = '#c8a088';
-      elev = 0.25;
-    }
-    this.nightFactor = sunI < 1 ? 1 : 0;
-    const hemi = new THREE.HemisphereLight(sky[0], pal.grass, hemiI);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(sunCol, sunI);
-    const az = 0.6 + (hour / 24) * Math.PI;
-    this.sunDir = new THREE.Vector3(Math.cos(az) * Math.cos(elev), Math.sin(elev), Math.sin(az) * Math.cos(elev)).normalize();
-    sun.castShadow = !!this.settings.shadows;
-    sun.shadow.mapSize.set(2048, 2048);
-    const sc = sun.shadow.camera;
-    sc.left = -55;
-    sc.right = 55;
-    sc.top = 55;
-    sc.bottom = -55;
-    sc.near = 1;
-    sc.far = 300;
-    sun.shadow.bias = -0.0006;
-    sun.shadow.normalBias = 0.03;
-    this.scene.add(sun);
-    this.scene.add(sun.target);
-    this.sun = sun;
-    this.scene.fog = new THREE.Fog(fogCol, 70, this.config.kind === 'arena' ? 260 : 420);
-    // sky dome
-    const skyGeo = new THREE.SphereGeometry(900, 24, 12);
-    const skyMat = new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-      uniforms: { top: { value: new THREE.Color(sky[0]) }, bottom: { value: new THREE.Color(sky[1]) } },
-      vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-      fragmentShader: 'uniform vec3 top; uniform vec3 bottom; varying vec3 vP; void main(){ float h = clamp(normalize(vP).y * 1.6 + 0.1, 0.0, 1.0); gl_FragColor = vec4(mix(bottom, top, h), 1.0); }',
-    });
-    this.sky = new THREE.Mesh(skyGeo, skyMat);
-    this.scene.add(this.sky);
-    this.scene.background = new THREE.Color(fogCol);
+    this.env = new Environment(this, hour);
+    this.sun = this.env.sun;
+    this.sunDir = this.env.sunDir;
+    this.sky = this.env.sky;
+    if (this.gfx.post) this.post = new PostFX(this.renderer, this.scene, this.camera, this.gfx);
   }
 
   buildObstacleGrid() {
@@ -1154,6 +1108,7 @@ export class Battle {
       const d = this.debugCam;
       this.camera.position.set(d.x, d.y, d.z);
       this.camera.lookAt(d.tx, d.ty, d.tz);
+      this.env.follow(new THREE.Vector3(d.tx, d.ty, d.tz), this.camera);
       return;
     }
     let focus = this.player && this.player.alive ? this.player : null;
@@ -1185,9 +1140,7 @@ export class Battle {
     } else cam.position.lerp(target, 1 - Math.exp(-dt * 25));
     cam.lookAt(pivot.x + fx * 30 + rx, pivot.y + fy * 30 + 0.35, pivot.z + fz * 30 + rz);
     // shadows follow the camera focus
-    this.sun.position.set(pivot.x + this.sunDir.x * 120, pivot.y + this.sunDir.y * 120, pivot.z + this.sunDir.z * 120);
-    this.sun.target.position.set(pivot.x, pivot.y, pivot.z);
-    this.sky.position.copy(cam.position);
+    this.env.follow(pivot, cam);
   }
 
   // ---- loose / dead horses -----------------------------------------------------------------------------
@@ -1234,9 +1187,13 @@ export class Battle {
     if (this.ended) return; // disposed inside step()
     this.updateCamera(dt);
     for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(this.paused ? 0 : dt);
-    if (!this.paused) this.fx.update(dt);
+    if (!this.paused) {
+      this.fx.update(dt);
+      this.terrain.update(this.time, this.camera);
+    }
     this.hud.update();
-    this.renderer.render(this.scene, this.camera);
+    if (this.post) this.post.render();
+    else this.renderer.render(this.scene, this.camera);
   }
 
   step(dt) {
@@ -1431,6 +1388,8 @@ export class Battle {
         if (o.parent === this.terrain.group || o === this.sky) o.geometry.dispose();
       }
     });
+    if (this.post) this.post.dispose();
+    if (this.env) this.env.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss?.();
     if (window.__battle === this) window.__battle = null;

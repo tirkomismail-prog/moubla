@@ -1,0 +1,191 @@
+// Visual environment of a battle: sky, sun, image based lighting, fog and
+// post-processing, driven by a graphics quality preset.
+import * as THREE from 'three';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+
+export const GFX_PRESETS = {
+  low: { name: 'Низька', standard: false, sky: false, post: false, ao: false, grass: 0, shadowSize: 1024, shadows: false, msaa: 0 },
+  medium: { name: 'Середня', standard: true, sky: true, post: false, ao: false, grass: 9000, shadowSize: 2048, shadows: true, msaa: 4 },
+  high: { name: 'Висока', standard: true, sky: true, post: true, ao: true, grass: 22000, shadowSize: 4096, shadows: true, msaa: 4 },
+};
+
+export function gfxPreset(settings) {
+  return GFX_PRESETS[settings.graphics] || GFX_PRESETS.medium;
+}
+
+// Sun direction, colours and intensities for an hour of the day.
+// `dome` is the sky light used for image based lighting: zenith, horizon.
+function lighting(hour) {
+  if (hour < 5 || hour >= 21) {
+    return { night: true, elev: 0.75, sunCol: '#a8bcff', sunI: 0.75, hemiI: 0.35, envI: 1.0, exposure: 1.3, dome: ['#101d40', '#2a3960'] };
+  }
+  if (hour < 7.5 || hour >= 18.5) {
+    return { night: false, elev: 0.09, sunCol: '#ffb77a', sunI: 2.6, hemiI: 0.45, envI: 0.75, exposure: 0.9, dome: ['#4a5f95', '#e6a67c'] };
+  }
+  const noon = 1 - Math.abs(hour - 13) / 6;
+  return { night: false, elev: 0.35 + noon * 0.55, sunCol: '#fff1dc', sunI: 3.0, hemiI: 0.55, envI: 0.8, exposure: 0.85, dome: ['#5b8fd0', '#d4e2ec'] };
+}
+
+export class Environment {
+  constructor(battle, hour) {
+    this.battle = battle;
+    const scene = battle.scene;
+    const renderer = battle.renderer;
+    const preset = battle.gfx;
+    const pal = battle.terrain.pal;
+    const L = lighting(hour);
+    this.night = L.night;
+    const az = 0.6 + (hour / 24) * Math.PI;
+    this.sunDir = new THREE.Vector3(Math.cos(az) * Math.cos(L.elev), Math.sin(L.elev), Math.sin(az) * Math.cos(L.elev)).normalize();
+
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = preset.standard ? L.exposure : 1;
+
+    // --- lights
+    // with image based lighting the hemisphere light only adds a little bounce
+    const hemi = new THREE.HemisphereLight(L.night ? '#35456e' : '#bcd4f0', L.night ? '#101418' : pal.grass, preset.standard ? L.hemiI * 0.25 : L.hemiI * 2.4);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(L.sunCol, preset.standard ? L.sunI : L.sunI * 0.75);
+    sun.castShadow = preset.shadows && battle.settings.shadows !== false;
+    sun.shadow.mapSize.set(preset.shadowSize, preset.shadowSize);
+    const sc = sun.shadow.camera;
+    sc.left = -45;
+    sc.right = 45;
+    sc.top = 45;
+    sc.bottom = -45;
+    sc.near = 1;
+    sc.far = 320;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.04;
+    scene.add(sun, sun.target);
+    this.sun = sun;
+
+    // --- sky
+    let fogCol;
+    if (L.night) {
+      fogCol = '#1a2340';
+      this.sky = gradientDome('#070d22', '#26345a');
+    } else if (preset.sky) {
+      const sky = new Sky();
+      sky.scale.setScalar(1000);
+      const u = sky.material.uniforms;
+      u.turbidity.value = battle.terrain.type === 'steppe' || battle.terrain.type === 'desert' ? 8 : 5;
+      u.rayleigh.value = L.elev < 0.2 ? 2.4 : 1.4;
+      u.mieCoefficient.value = 0.004;
+      u.mieDirectionalG.value = 0.82;
+      u.sunPosition.value.copy(this.sunDir).multiplyScalar(1000);
+      this.sky = sky;
+      fogCol = L.elev < 0.2 ? '#d3a88c' : pal.fog;
+    } else {
+      fogCol = L.elev < 0.2 ? '#c8a088' : pal.fog;
+      this.sky = gradientDome(L.elev < 0.2 ? '#5a6aa0' : pal.sky[0], L.elev < 0.2 ? '#f0a870' : pal.sky[1]);
+    }
+    scene.add(this.sky);
+    scene.background = new THREE.Color(fogCol);
+    const far = battle.config.kind === 'arena' ? 260 : 460;
+    scene.fog = preset.standard ? new THREE.FogExp2(fogCol, L.night ? 0.009 : 0.0042) : new THREE.Fog(fogCol, 70, far);
+
+    // --- image based lighting (makes metal and cloth read properly). It comes
+    // from a simple sky dome with a soft sun glow rather than from the physical
+    // sky shader, whose raw radiance is far too strong to light the scene with.
+    if (preset.standard) {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const envScene = new THREE.Scene();
+      const ground = new THREE.Color(L.night ? '#0c1016' : pal.grass).multiplyScalar(0.55);
+      const dome = gradientDome(L.dome[0], L.dome[1], ground, this.sunDir, new THREE.Color(L.sunCol).multiplyScalar(L.night ? 0.2 : 1.6));
+      envScene.add(dome);
+      const rt = pmrem.fromScene(envScene, 0.04, 0.1, 2000);
+      scene.environment = rt.texture;
+      scene.environmentIntensity = L.envI;
+      this.envRT = rt;
+      pmrem.dispose();
+      dome.geometry.dispose();
+      dome.material.dispose();
+    }
+  }
+
+  // keep the shadow frustum and sky centred on what the camera looks at
+  follow(pivot, camera) {
+    const d = this.sunDir;
+    this.sun.position.set(pivot.x + d.x * 150, pivot.y + d.y * 150, pivot.z + d.z * 150);
+    this.sun.target.position.copy(pivot);
+    this.sky.position.copy(camera.position);
+  }
+
+  dispose() {
+    if (this.envRT) this.envRT.dispose();
+    if (this.sky) {
+      this.sky.geometry.dispose();
+      this.sky.material.dispose();
+    }
+  }
+}
+
+// Sky dome: zenith/horizon gradient, optional ground colour below the
+// horizon and an optional glow around the sun.
+function gradientDome(top, horizon, ground = null, sunDir = null, sunCol = null) {
+  const geo = new THREE.SphereGeometry(900, 32, 16);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      top: { value: new THREE.Color(top) },
+      horizon: { value: new THREE.Color(horizon) },
+      ground: { value: new THREE.Color(ground || horizon) },
+      sunDir: { value: sunDir ? sunDir.clone() : new THREE.Vector3(0, 1, 0) },
+      sunCol: { value: sunCol ? new THREE.Color(sunCol) : new THREE.Color(0, 0, 0) },
+      hasGround: { value: ground ? 1 : 0 },
+    },
+    vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+    fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 ground; uniform vec3 sunDir; uniform vec3 sunCol; uniform float hasGround; varying vec3 vP;
+      void main(){
+        vec3 d = normalize(vP);
+        vec3 c = mix(horizon, top, pow(clamp(d.y * 1.4 + 0.05, 0.0, 1.0), 0.7));
+        if (hasGround > 0.5) c = mix(c, ground, smoothstep(0.0, -0.08, d.y));
+        float s = max(dot(d, sunDir), 0.0);
+        c += sunCol * (pow(s, 8.0) * 0.5 + pow(s, 64.0) * 2.0);
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
+// Post-processing chain: ambient occlusion, then tone mapping.
+export class PostFX {
+  constructor(renderer, scene, camera, preset) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    const rt = new THREE.WebGLRenderTarget(Math.floor(w * pr), Math.floor(h * pr), { type: THREE.HalfFloatType, samples: preset.msaa });
+    this.composer = new EffectComposer(renderer, rt);
+    this.composer.addPass(new RenderPass(scene, camera));
+    if (preset.ao) {
+      const ao = new GTAOPass(scene, camera, w, h);
+      ao.output = GTAOPass.OUTPUT.Default;
+      ao.blendIntensity = 0.85;
+      ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1.1, samples: 12 });
+      ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, rings: 2, samples: 12 });
+      this.composer.addPass(ao);
+      this.ao = ao;
+    }
+    this.composer.addPass(new OutputPass());
+  }
+
+  render() {
+    this.composer.render();
+  }
+
+  resize(w, h) {
+    this.composer.setSize(w, h);
+  }
+
+  dispose() {
+    this.composer.dispose();
+    if (this.ao) this.ao.dispose();
+  }
+}

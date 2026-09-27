@@ -104,6 +104,8 @@ export class UI {
       const inp = h('input', { type: 'range', min, max, step, value: s[key], oninput: (e) => { s[key] = Number(e.target.value); val.textContent = fmt(s[key]); game.saveSettings(); } });
       return h('span', null, inp, ' ', val);
     };
+    const select = (key, opts) => h('select', { onchange: (e) => { s[key] = e.target.value; game.saveSettings(); } },
+      ...opts.map(([v, label]) => h('option', { value: v, selected: s[key] === v }, label)));
     const check = (key) => h('input', { type: 'checkbox', checked: s[key], onchange: (e) => { s[key] = e.target.checked; game.saveSettings(); } });
     const body = h('div', null,
       row('Розмір битви (воїнів на полі)', range('battleSize', 20, 150, 10)),
@@ -111,8 +113,9 @@ export class UI {
       row('Інвертувати вісь Y', check('invertY')),
       row('Автоматичний напрям блоку', check('autoBlock')),
       row('Шкода, яку отримує гравець', range('playerDamage', 0.25, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
+      row('Графіка битв', select('graphics', [['low', 'Низька (швидко)'], ['medium', 'Середня'], ['high', 'Висока']])),
       row('Тіні в битвах', check('shadows')),
-      row('Якість графіки (роздільність)', range('quality', 0.5, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
+      row('Роздільність у битвах', range('quality', 0.5, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
       row('Гучність', range('volume', 0, 1, 0.05, (v) => `${Math.round(v * 100)}%`)),
       row('Швидкість часу на мапі', range('mapSpeed', 0.5, 3, 0.25, (v) => `×${v}`)),
     );

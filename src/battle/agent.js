@@ -204,6 +204,7 @@ export class Agent {
       team2: colors.team2,
       skin: pickSkin(r1),
       hair: pickHair(r1),
+      beard: r1() < 0.45,
       pants: ['#4a3a2a', '#3a3a44', '#5a4a3a', '#2e3a2a'][Math.floor(r1() * 4)],
     });
     this.rig.root.rotation.order = 'YXZ';

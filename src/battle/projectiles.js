@@ -1,6 +1,6 @@
 // Arrows, bolts and thrown weapons with simple ballistic physics.
 import * as THREE from 'three';
-import { MATERIAL, weaponGeo } from './models.js';
+import { material, weaponGeo } from './models.js';
 import { computeDamage } from './combat.js';
 
 const G = 9.8;
@@ -89,7 +89,7 @@ export class Projectiles {
 
   spawn(o) {
     const kind = o.model === 'javelin' ? 'javelin' : o.model === 'throwaxe' ? 'throwaxe' : o.model === 'crossbow' ? 'bolt' : 'arrow';
-    const m = new THREE.Mesh(geoFor(kind), MATERIAL);
+    const m = new THREE.Mesh(geoFor(kind), material());
     m.castShadow = false;
     this.battle.scene.add(m);
     const p = { ...o, kind, mesh: m, age: 0, speed0: o.vel.length(), spin: kind === 'throwaxe' ? 0 : null };
