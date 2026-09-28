@@ -2,17 +2,21 @@
 
 Runs inside Blender's Python (the `bpy` module from PyPI works headless):
 
-    python -m venv .venv && .venv/bin/pip install bpy==5.0.1
+    python -m venv .venv && .venv/bin/pip install bpy==5.0.1 pillow
     git clone --depth 1 https://github.com/makehumancommunity/mpfb2 /tmp/mpfb2
     .venv/bin/python tools/characters/build_soldier.py --mpfb /tmp/mpfb2/src/mpfb --out assets/characters/soldier.glb
 
 The body, its skeleton and skin weights and the helper shells used for the
-clothes come from MakeHuman / MPFB (assets under CC0). Everything else
-(clothes, hair, eyes, three levels of detail) is generated here; each level
-is exported as one mesh whose vertices name their part (_PART attribute).
+clothes come from MakeHuman / MPFB; the skin texture, eyes, eyebrows,
+eyelashes, hair and beards from MakeHuman asset packs and the tileable cloth
+and armour textures from ambientCG (all CC0, downloaded into --cache, see
+mhassets.py and materials.py). The clothes, their ambient occlusion and three
+levels of detail are generated here; each level is exported as one mesh whose vertices name their
+part (_PART attribute), and the textures as layers next to the model.
 """
 import argparse
 import importlib
+import json
 import math
 import os
 import sys
@@ -25,6 +29,8 @@ from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import garments  # noqa: E402
+import materials  # noqa: E402
+import mhassets  # noqa: E402
 import mocap  # noqa: E402
 
 ARGS = None
@@ -34,6 +40,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--mpfb', required=True, help='path to the mpfb2 source folder (src/mpfb)')
     p.add_argument('--out', default='assets/characters/soldier.glb')
+    p.add_argument('--cache', default=os.path.join(os.path.expanduser('~'), '.cache', 'makehuman-assets'),
+                   help='folder for the downloaded MakeHuman asset packs')
     p.add_argument('--bvh', default='', help='folder with CMU BVH files (optional, adds mocap clips)')
     p.add_argument('--lod1', type=float, default=0.3, help='decimation ratio of the middle-distance model')
     p.add_argument('--lod2', type=float, default=0.1, help='decimation ratio of the far model')
@@ -225,10 +233,10 @@ def to_gltf(v):
     return [round(v.x, 4), round(v.z, 4), round(-v.y, 4)]
 
 
-def store_fit(rig, human, parts):
-    """Measurements the game needs to fit helmets and hold weapons (exported
-    as glTF extras on the armature)."""
-    pts = [v.co for v in parts['Hair'].data.vertices]
+def store_fit(rig, human, scalp):
+    """Measurements the game needs to fit helmets (exported as glTF extras on
+    the armature)."""
+    pts = [v.co for v in scalp.data.vertices]
     mn = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
     mx = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
     rig['hair_center'] = to_gltf((mn + mx) / 2)
@@ -238,7 +246,12 @@ def store_fit(rig, human, parts):
     rig['eye_mid'] = to_gltf((le + re) / 2)
 
 
-PART_IDS = {'Body': 0, 'Shirt': 1, 'Skirt': 2, 'Hose': 3, 'Boots': 4, 'Belt': 5, 'Hair': 6, 'Beard': 7, 'EyeL': 8, 'EyeR': 8}
+PARTS = ['Body', 'Shirt', 'Skirt', 'Hose', 'Boots', 'Belt', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
+PART_IDS = {name: i for i, name in enumerate(PARTS)}
+# small parts left out of the far models: {part: first level without it}
+DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
+# dense parts simplified already in the near model (the texture carries the detail)
+NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5}
 
 
 def merge_parts(objs, name):
@@ -259,6 +272,8 @@ def merge_parts(objs, name):
         me.color_attributes.render_color_index = me.color_attributes.active_color_index
         if not me.uv_layers:
             me.uv_layers.new(name='UVMap')
+        if o.name.split('_LOD')[0] in mhassets.CARDS:
+            mhassets.double_side(o)
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         o.select_set(True)
@@ -275,6 +290,62 @@ def merge_parts(objs, name):
     return merged
 
 
+GARMENTS = ('Shirt', 'Skirt', 'Hose', 'Boots', 'Belt')
+
+
+def world_uvs(obj):
+    """UVs measured in metres (for tileable textures): a smart projection,
+    scaled so that one UV unit is one metre on the garment."""
+    me = obj.data
+    while me.uv_layers:
+        me.uv_layers.remove(me.uv_layers[0])
+    me.uv_layers.new(name='UVMap')
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.0, scale_to_bounds=False)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    uv = me.uv_layers['UVMap']  # (leaving edit mode reallocates the layer)
+    area3 = sum(p.area for p in me.polygons)
+    area2 = 0.0
+    for p in me.polygons:
+        pts = [uv.data[i].uv.copy() for i in p.loop_indices]
+        area2 += abs(sum(pts[i].x * pts[i - 1].y - pts[i - 1].x * pts[i].y for i in range(len(pts)))) / 2
+    k = math.sqrt(area3 / max(area2, 1e-9))
+    for d in uv.data:
+        d.uv = d.uv * k
+
+
+def bake_ao(objs, distance=0.12, floor=0.4):
+    """Ambient occlusion in the vertex colours (folds, the neck under the
+    chin, the skin under the hair), from `floor` in closed corners to 1."""
+    scene = bpy.context.scene
+    scene.render.engine = 'CYCLES'
+    scene.cycles.device = 'CPU'
+    scene.cycles.samples = 64
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new('World')
+    scene.world.light_settings.distance = distance
+    mat = bpy.data.materials.get('bake') or bpy.data.materials.new('bake')
+    for o in objs:
+        me = o.data
+        if not me.materials:
+            me.materials.append(mat)
+        col = me.color_attributes.get('Col') or me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
+        me.color_attributes.active_color = col
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    bpy.ops.object.bake(type='AO', target='VERTEX_COLORS')
+    for o in objs:
+        for d in o.data.color_attributes['Col'].data:
+            v = floor + (1 - floor) * d.color[0]
+            d.color = (v, v, v, 1.0)
+
+
 def tri_count(obj):
     return sum(len(p.vertices) - 2 for p in obj.data.polygons)
 
@@ -288,11 +359,15 @@ def build():
     hs, ts = setup_mpfb(ARGS.mpfb)
     human, rig = make_human(hs, ts)
 
+    mhassets.fetch(ARGS.cache)
+    fitted = mhassets.fit(hs, human, ARGS.cache)
+
     parts = garments.build_all(human, rig, {
         'extract': extract, 'offset': offset, 'smooth_verts': smooth_verts, 'set_material': set_material,
         'shade_smooth': shade_smooth, 'bone_index': bone_index, 'dominant_bone': dominant_bone,
         'group_weight': group_weight, 'copy_object': copy_object,
     })
+    scalp = parts.pop('Scalp')
 
     # the visible skin: head, neck and hands (everything under the clothes is removed)
     body = extract(human, ['body'], 'Body')
@@ -303,10 +378,20 @@ def build():
     delete_covered(body, covers, keep=lambda v: abs(v.co.z - (L['belt_top'] - 0.02)) < 0.07 or v.co.z > L['neck'] - 0.1)
     set_material(body, 'skin')
     shade_smooth(body)
-    garments.paint_face(body, human)
-    store_fit(rig, human, parts)
+    store_fit(rig, human, scalp)
+    bpy.data.objects.remove(scalp)
     bpy.data.objects.remove(human)
     parts['Body'] = body
+    parts.update(fitted)
+    for name in GARMENTS:
+        world_uvs(parts[name])
+    for name, obj in parts.items():
+        mhassets.place_uvs(obj, name)
+    for name, ratio in NEAR_RATIO.items():
+        near = decimate(parts[name], ratio, name + '_near')
+        bpy.data.objects.remove(parts[name])
+        near.name = near.data.name = name
+        parts[name] = near
 
     for name, obj in parts.items():
         obj.parent = rig
@@ -314,6 +399,7 @@ def build():
             m = obj.modifiers.new('Armature', 'ARMATURE')
             m.object = rig
         print(f'{name:14s} {tri_count(obj):6d} tris')
+    bake_ao(list(parts.values()))
 
     # one mesh per level of detail, so a soldier is a single draw call; each
     # vertex remembers which part it belongs to (_PART) for the game's palette.
@@ -322,7 +408,7 @@ def build():
     for level, ratio in ((1, ARGS.lod1), (2, ARGS.lod2)):
         objs = []
         for name, obj in parts.items():
-            if name.startswith('Eye') and level == 2:
+            if level >= DROP.get(name, 3):
                 continue
             lod = f'{name}_LOD{level}'
             objs.append(copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod))
@@ -334,6 +420,20 @@ def build():
 
     if ARGS.bvh:
         mocap.add_clips(rig, ARGS.bvh)
+
+    # textures: the game finds each part's layer by name
+    tex_dir = os.path.join(os.path.dirname(os.path.abspath(ARGS.out)), 'textures')
+    files = mhassets.write_textures(ARGS.cache, tex_dir)
+    materials.fetch(ARGS.cache)
+    tiles = materials.write_tiles(ARGS.cache, tex_dir)
+    with open(os.path.join(tex_dir, 'layers.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'size': mhassets.LAYER_SIZE, 'layers': dict(zip(mhassets.LAYERS, files)),
+            'tiles': {'size': materials.TILE_SIZE, 'layers': tiles,
+                      'repeat': {name: round(1 / metres, 3) for name, (_, metres, _) in materials.TILES.items()}},
+        }, f, indent=1)
+    rig['parts'] = PARTS
+    rig['part_layers'] = {part: layer for part, (layer, _) in mhassets.PLACE.items()}
 
     os.makedirs(os.path.dirname(os.path.abspath(ARGS.out)), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')

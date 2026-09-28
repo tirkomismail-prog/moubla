@@ -12,39 +12,81 @@ const state = { status: 'idle', promise: null, t: null };
 
 export function loadCharacters() {
   if (state.promise) return state.promise;
-  const b64 = typeof window !== 'undefined' && window.__CHARACTER_ASSETS && window.__CHARACTER_ASSETS.soldier;
-  if (!b64) {
+  const assets = typeof window !== 'undefined' && window.__CHARACTER_ASSETS;
+  if (!assets || !assets.soldier) {
     state.status = 'missing';
     state.promise = Promise.resolve(false);
     return state.promise;
   }
   state.status = 'loading';
-  state.promise = new Promise((resolve) => {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    new GLTFLoader().parse(
-      bytes.buffer,
-      '',
-      (gltf) => {
-        try {
-          state.t = prepare(gltf);
-          state.status = 'ready';
-          resolve(true);
-        } catch (e) {
-          console.warn('Character model unusable:', e);
-          state.status = 'failed';
-          resolve(false);
-        }
-      },
-      (err) => {
-        console.warn('Character model failed to load:', err);
-        state.status = 'failed';
-        resolve(false);
-      },
-    );
-  });
+  state.promise = (async () => {
+    try {
+      const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(bytesOf(assets.soldier).buffer, '', resolve, reject));
+      const t = prepare(gltf);
+      const tex = assets.textures;
+      t.layers = tex ? await decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null;
+      t.tiles = tex && tex.tiles ? await decodeTiles(tex.tiles) : null;
+      state.t = t;
+      state.status = 'ready';
+      return true;
+    } catch (e) {
+      console.warn('Character model unusable:', e);
+      state.status = 'failed';
+      return false;
+    }
+  })();
   return state.promise;
+}
+
+function bytesOf(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// Texture layers as one array texture. Each layer is a colour image plus,
+// for see-through ones, a separate alpha image. `layers`: {name: [colour,
+// alpha or null]} (base64 WebP).
+async function decodeLayers(size, layers, colorSpace, channel = 0) {
+  const names = Object.keys(layers);
+  const data = new Uint8Array(size * size * 4 * names.length);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const pixels = async (b64) => {
+    const img = await createImageBitmap(new Blob([bytesOf(b64)], { type: 'image/webp' }));
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, 0, 0, size, size);
+    img.close();
+    return ctx.getImageData(0, 0, size, size).data;
+  };
+  for (let i = 0; i < names.length; i++) {
+    const files = layers[names[i]];
+    const off = i * size * size * 4;
+    data.set(await pixels(files[channel]), off);
+    if (channel === 0 && files[1]) {
+      const a = await pixels(files[1]);
+      for (let k = 0; k < size * size; k++) data[off + k * 4 + 3] = a[k * 4];
+    }
+  }
+  const texture = new THREE.DataArrayTexture(data, size, size, names.length);
+  texture.colorSpace = colorSpace;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return { texture, size, index: Object.fromEntries(names.map((n, i) => [n, i])) };
+}
+
+// Tileable cloth and armour materials: colour and surface (normal x, y and
+// roughness) arrays, and how often each repeats per metre.
+async function decodeTiles({ size, layers, repeat }) {
+  const color = await decodeLayers(size, layers, THREE.SRGBColorSpace, 0);
+  const surface = await decodeLayers(size, layers, THREE.NoColorSpace, 1);
+  return { color: color.texture, surface: surface.texture, index: color.index, repeat };
 }
 
 export function charactersReady() {
@@ -76,6 +118,9 @@ function prepare(gltf) {
     clips[name] = { clip, speed: Number(speed) || 0, dur: clip.duration, offset: 0 };
   }
   const t = { scene, clips, fit, hands: {}, limbs: {} };
+  // the parts in the order of their numbers (_part) and their texture layers
+  t.parts = fit.parts || ['Body', 'Shirt', 'Skirt', 'Hose', 'Boots', 'Belt', 'Hair', 'Beard', 'Eyes'];
+  t.partLayers = fit.part_layers || {};
   const wpos = (b) => b.getWorldPosition(new THREE.Vector3());
   for (const s of ['l', 'r']) {
     const hand = bones[`hand_${s}`];
@@ -184,12 +229,10 @@ function fingerPose(bones, s, hand, amount) {
 // ---------------------------------------------------------------------------
 // Material: the whole body is one mesh (one draw call per soldier). Every
 // vertex carries the number of its part (_part); a palette per soldier type
-// gives each part its colour, roughness and metalness, and can hide a part
-// (no beard, hair under a helmet). Shared between soldiers who look alike.
+// gives each part its colour, roughness, metalness and texture layer, and can
+// hide a part (no beard, hair under a helmet). Shared between soldiers who
+// look alike.
 // ---------------------------------------------------------------------------
-
-const PART = { body: 0, shirt: 1, skirt: 2, hose: 3, boots: 4, belt: 5, hair: 6, beard: 7, eyes: 8 };
-const PARTS = 9;
 
 const METALS = {
   mail: { color: '#7d848c', roughness: 0.5, metalness: 0.85 },
@@ -197,96 +240,191 @@ const METALS = {
   plate: { color: '#aab2ba', roughness: 0.28, metalness: 0.95 },
 };
 const CLOTH = { padded: '#cdbf9a', leather: '#6f4c2e' };
+// hair-like textures are grey with a mean of 0.8; skin textures are this light tone
+const HAIR_MEAN = 0.8;
+const SKIN_REF = new THREE.Color('#e8c3a0');
 const surface = (color, roughness, metalness = 0) => ({ color, roughness, metalness });
 
 function palette(spec) {
   const look = spec.look || 'cloth';
-  const team = surface(spec.team, 0.92);
-  const padded = surface(CLOTH.padded, 0.9);
-  const p = [];
-  p[PART.body] = surface(spec.skin, 0.58);
-  p[PART.shirt] = METALS[look] || (look === 'padded' ? padded : look === 'leather' ? surface(CLOTH.leather, 0.62) : team);
-  p[PART.skirt] = look === 'padded' ? padded : team;
-  p[PART.hose] = look === 'plate' || look === 'mail' ? METALS[look] : surface(spec.pants, 0.9);
-  p[PART.boots] = look === 'plate' ? METALS.plate : surface('#3b2819', 0.6);
-  p[PART.belt] = surface('#4a2f1b', 0.5);
-  p[PART.hair] = surface(spec.hair, 0.75);
-  p[PART.beard] = p[PART.hair];
-  p[PART.eyes] = surface('#ffffff', 0.12);
-  return p;
+  // tileable materials (see tools/characters/materials.py): a tint, and a
+  // factor for the roughness the texture gives
+  const tiled = (tile, color, roughness = 1, metalness = 0) => ({ color, roughness, metalness, tile });
+  const team = tiled('wool', spec.team);
+  const quilted = tiled('quilted', '#ffffff');
+  const leather = tiled('leather', '#ffffff');
+  const boots = tiled('leather', '#b0a090');
+  const armour = {
+    mail: tiled('mail', '#ffffff', 1.2, 0.75),
+    lamellar: tiled('lamellar', '#ffffff', 0.8, 0.85),
+    plate: tiled('plate', '#ffffff', 1, 0.9),
+  };
+  const skin = new THREE.Color(spec.skin);
+  skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
+  const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
+  return {
+    Body: surface(skin, 0.55),
+    Shirt: armour[look] || (look === 'padded' ? quilted : look === 'leather' ? leather : team),
+    Skirt: look === 'padded' ? quilted : team,
+    Hose: look === 'plate' || look === 'mail' ? armour[look] : tiled('wool', spec.pants),
+    Boots: look === 'plate' ? armour.plate : boots,
+    Belt: tiled('leather', '#8a7a6a'),
+    Hair: surface(hair, 0.7),
+    Beard: surface(hair, 0.7),
+    Moustache: surface(hair, 0.7),
+    Brows: surface(hair, 0.7),
+    Lashes: surface('#2a211b', 0.7),
+    Eyes: surface('#ffffff', 0.12),
+  };
 }
 
-const PART_VERTEX = `
+// parts made of see-through cards
+const CARDS = new Set(['Hair', 'Beard', 'Moustache', 'Brows', 'Lashes']);
+
+const PART_VERTEX = (n) => `
   attribute float _part;
-  uniform float partHidden[${PARTS}];`;
+  uniform float partHidden[${n}];
+  uniform vec2 partTex[${n}];
+  uniform vec2 partTile[${n}];
+  varying vec2 vPartTex;
+  varying vec2 vPartTile;
+  varying vec2 vPartUv;`;
+const PART_BEGIN = `
+  int part = int(_part + 0.5);
+  vPartTex = partTex[part];
+  vPartTile = partTile[part];
+  vPartUv = uv;`;
 // moves the vertices of a hidden part out of the view: its triangles vanish
 const HIDE_VERTEX = `
-  if (partHidden[int(_part + 0.5)] > 0.5) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);`;
+  if (partHidden[part] > 0.5) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);`;
+// texture layer (x < 0: none) and see-through card (y > 0.5) of a part.
+// Cards are cut out where the texture's alpha is below 0.5; the alpha is
+// raised with the mipmap level so that hair does not thin out far away.
+const PART_FRAGMENT = `
+  uniform highp sampler2DArray partLayers;
+  uniform float layerSize;
+  varying vec2 vPartTex;
+  varying vec2 vPartTile;
+  varying vec2 vPartUv;
+  vec4 partTexel() {
+    if (vPartTex.x < -0.5) return vec4(1.0);
+    vec4 tex = texture(partLayers, vec3(vPartUv, vPartTex.x));
+    if (vPartTex.y > 0.5) {
+      vec2 dx = dFdx(vPartUv * layerSize);
+      vec2 dy = dFdy(vPartUv * layerSize);
+      float mip = max(0.0, 0.5 * log2(max(dot(dx, dx), dot(dy, dy))));
+      if (tex.a * (1.0 + 0.25 * mip) < 0.5) discard;
+    }
+    return tex;
+  }`;
+// Tileable materials: UVs in metres times the repeats per metre (y) of
+// layer x (x < 0: none). The surface texture holds the normal (x, y) and
+// the roughness; there are no tangents, the frame comes from derivatives.
+const TILE_FRAGMENT = `
+  uniform highp sampler2DArray tileColor;
+  uniform highp sampler2DArray tileSurface;
+  mat3 tileFrame(vec3 eyePos, vec3 n, vec2 uv) {
+    vec3 q0 = dFdx(eyePos);
+    vec3 q1 = dFdy(eyePos);
+    vec2 st0 = dFdx(uv);
+    vec2 st1 = dFdy(uv);
+    vec3 q1perp = cross(q1, n);
+    vec3 q0perp = cross(n, q0);
+    vec3 t = q1perp * st0.x + q0perp * st1.x;
+    vec3 b = q1perp * st0.y + q0perp * st1.y;
+    float det = max(dot(t, t), dot(b, b));
+    float scale = det == 0.0 ? 0.0 : inversesqrt(det);
+    return mat3(t * scale, b * scale, n);
+  }`;
 
 const materials = new Map();
 
 function soldierMat(spec, hidden) {
-  const key = `${spec.look}|${spec.team}|${spec.pants}|${spec.skin}|${spec.hair}|${hidden.join('')}`;
+  const t = state.t;
+  const n = t.parts.length;
+  const layers = t.layers;
+  const key = `${spec.look}|${spec.team}|${spec.pants}|${spec.skin}|${spec.hair}|${spec.stubble}|${hidden.join('')}`;
   let m = materials.get(key);
   if (m) return m;
-  const colors = new Float32Array(PARTS * 3);
-  const surfaces = new Float32Array(PARTS * 2);
+  const colors = new Float32Array(n * 3);
+  const surfaces = new Float32Array(n * 2);
+  const tex = new Float32Array(n * 2);
+  const tile = new Float32Array(n * 2).fill(-1);
+  const tiles = t.tiles;
+  const pal = palette(spec);
   const c = new THREE.Color();
-  palette(spec).forEach((s, i) => {
+  t.parts.forEach((name, i) => {
+    const s = pal[name] || surface('#888888', 0.9);
     c.set(s.color).toArray(colors, i * 3);
     surfaces[i * 2] = s.roughness;
     surfaces[i * 2 + 1] = s.metalness;
+    let layer = t.partLayers[name];
+    if (name === 'Body' && spec.stubble && layers && 'skin_stubble' in layers.index) layer = 'skin_stubble';
+    tex[i * 2] = layers && layer in layers.index ? layers.index[layer] : -1;
+    tex[i * 2 + 1] = CARDS.has(name) ? 1 : 0;
+    if (tiles && s.tile in tiles.index) {
+      tile[i * 2] = tiles.index[s.tile];
+      tile[i * 2 + 1] = tiles.repeat[s.tile];
+    }
   });
-  const hide = { value: new Float32Array(hidden) };
+  const shared = {
+    partHidden: { value: new Float32Array(hidden) },
+    partTex: { value: tex },
+    partLayers: { value: layers ? layers.texture : null },
+    layerSize: { value: layers ? layers.size : 1 },
+    partTile: { value: tile },
+  };
   m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
   m.onBeforeCompile = (shader) => {
-    shader.uniforms.partHidden = hide;
+    Object.assign(shader.uniforms, shared);
     shader.uniforms.partColor = { value: colors };
     shader.uniforms.partSurface = { value: surfaces };
+    shader.uniforms.tileColor = { value: tiles ? tiles.color : null };
+    shader.uniforms.tileSurface = { value: tiles ? tiles.surface : null };
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>${PART_VERTEX}
-        uniform vec3 partColor[${PARTS}];
-        uniform vec2 partSurface[${PARTS}];
+      .replace('#include <common>', `#include <common>${PART_VERTEX(n)}
+        uniform vec3 partColor[${n}];
+        uniform vec2 partSurface[${n}];
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;
-        varying float vHair;
-        varying vec3 vHairPos;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-        int part = int(_part + 0.5);
+        varying vec2 vPartSurface;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
         vPartColor = partColor[part];
-        vPartSurface = partSurface[part];
-        vHair = part == ${PART.hair} || part == ${PART.beard} ? 1.0 : 0.0;
-        vHairPos = position;`)
+        vPartSurface = partSurface[part];`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
-    // hair and beards: vertex alpha says how far from the edge of the shell
-    // a point is; the outline is frayed with noise and strands are shaded
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>
+      .replace('#include <common>', `#include <common>${PART_FRAGMENT}${TILE_FRAGMENT}
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;
-        varying float vHair;
-        varying vec3 vHairPos;
-        float hairHash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }`)
+        varying vec2 vPartSurface;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
-        diffuseColor.rgb *= vPartColor;
-        if (vHair > 0.5) {
-          float hn = hairHash(floor(vHairPos * 420.0));
-          if (vColor.a < hn * 0.95 + 0.03) discard;
-          float strand = hairHash(floor(vHairPos * vec3(900.0, 260.0, 900.0)));
-          diffuseColor.rgb *= 0.78 + 0.4 * strand;
-        }
-        diffuseColor.a = 1.0;`)
-      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPartSurface.x;')
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPartSurface.y;');
+        diffuseColor.rgb *= vPartColor * partTexel().rgb;
+        diffuseColor.a = 1.0;
+        vec3 tileSurf = vec3(0.5, 0.5, -1.0);
+        if (vPartTile.x > -0.5) {
+          vec3 tileUv = vec3(vPartUv * vPartTile.y, vPartTile.x);
+          diffuseColor.rgb *= texture(tileColor, tileUv).rgb;
+          tileSurf = texture(tileSurface, tileUv).rgb;
+        }`)
+      .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
+          : clamp(tileSurf.z * vPartSurface.x, 0.04, 1.0);`)
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPartSurface.y;')
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        if (tileSurf.z >= 0.0) {
+          mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);
+          normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
+        }`);
   };
   m.customProgramCacheKey = () => 'soldier';
-  // shadows: hidden parts cast none either
+  // shadows: hidden parts cast none, cards only where they are not see-through
   const depth = new THREE.MeshDepthMaterial();
   depth.onBeforeCompile = (shader) => {
-    shader.uniforms.partHidden = hide;
+    Object.assign(shader.uniforms, shared);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>${PART_VERTEX}`)
+      .replace('#include <common>', `#include <common>${PART_VERTEX(n)}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>${PART_FRAGMENT}`)
+      .replace('#include <alphatest_fragment>', '#include <alphatest_fragment>\n  partTexel();');
   };
   depth.customProgramCacheKey = () => 'soldier-depth';
   m.userData.depth = depth;
@@ -318,11 +456,12 @@ export class SkinnedHuman {
       if (m) this.lod[+m[1]] = o;
     });
     this.addHelmet(spec, props);
-    // hoods and closed helmets hide the hair
-    const hidden = new Array(PARTS).fill(0);
-    if (!spec.beard) hidden[PART.beard] = 1;
-    if (this.helmet) hidden[PART.hair] = 1;
-    const mat = soldierMat(spec, hidden);
+    // beards: none, a moustache or a full beard; helmets hide the hair
+    const hide = new Set();
+    if (spec.beard !== 'full') hide.add('Beard');
+    if (!spec.beard) hide.add('Moustache');
+    if (this.helmet) hide.add('Hair');
+    const mat = soldierMat(spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
     // the levels of detail share one skeleton: one bone update and one bone
     // texture per soldier
     const shared = this.lod[0].skeleton;

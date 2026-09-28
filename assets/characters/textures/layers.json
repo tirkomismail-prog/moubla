@@ -1,0 +1,62 @@
+{
+ "size": 1024,
+ "layers": {
+  "skin": [
+   "skin.webp",
+   null
+  ],
+  "skin_stubble": [
+   "skin_stubble.webp",
+   null
+  ],
+  "hair": [
+   "hair.webp",
+   "hair_alpha.webp"
+  ],
+  "beard": [
+   "beard.webp",
+   "beard_alpha.webp"
+  ],
+  "face": [
+   "face.webp",
+   "face_alpha.webp"
+  ]
+ },
+ "tiles": {
+  "size": 512,
+  "layers": {
+   "wool": [
+    "tile_wool.webp",
+    "tile_wool_surface.webp"
+   ],
+   "quilted": [
+    "tile_quilted.webp",
+    "tile_quilted_surface.webp"
+   ],
+   "leather": [
+    "tile_leather.webp",
+    "tile_leather_surface.webp"
+   ],
+   "mail": [
+    "tile_mail.webp",
+    "tile_mail_surface.webp"
+   ],
+   "plate": [
+    "tile_plate.webp",
+    "tile_plate_surface.webp"
+   ],
+   "lamellar": [
+    "tile_lamellar.webp",
+    "tile_lamellar_surface.webp"
+   ]
+  },
+  "repeat": {
+   "wool": 4.545,
+   "quilted": 3.125,
+   "leather": 2.222,
+   "mail": 10.0,
+   "plate": 1.667,
+   "lamellar": 2.857
+  }
+ }
+}

@@ -1,5 +1,5 @@
-"""Clothes, hair and eyes for the soldier, built from the MakeHuman helper
-shells (tights, skirt) and from regions of the body mesh."""
+"""Clothes for the soldier, built from the MakeHuman helper shells (tights,
+skirt). The eyes, hair and beards are MakeHuman assets (mhassets.py)."""
 import math
 
 import bmesh
@@ -168,85 +168,12 @@ def make_belt(around, z_top, axis_y, width=0.042, segments=40):
     return obj
 
 
-def head_only(obj):
-    for g in list(obj.vertex_groups):
-        obj.vertex_groups.remove(g)
-    g = obj.vertex_groups.new(name='head')
-    g.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
-
-
-def color_layer(obj, fn):
-    me = obj.data
-    attr = me.color_attributes.get('Col') or me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
-    me.color_attributes.active_color = attr
-    for v in me.vertices:
-        c = fn(v)
-        attr.data[v.index].color = (c[0], c[1], c[2], 1.0)
-
-
-def edge_fade(obj, width):
-    """Store in the vertex colour alpha how far each vertex is from the open
-    edge of the mesh (0 at the edge, 1 deeper than `width`); the game uses it
-    to fray the outline of hair and beards."""
-    bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    dist = {v.index: (0.0 if v.is_boundary else math.inf) for v in bm.verts}
-    frontier = [v for v in bm.verts if v.is_boundary]
-    while frontier:
-        nxt = []
-        for v in frontier:
-            for e in v.link_edges:
-                o = e.other_vert(v)
-                d = dist[v.index] + e.calc_length()
-                if d < dist[o.index]:
-                    dist[o.index] = d
-                    nxt.append(o)
-        frontier = nxt
-    bm.free()
-    me = obj.data
-    attr = me.color_attributes.get('Col') or me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
-    me.color_attributes.active_color = attr
-    for v in me.vertices:
-        a = min(1.0, dist[v.index] / width) if dist[v.index] != math.inf else 1.0
-        attr.data[v.index].color = (1.0, 1.0, 1.0, a)
-
-
 def group_center(human, group):
     gi = human.vertex_groups[group].index
     pts = [v.co for v in human.data.vertices if any(g.group == gi and g.weight > 0.5 for g in v.groups)]
     c = sum(pts, Vector()) / len(pts)
     r = sum((p - c).length for p in pts) / len(pts)
     return c, r
-
-
-def make_eye(center, radius, name):
-    """An eyeball with sclera, iris and pupil painted in vertex colours."""
-    mesh = bpy.data.meshes.new(name)
-    bm = bmesh.new()
-    bmesh.ops.create_uvsphere(bm, u_segments=20, v_segments=14, radius=radius)
-    bm.to_mesh(mesh)
-    bm.free()
-    obj = bpy.data.objects.new(name, mesh)
-    bpy.context.collection.objects.link(obj)
-    obj.location = center
-    fwd = Vector((0, -1, 0))
-
-    def col(v):
-        d = v.co.normalized().dot(fwd)
-        if d > 0.93:
-            return (0.03, 0.02, 0.02)
-        if d > 0.8:
-            return (0.28, 0.2, 0.12)
-        return (0.86, 0.84, 0.8)
-
-    color_layer(obj, col)
-    H['shade_smooth'](obj)
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    bpy.ops.object.transform_apply(location=True)
-    obj.select_set(False)
-    head_only(obj)
-    return obj
 
 
 def build_all(human, rig, helpers):
@@ -296,97 +223,31 @@ def build_all(human, rig, helpers):
     parts['Skirt'] = skirt
     parts['Belt'] = make_belt([shirt, skirt], belt_top, axis_y)
 
-    lips, _ = group_center(human, 'lips')
-    eye_l, eye_r_rad = group_center(human, 'helper-l-eye')
-    eye_r, _ = group_center(human, 'helper-r-eye')
+    parts['Scalp'] = scalp(human)
+
+    for name, mat in [('Shirt', 'shirt'), ('Hose', 'hose'), ('Boots', 'boots'), ('Skirt', 'skirt'), ('Belt', 'belt')]:
+        H['set_material'](parts[name], mat)
+        H['shade_smooth'](parts[name])
+    return parts
+
+
+def scalp(human):
+    """The skin where hair grows on the head (to size the helmets)."""
+    eye_l, _ = group_center(human, 'helper-l-eye')
     ears = human.vertex_groups['ears'].index
+    top = human.vertex_groups['scalp'].index
 
-    scalp = human.vertex_groups['scalp'].index
-
-    def hair_region(v):
+    def region(v):
         groups = human.data.vertices[v.index].groups
         if any(g.group == ears and g.weight > 0.3 for g in groups):
             return False
-        if any(g.group == scalp and g.weight > 0.5 for g in groups):
+        if any(g.group == top and g.weight > 0.5 for g in groups):
             return True
         co = v.co
         # back and sides of the head down to the nape, behind the temples
         behind = co.y - (eye_l.y + 0.07)
         return behind > 0 and co.z > eye_l.z - 0.07 + max(0.0, 0.03 - behind) * 1.5
 
-    hair = H['extract'](human, ['body'], 'Hair', keep=hair_region)
-    H['offset'](hair, 0.005)
-    head_only(hair)
-    edge_fade(hair, 0.012)
-    parts['Hair'] = hair
-
-    def beard_region(v):
-        co = v.co
-        dy = co.y - lips.y  # 0 at the lips, growing towards the back of the head
-        dz = co.z - lips.z
-        if dy > 0.115 or dz > 0.028:
-            return False
-        if dz < -0.075 + 0.35 * max(0.0, dy - 0.05):
-            return False  # follow the jaw line, keep the neck bare
-        if abs(co.x) < 0.028 and abs(dz) < 0.012 and dy < 0.03:
-            return False  # the lips themselves
-        if dz > 0.012 and abs(co.x) < 0.016 and dy < -0.004:
-            return False  # nostrils
-        if dz > 0.012 and abs(co.x) > 0.05:
-            return False  # upper cheeks stay bare
-        return True
-
-    beard = H['extract'](human, ['body'], 'Beard', keep=beard_region)
-    H['offset'](beard, 0.0025)
-    head_only(beard)
-    edge_fade(beard, 0.01)
-    parts['Beard'] = beard
-
-    parts['EyeL'] = make_eye(eye_l, eye_r_rad * 1.02, 'EyeL')
-    parts['EyeR'] = make_eye(eye_r, eye_r_rad * 1.02, 'EyeR')
-
-    for name, mat in [('Shirt', 'shirt'), ('Hose', 'hose'), ('Boots', 'boots'), ('Skirt', 'skirt'), ('Belt', 'belt'),
-                      ('Hair', 'hair'), ('Beard', 'hair'), ('EyeL', 'eye'), ('EyeR', 'eye')]:
-        H['set_material'](parts[name], mat)
-        H['shade_smooth'](parts[name])
-    return parts
-
-
-def paint_face(body, human):
-    """Vertex colours that modulate the skin tone: lips, brows, cheeks."""
-    lips, _ = group_center(human, 'lips')
-    eye_l, _ = group_center(human, 'helper-l-eye')
-    lip_idx = set()
-    gi = body.vertex_groups['lips'].index if 'lips' in body.vertex_groups else None
-    if gi is not None:
-        for v in body.data.vertices:
-            if any(g.group == gi and g.weight > 0.5 for g in v.groups):
-                lip_idx.add(v.index)
-    nails = body.vertex_groups['fingernails'].index if 'fingernails' in body.vertex_groups else None
-
-    def col(v):
-        co = v.co
-        c = [1.0, 1.0, 1.0]
-        if v.index in lip_idx:
-            return (0.86, 0.62, 0.6)
-        if nails is not None and any(g.group == nails and g.weight > 0.5 for g in v.groups):
-            return (1.08, 1.0, 0.98)
-        # brows
-        bx = abs(co.x) - abs(eye_l.x)
-        bz = co.z - (eye_l.z + 0.022)
-        if co.y < eye_l.y + 0.035 and abs(bx) < 0.026 and abs(bz - bx * 0.12) < 0.0065:
-            k = 1 - abs(bx) / 0.026
-            return (1 - 0.55 * k, 1 - 0.6 * k, 1 - 0.62 * k)
-        # warmer cheeks, nose and ears
-        dc = math.hypot(abs(co.x) - 0.045, co.z - (lips.z + 0.03))
-        if co.y < eye_l.y + 0.045 and dc < 0.03:
-            k = 1 - dc / 0.03
-            c = [1.0, 1 - 0.07 * k, 1 - 0.07 * k]
-        # a little darker around the eyes
-        de = math.hypot(abs(co.x) - abs(eye_l.x), co.z - eye_l.z)
-        if co.y < eye_l.y + 0.045 and de < 0.024:
-            k = 1 - de / 0.024
-            c = [c[0] - 0.1 * k, c[1] - 0.12 * k, c[2] - 0.1 * k]
-        return tuple(c)
-
-    color_layer(body, col)
+    obj = H['extract'](human, ['body'], 'Scalp', keep=region)
+    H['offset'](obj, 0.005)
+    return obj

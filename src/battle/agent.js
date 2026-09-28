@@ -203,8 +203,11 @@ export class Agent {
       team2: colors.team2,
       skin: pickSkin(r1),
       hair: pickHair(r1),
-      beard: r1() < 0.45,
+      beard: r1() < 0.45 ? (r1() < 0.6 ? 'full' : 'moustache') : null,
+      stubble: r1() < 0.5,
       pants: ['#4a3a2a', '#3a3a44', '#5a4a3a', '#2e3a2a'][Math.floor(r1() * 4)],
+      // a chosen face (skin, hair, beard, stubble) instead of a random one
+      ...opts.appearance,
     };
     // realistic skinned body (medium/high graphics) or the procedural one
     spec.driverOnly = !!(battle.gfx && battle.gfx.standard && charactersReady());
