@@ -4,12 +4,15 @@ import * as THREE from 'three';
 import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
+import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
 
 const Q = (arm, hint) => armQuat(arm, hint);
 const HALF_PI = Math.PI / 2;
+// a rider's hip joints above the seat of a (realistic) saddle
+const SEAT_PELVIS = 0.1;
 
 // Build a pose from the arm direction and the desired direction of the held
 // item (blade). The wrist angle bends the item towards the arm axis.
@@ -257,7 +260,10 @@ export class Agent {
 
   makeHorse(itemId, colors) {
     const it = ITEMS[itemId];
-    const rig = buildHorse(it.coat, colors ? colors.team : '#777', !!it.barding);
+    const team = colors ? colors.team : '#777';
+    // the realistic horse with medium/high graphics, else the procedural one
+    const realistic = this.battle.gfx && this.battle.gfx.standard && horseReady();
+    const rig = realistic ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding }) : buildHorse(it.coat, team, !!it.barding);
     rig.root.rotation.order = 'YXZ';
     this.battle.scene.add(rig.root);
     return {
@@ -743,6 +749,7 @@ export class Agent {
       root.position.set(this.pos.x, this.pos.y + 0.12 * f, this.pos.z);
       root.rotation.y = this.yaw;
       root.rotation.x = -HALF_PI * f * (this.fallDir > 0 ? 1 : -0.95);
+      root.rotation.z = 0;
       r.legL.rotation.set(0, 0, 0);
       r.legR.rotation.set(0, 0, 0.1);
       r.armR.quaternion.slerp(POSE.lowered.q, Math.min(1, dt * 5));
@@ -753,30 +760,36 @@ export class Agent {
     if (this.horse) {
       const h = this.horse;
       const hr = h.rig;
-      const sp = Math.abs(h.speed);
-      h.phase += sp * dt * 1.25;
-      const amp = Math.min(0.75, sp * 0.085);
-      const ph = h.phase;
-      hr.legs[0].rotation.x = Math.sin(ph) * amp;
-      hr.legs[1].rotation.x = Math.sin(ph + 0.5) * amp;
-      hr.legs[2].rotation.x = Math.sin(ph + Math.PI) * amp;
-      hr.legs[3].rotation.x = Math.sin(ph + Math.PI + 0.5) * amp;
-      bob = Math.abs(Math.sin(ph)) * 0.08 * Math.min(1, sp / 6);
-      hr.body.position.y = bob;
-      hr.body.rotation.x = Math.sin(ph * 2) * 0.025 * Math.min(1, sp / 6);
-      hr.root.position.copy(this.pos);
-      hr.root.rotation.y = h.yaw;
-      root.position.set(this.pos.x, this.pos.y + 0.8 + bob, this.pos.z);
-      root.rotation.y = h.yaw;
-      root.rotation.x = 0;
+      if (hr.skinned) {
+        // sit on the saddle: it moves and tilts with the horse's back
+        hr.update(h, dt, this.battle);
+        const pelvis = this.body ? this.body.t.pelvisY : 0.92;
+        root.position.set(this.pos.x, this.pos.y + hr.seatY + hr.seatDY + SEAT_PELVIS - pelvis, this.pos.z);
+        root.rotation.set(hr.pitch, h.yaw, hr.roll);
+      } else {
+        const sp = Math.abs(h.speed);
+        h.phase += sp * dt * 1.25;
+        const amp = Math.min(0.75, sp * 0.085);
+        const ph = h.phase;
+        hr.legs[0].rotation.x = Math.sin(ph) * amp;
+        hr.legs[1].rotation.x = Math.sin(ph + 0.5) * amp;
+        hr.legs[2].rotation.x = Math.sin(ph + Math.PI) * amp;
+        hr.legs[3].rotation.x = Math.sin(ph + Math.PI + 0.5) * amp;
+        bob = Math.abs(Math.sin(ph)) * 0.08 * Math.min(1, sp / 6);
+        hr.body.position.y = bob;
+        hr.body.rotation.x = Math.sin(ph * 2) * 0.025 * Math.min(1, sp / 6);
+        hr.root.position.copy(this.pos);
+        hr.root.rotation.y = h.yaw;
+        root.position.set(this.pos.x, this.pos.y + 0.8 + bob, this.pos.z);
+        root.rotation.set(0, h.yaw, 0);
+      }
       r.hips.position.y = 0.92;
       r.legL.rotation.set(-1.15, 0, 0.42);
       r.legR.rotation.set(-1.15, 0, -0.42);
       twistBase = clamp(wrapAngle(this.aimYaw - h.yaw), -1.5, 1.5);
     } else {
       root.position.copy(this.pos);
-      root.rotation.y = this.yaw;
-      root.rotation.x = 0;
+      root.rotation.set(0, this.yaw, 0);
       const sp = Math.hypot(this.vel.x, this.vel.z);
       this.walkPhase += sp * dt * 2.4;
       const amp = Math.min(0.75, sp * 0.18);

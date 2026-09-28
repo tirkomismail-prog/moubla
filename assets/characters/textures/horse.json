@@ -1,0 +1,16 @@
+{
+ "size": 1024,
+ "layers": {
+  "coat": [
+   "horse_coat.webp",
+   "horse_coat_alpha.webp"
+  ],
+  "mane": [
+   "horse_mane.webp",
+   "horse_mane_alpha.webp"
+  ]
+ },
+ "normals": {
+  "coat": "horse_coat_normal.webp"
+ }
+}

@@ -1174,6 +1174,10 @@ export class Battle {
         h.pos.z = nz;
       } else h.speed = 0;
       h.pos.y = this.terrain.heightAt(h.pos.x, h.pos.z);
+      if (h.rig.skinned) {
+        h.rig.update(h, dt, this);
+        continue;
+      }
       h.phase += Math.abs(h.speed) * dt * 1.25;
       const amp = Math.min(0.75, Math.abs(h.speed) * 0.085);
       h.rig.legs.forEach((l, i) => {
@@ -1183,6 +1187,12 @@ export class Battle {
       h.rig.root.rotation.y = h.yaw;
     }
     for (const h of this.deadHorses) {
+      if (h.rig.skinned) {
+        // (also keeps its level of detail up to date once it lies still)
+        h.fallT = Math.min(1, h.fallT + dt * 1.8);
+        h.rig.update(h, dt, this);
+        continue;
+      }
       if (h.fallT >= 1) continue;
       h.fallT = Math.min(1, h.fallT + dt * 1.8);
       const f = h.fallT;
