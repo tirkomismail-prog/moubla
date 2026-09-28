@@ -58,6 +58,49 @@ const METAL = {
   '#b4bcc4': 1, // plate
 };
 
+// The textured look of the colours (src/battle/character.js itemMaterial): a
+// tileable material and the tint it is multiplied by. Other colours stay plain.
+const SURFACE = {
+  [STEEL]: ['plate', '#ffffff'],
+  [DARK_STEEL]: ['plate', '#9aa0a8'],
+  [BRIGHT_STEEL]: ['plate', '#ffffff'],
+  [BRASS]: ['plate', '#ffc668'],
+  '#8a9096': ['plate', '#d8dce0'],
+  [WOOD]: ['wood', '#ffffff'],
+  [DARK_WOOD]: ['wood', '#9a8070'],
+  '#a07a4a': ['wood', '#ffe8cc'],
+  '#8a6a3a': ['wood', '#f0d8b8'],
+  '#6b3a1a': ['wood', '#c8a080'],
+  [LEATHER]: ['leather', '#ffffff'],
+  [DARK_LEATHER]: ['leather', '#9a8a80'],
+};
+
+// Layer of each tileable material in the texture array (set when the
+// textures are loaded; without them everything stays plain).
+let tileIndex = {};
+
+export function setTileIndex(index) {
+  tileIndex = index;
+  cache.clear();
+}
+
+// Box-projected UVs in metres: along an item (Z) the texture runs lengthwise
+// (the grain of a shaft), on faces towards Z (shield boards) upwards.
+function boxUV(x, y, z, nx, ny, nz, out) {
+  const ax = Math.abs(nx);
+  const ay = Math.abs(ny);
+  const az = Math.abs(nz);
+  if (az >= ax && az >= ay) {
+    out[0] = y;
+    out[1] = x;
+  } else {
+    out[0] = z;
+    out[1] = ax >= ay ? y : x;
+  }
+  return out;
+}
+const _uv = [0, 0];
+
 export function pickSkin(rand) {
   return SKIN_TONES[Math.floor(rand() * SKIN_TONES.length)];
 }
@@ -90,10 +133,14 @@ export class GeoBuilder {
     this.nrm = [];
     this.col = [];
     this.met = [];
+    this.uv = [];
+    this.tile = [];
+    this.tint = [];
   }
 
-  // `r` is an Euler triple or a quaternion.
-  add(geo, color, p = [0, 0, 0], r = [0, 0, 0], s = [1, 1, 1]) {
+  // `r` is an Euler triple or a quaternion. `surface`: [tileable material,
+  // tint] for the textured look instead of the one of `color` (SURFACE).
+  add(geo, color, p = [0, 0, 0], r = [0, 0, 0], s = [1, 1, 1], surface = null) {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (r.isQuaternion) tmpQ.copy(r);
     else tmpQ.setFromEuler(tmpE.set(r[0], r[1], r[2]));
@@ -101,6 +148,9 @@ export class GeoBuilder {
     g.applyMatrix4(tmpM);
     const c = new THREE.Color(color);
     const metal = METAL[color] || 0;
+    const surf = surface || SURFACE[color];
+    const tile = surf && surf[0] in tileIndex ? tileIndex[surf[0]] : -1;
+    const tint = tile >= 0 ? new THREE.Color(surf[1]) : c;
     const pa = g.attributes.position.array;
     const na = g.attributes.normal.array;
     for (let i = 0; i < pa.length; i += 3) {
@@ -108,16 +158,20 @@ export class GeoBuilder {
       this.nrm.push(na[i], na[i + 1], na[i + 2]);
       this.col.push(c.r, c.g, c.b);
       this.met.push(metal);
+      boxUV(pa[i], pa[i + 1], pa[i + 2], na[i], na[i + 1], na[i + 2], _uv);
+      this.uv.push(_uv[0], _uv[1]);
+      this.tile.push(tile);
+      this.tint.push(tint.r, tint.g, tint.b);
     }
     return this;
   }
 
-  box(w, h, d, color, p, r, s) {
-    return this.add(new THREE.BoxGeometry(w, h, d), color, p, r, s);
+  box(w, h, d, color, p, r, s, surface) {
+    return this.add(new THREE.BoxGeometry(w, h, d), color, p, r, s, surface);
   }
 
-  cyl(rt, rb, h, seg, color, p, r, s) {
-    return this.add(new THREE.CylinderGeometry(rt, rb, h, seg), color, p, r, s);
+  cyl(rt, rb, h, seg, color, p, r, s, surface) {
+    return this.add(new THREE.CylinderGeometry(rt, rb, h, seg), color, p, r, s, surface);
   }
 
   sphere(rad, color, p, ws = 8, hs = 6, s, r) {
@@ -158,6 +212,9 @@ export class GeoBuilder {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('metal', new THREE.Float32BufferAttribute(this.met, 1));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('_tile', new THREE.Float32BufferAttribute(this.tile, 1));
+    g.setAttribute('tint', new THREE.Float32BufferAttribute(this.tint, 3));
     g.computeBoundingSphere();
     return g;
   }
@@ -451,6 +508,25 @@ export function buildHuman(spec) {
 
 const TIP = [Math.PI / 2, 0, 0];
 
+// A flat profile (points in the plane of the head: u outwards along +Y, v
+// along the item, +Z) extruded to `depth` across it (X), bevelled.
+const PROFILE_Q = new THREE.Quaternion().setFromRotationMatrix(
+  new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)),
+);
+function profile(b, points, depth, color, z, bevel = 0.003) {
+  const sh = new THREE.Shape(points.map(([u, v]) => new THREE.Vector2(u, v)));
+  const geo = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 1, curveSegments: 8 });
+  b.add(geo, color, [-depth / 2, 0, z], PROFILE_Q);
+}
+
+// A bearded axe head at height z of the haft (scale k).
+function axeHead(b, z, k, color = STEEL) {
+  const pts = [[0.012, 0.035], [0.07, 0.028], [0.15, 0.075], [0.165, 0.03], [0.162, -0.02], [0.148, -0.07], [0.118, -0.11],
+    [0.095, -0.075], [0.06, -0.04], [0.012, -0.035]].map(([u, v]) => [u * k, v * k]);
+  profile(b, pts, 0.01 * k, color, z);
+  b.cyl(0.03 * k, 0.03 * k, 0.075 * k, 10, DARK_STEEL, [0, 0, z], TIP); // socket round the haft
+}
+
 // A flat double-edged blade of length `len` starting at z0, with a point.
 function blade(b, z0, len, w, color = STEEL) {
   const body = len - w * 1.4;
@@ -469,9 +545,14 @@ export function weaponGeo(model) {
       case 'greatsword': {
         const len = model === 'sword' ? 0.72 : model === 'sword_long' ? 0.85 : 1.1;
         const grip = model === 'greatsword' ? 0.26 : 0.14;
-        b.cyl(0.018, 0.02, grip, 8, DARK_LEATHER, [0, 0, -grip / 2 + 0.04], TIP);
-        b.sphere(0.03, BRASS, [0, 0, -grip + 0.02], 8, 6, [1, 1, 0.8]);
-        b.box(model === 'greatsword' ? 0.26 : 0.18, 0.03, 0.03, BRASS, [0, 0, 0.06]);
+        const guard = model === 'greatsword' ? 0.14 : 0.095;
+        // leather grip with brass bands, a wheel pommel, a tapering guard
+        b.cyl(0.016, 0.018, grip, 10, DARK_LEATHER, [0, 0, -grip / 2 + 0.04], TIP);
+        for (const z of [0.035, -grip + 0.045]) b.cyl(0.019, 0.019, 0.008, 10, BRASS, [0, 0, z], TIP);
+        b.cyl(0.032, 0.032, 0.022, 16, STEEL, [0, 0, -grip + 0.02]);
+        b.cyl(0.018, 0.018, 0.026, 10, BRASS, [0, 0, -grip + 0.02]);
+        for (const x of [guard, -guard]) b.limb([0, 0, 0.058], [x, 0, 0.066], 0.013, 0.008, 6, STEEL, [1, 0.8]);
+        b.box(0.03, 0.022, 0.03, STEEL, [0, 0, 0.06]);
         blade(b, 0.075, len, model === 'greatsword' ? 0.055 : 0.048);
         break;
       }
@@ -500,17 +581,13 @@ export function weaponGeo(model) {
       case 'axe_war':
       case 'throwaxe': {
         const L = model === 'axe_war' ? 0.75 : model === 'throwaxe' ? 0.45 : 0.62;
-        b.cyl(0.022, 0.025, L, 8, WOOD, [0, 0, L / 2 - 0.08], TIP);
-        b.box(0.03, 0.06, 0.07, DARK_STEEL, [0, 0.01, L - 0.14]);
-        b.box(0.018, 0.18, 0.08, STEEL, [0, 0.1, L - 0.14], [0.12, 0, 0]);
-        b.box(0.02, 0.24, 0.035, BRIGHT_STEEL, [0, 0.15, L - 0.105], [0.05, 0, 0]);
+        b.cyl(0.02, 0.024, L, 8, WOOD, [0, 0, L / 2 - 0.08], TIP);
+        axeHead(b, L - 0.13, model === 'axe_war' ? 1.25 : model === 'throwaxe' ? 0.8 : 1.05);
         break;
       }
       case 'greataxe':
-        b.cyl(0.026, 0.03, 1.25, 8, WOOD, [0, 0, 0.45], TIP);
-        b.box(0.035, 0.08, 0.1, DARK_STEEL, [0, 0.01, 0.96]);
-        b.box(0.022, 0.32, 0.14, STEEL, [0, 0.15, 0.96], [0.1, 0, 0]);
-        b.box(0.024, 0.42, 0.045, BRIGHT_STEEL, [0, 0.2, 1.03], [0.05, 0, 0]);
+        b.cyl(0.024, 0.028, 1.25, 8, WOOD, [0, 0, 0.45], TIP);
+        axeHead(b, 0.98, 1.9);
         break;
       case 'spear':
       case 'pitchfork':
@@ -546,14 +623,34 @@ export function weaponGeo(model) {
         break;
       }
       case 'crossbow':
-        b.box(0.055, 0.06, 0.72, WOOD, [0, 0, 0.18]);
-        b.limb([0, 0.02, 0.5], [0.32, 0.02, 0.44], 0.022, 0.012, 6, DARK_STEEL);
-        b.limb([0, 0.02, 0.5], [-0.32, 0.02, 0.44], 0.022, 0.012, 6, DARK_STEEL);
+        // a shaped stock (deeper at the butt), steel prod, stirrup, nut
+        profile(b, [[-0.03, -0.18], [0.035, -0.18], [0.03, 0.2], [0.03, 0.53], [-0.02, 0.53], [-0.03, 0.2], [-0.06, 0.02], [-0.07, -0.16]], 0.05, WOOD, 0, 0.005);
+        b.limb([0, 0.02, 0.5], [0.32, 0.02, 0.44], 0.02, 0.011, 6, DARK_STEEL, [1, 0.6]);
+        b.limb([0, 0.02, 0.5], [-0.32, 0.02, 0.44], 0.02, 0.011, 6, DARK_STEEL, [1, 0.6]);
+        b.add(new THREE.TorusGeometry(0.06, 0.007, 4, 10, Math.PI), DARK_STEEL, [0, 0.02, 0.535], [Math.PI / 2, 0, 0]);
         b.box(0.64, 0.004, 0.004, '#dddddd', [0, 0.02, 0.44]);
-        b.box(0.02, 0.02, 0.35, '#dddddd', [0, 0.04, 0.4]);
+        b.cyl(0.012, 0.012, 0.03, 8, BRASS, [0, 0.035, 0.18], [0, 0, Math.PI / 2]); // nut
+        b.box(0.012, 0.012, 0.35, '#8a6a3a', [0, 0.042, 0.34]); // bolt
         break;
       default:
         b.box(0.04, 0.04, 0.8, STEEL, [0, 0, 0.4]);
+    }
+    return b.build();
+  });
+}
+
+// Arrows and bolts pointing along +Z (the tip a little ahead of the origin).
+export function arrowGeo(kind) {
+  return cached(`arrow:${kind}`, () => {
+    const b = new GeoBuilder();
+    const L = kind === 'bolt' ? 0.42 : 0.78;
+    const r = kind === 'bolt' ? 0.007 : 0.0055;
+    b.cyl(r, r, L, 6, '#8a6a3a', [0, 0, 0.05 - L / 2], TIP);
+    b.cyl(r * 1.3, r * 1.1, 0.03, 6, DARK_STEEL, [0, 0, 0.055], TIP); // socket
+    b.cone(r * 2.2, 0.06, 4, DARK_STEEL, [0, 0, 0.1], TIP, [1, 1, 0.8]); // bodkin
+    for (let k = 0; k < 3; k++) {
+      const a = (k * 2 * Math.PI) / 3;
+      b.box(0.0015, 0.016, kind === 'bolt' ? 0.07 : 0.12, '#e6e0cc', [Math.sin(a) * (r + 0.008), Math.cos(a) * (r + 0.008), 0.1 - L], [0, 0, -a]);
     }
     return b.build();
   });
@@ -594,42 +691,86 @@ const PAVISE = outline((s) => {
   s.quadraticCurveTo(-w, 0.43, -w + r, 0.43);
 });
 
-// A flat shield board with bevelled edges and a rim of `rim` colour.
-function plate(b, shape, face, rim, depth = 0.02) {
-  const opts = { depth, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.01, bevelSegments: 1, curveSegments: 10 };
-  b.add(new THREE.ExtrudeGeometry(shape, opts), face, [0, 0, -depth / 2]);
-  b.add(new THREE.ExtrudeGeometry(shape, { ...opts, depth: depth * 0.6 }), rim, [0, 0, -depth / 2 - 0.004], [0, 0, 0], [1.035, 1.03, 1]);
+// Shields are wooden boards (planks) painted in the team colours with a
+// simple charge in the second team colour, edged with rawhide and fitted
+// with iron (boss, rivets). Front towards +Z.
+const PLANKS = ['planks', '#e8d8c0'];
+const paint = (color) => ['paint', color];
+const FACE = 0.016; // front of a board of depth 0.02 with its bevel
+
+// A flat board of `shape` with bevelled edges, painted `color` in front,
+// and a rawhide rim.
+function board(b, shape, wood, color, depth = 0.02) {
+  const opts = { depth, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.01, bevelSegments: 1, curveSegments: 12 };
+  b.add(new THREE.ExtrudeGeometry(shape, opts), wood, [0, 0, -depth / 2], [0, 0, 0], [1, 1, 1], PLANKS);
+  if (color) b.add(new THREE.ShapeGeometry(shape, 12), color, [0, 0, depth / 2 + 0.0068], [0, 0, 0], [1, 1, 1], paint(color));
+  b.add(new THREE.ExtrudeGeometry(shape, { ...opts, depth: depth * 0.6 }), DARK_LEATHER, [0, 0, -depth / 2 - 0.004], [0, 0, 0], [1.035, 1.03, 1]);
 }
 
-export function shieldGeo(model, color, team) {
-  return cached(`sh:${model}:${color}:${team}`, () => {
+// A painted charge (a flat polygon) on the front of a board.
+function charge(b, points, color, z = FACE + 0.002) {
+  const sh = new THREE.Shape(points.map(([x, y]) => new THREE.Vector2(x, y)));
+  b.add(new THREE.ShapeGeometry(sh), color, [0, 0, z], [0, 0, 0], [1, 1, 1], paint(color));
+}
+
+// Iron rivets round the edge of a shape.
+function rivets(b, shape, count, inset = 0.93, z = FACE) {
+  for (const p of shape.getSpacedPoints(count).slice(0, count)) {
+    b.sphere(0.009, DARK_STEEL, [p.x * inset, p.y * inset, z], 6, 4, [1, 1, 0.6]);
+  }
+}
+
+// An iron boss: a dome on a flange.
+function boss(b, r, z = FACE) {
+  b.cyl(r * 1.35, r * 1.35, 0.006, 16, DARK_STEEL, [0, 0, z + 0.003], [Math.PI / 2, 0, 0]);
+  b.add(new THREE.SphereGeometry(r, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2), STEEL, [0, 0, z + 0.004], [Math.PI / 2, 0, 0], [1, 0.8, 1]);
+}
+
+export function shieldGeo(model, color, team, team2 = '#dddddd') {
+  return cached(`sh:${model}:${color}:${team}:${team2}`, () => {
     const b = new GeoBuilder();
     const S = [Math.PI / 2, 0, 0];
     switch (model) {
       case 'round': {
-        b.cyl(0.32, 0.32, 0.035, 24, color, [0, 0, 0], S);
-        b.cyl(0.3, 0.3, 0.04, 24, team, [0, 0, 0.002], S, [0.55, 1, 0.55]);
-        b.add(new THREE.TorusGeometry(0.318, 0.014, 5, 28), DARK_LEATHER, [0, 0, 0]); // rim
-        b.sphere(0.07, STEEL, [0, 0, 0.02], 12, 6, [1, 1, 0.6]);
+        // planks, painted in quarters (or half, on plain wooden shields)
+        const r = 0.32;
+        b.add(new THREE.CylinderGeometry(r, r, 0.02, 32), color, [0, 0, 0], S, [1, 1, 1], PLANKS);
+        const plain = color === '#8b5a2b';
+        for (let k = 0; k < 4; k++) {
+          if (plain && k % 2) continue;
+          const c = plain ? team : k % 2 ? team2 : team;
+          b.add(new THREE.CircleGeometry(r * 0.97, 12, (k * Math.PI) / 2, Math.PI / 2), c, [0, 0, 0.0105], [0, 0, 0], [1, 1, 1], paint(c));
+        }
+        b.add(new THREE.TorusGeometry(r - 0.002, 0.012, 5, 36), DARK_LEATHER, [0, 0, 0]); // rawhide rim
+        boss(b, 0.065, 0.01);
+        b.box(0.03, 0.34, 0.025, DARK_WOOD, [0, 0, -0.022]); // grip bar
         break;
       }
-      case 'kite':
-        plate(b, KITE, team, DARK_LEATHER);
-        b.box(0.05, 0.86, 0.012, color, [0, -0.06, 0.024]);
-        b.box(0.36, 0.05, 0.012, color, [0, 0.2, 0.024]);
-        b.sphere(0.05, STEEL, [0, 0.2, 0.026], 10, 5, [1, 1, 0.5]);
+      case 'kite': {
+        board(b, KITE, WOOD, team);
+        charge(b, [[-0.025, 0.42], [0.025, 0.42], [0.025, -0.5], [-0.025, -0.5]], team2); // a cross
+        charge(b, [[-0.19, 0.225], [0.19, 0.225], [0.19, 0.175], [-0.19, 0.175]], team2);
+        boss(b, 0.04);
+        rivets(b, KITE, 16);
         break;
-      case 'heater':
-        plate(b, HEATER, team, DARK_LEATHER);
-        b.box(0.44, 0.06, 0.012, color, [0, 0.12, 0.024]);
-        b.box(0.06, 0.38, 0.012, color, [0, -0.08, 0.024]);
+      }
+      case 'heater': {
+        board(b, HEATER, WOOD, team);
+        // a chevron
+        charge(b, [[0, 0.16], [0.235, -0.07], [0.235, 0.0], [0, 0.23], [-0.235, 0.0], [-0.235, -0.07]], team2);
+        rivets(b, HEATER, 14);
         break;
-      case 'pavise':
-        plate(b, PAVISE, color, DARK_STEEL, 0.035);
-        b.box(0.2, 0.98, 0.03, team, [0, -0.1, 0.025]);
+      }
+      case 'pavise': {
+        board(b, PAVISE, WOOD, color, 0.035);
+        // a central ridge painted in the team colour, with a stripe
+        b.box(0.2, 1.0, 0.03, team, [0, -0.1, 0.02], [0, 0, 0], [1, 1, 1], paint(team));
+        b.box(0.06, 1.0, 0.032, team2, [0, -0.1, 0.022], [0, 0, 0], [1, 1, 1], paint(team2));
+        rivets(b, PAVISE, 18, 0.95, 0.026);
         break;
+      }
       default:
-        b.box(0.5, 0.6, 0.04, color, [0, 0, 0]);
+        b.box(0.5, 0.6, 0.04, color, [0, 0, 0], [0, 0, 0], [1, 1, 1], PLANKS);
     }
     return b.build();
   });

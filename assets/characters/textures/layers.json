@@ -52,6 +52,18 @@
    "fur": [
     "tile_fur.webp",
     "tile_fur_surface.webp"
+   ],
+   "wood": [
+    "tile_wood.webp",
+    "tile_wood_surface.webp"
+   ],
+   "planks": [
+    "tile_planks.webp",
+    "tile_planks_surface.webp"
+   ],
+   "paint": [
+    "tile_paint.webp",
+    "tile_paint_surface.webp"
    ]
   },
   "repeat": {
@@ -61,7 +73,10 @@
    "mail": 10.0,
    "plate": 1.667,
    "lamellar": 2.857,
-   "fur": 5.0
+   "fur": 5.0,
+   "wood": 2.857,
+   "planks": 1.429,
+   "paint": 2.0
   }
  }
 }

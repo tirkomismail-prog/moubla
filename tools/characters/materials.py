@@ -1,7 +1,8 @@
-"""Tileable surface textures for the clothes, armour and helmets (CC0, from
-ambientCG and Poly Haven), see assets/characters/CREDITS.md. The game picks
-a material for each garment by the soldier's armour
-(src/battle/character.js); the helmets name theirs per vertex (helmets.py)."""
+"""Tileable surface textures for the clothes, armour, helmets, weapons and
+shields (CC0, from ambientCG and Poly Haven), see
+assets/characters/CREDITS.md. The game picks a material for each garment by
+the soldier's armour (src/battle/character.js); the helmets name theirs per
+vertex (helmets.py), the weapons and shields per colour (src/battle/models.js)."""
 import os
 import urllib.request
 import zipfile
@@ -17,7 +18,12 @@ TILES = {
     'plate': ('ambientcg', 'Metal038', 0.6, 0.5),
     'lamellar': ('ambientcg', 'Metal039', 0.35, 0.4),
     'fur': ('polyhaven', 'curly_teddy_natural', 0.2, 0.3),
+    'wood': ('ambientcg', 'Wood060', 0.35, 0.18),
+    'planks': ('ambientcg', 'Planks039', 0.7, 0.3),
+    'paint': ('ambientcg', 'PaintedWood003', 0.5, 0.6),
 }
+# made grey (the game paints them in the team colours)
+GREY = {'paint'}
 TILE_SIZE = 512
 
 URLS = {
@@ -95,6 +101,8 @@ def write_tiles(cache, out_dir):
             # gaps between the rings of mail: the dark padding underneath
             dark = opacity.point(lambda x: int(60 + 195 * x / 255))
             color = ImageChops.multiply(color, Image.merge('RGB', (dark, dark, dark)))
+        if name in GREY:
+            color = color.convert('L').convert('RGB')
         color = scale_albedo(color, mean)
         normal = img('normal', 'RGB')
         rough = img('rough', 'L') or Image.new('L', (size, size), 200)

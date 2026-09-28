@@ -1,44 +1,16 @@
 // Arrows, bolts and thrown weapons with simple ballistic physics.
 import * as THREE from 'three';
-import { weaponGeo } from './models.js';
+import { weaponGeo, arrowGeo } from './models.js';
+import { itemMaterial } from './character.js';
 import { computeDamage } from './combat.js';
 
 const G = 9.8;
 const MAX_STUCK = 160;
 
-function arrowGeo(kind) {
+function geoFor(kind) {
   if (kind === 'javelin') return weaponGeo('javelin');
   if (kind === 'throwaxe') return weaponGeo('throwaxe');
-  const g = new THREE.BufferGeometry();
-  const b = [];
-  const n = [];
-  const c = [];
-  const L = kind === 'bolt' ? 0.45 : 0.8;
-  const box = (w, h, d, z, col) => {
-    const bg = new THREE.BoxGeometry(w, h, d).toNonIndexed();
-    bg.translate(0, 0, z);
-    const cc = new THREE.Color(col);
-    const pa = bg.attributes.position.array;
-    const na = bg.attributes.normal.array;
-    for (let i = 0; i < pa.length; i++) {
-      b.push(pa[i]);
-      n.push(na[i]);
-    }
-    for (let i = 0; i < pa.length / 3; i++) c.push(cc.r, cc.g, cc.b);
-  };
-  box(0.02, 0.02, L, -L / 2 + 0.05, '#8a6a3a');
-  box(0.035, 0.035, 0.08, 0.06, '#555');
-  box(0.005, 0.06, 0.12, -L + 0.12, '#eee');
-  box(0.06, 0.005, 0.12, -L + 0.12, '#eee');
-  g.setAttribute('position', new THREE.Float32BufferAttribute(b, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(n, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
-  return g;
-}
-
-const GEOS = {};
-function geoFor(kind) {
-  return (GEOS[kind] ||= arrowGeo(kind));
+  return arrowGeo(kind);
 }
 
 // distance between segments p1-q1 and p2-q2, returns [dist, s] where s is the
@@ -89,9 +61,11 @@ export class Projectiles {
 
   spawn(o) {
     const kind = o.model === 'javelin' ? 'javelin' : o.model === 'throwaxe' ? 'throwaxe' : o.model === 'crossbow' ? 'bolt' : 'arrow';
-    // drawn instanced with the other carried items (props.js)
-    const m = this.battle.props.add(geoFor(kind));
-    this.battle.scene.add(m);
+    // drawn instanced with the other carried items (props.js), textured
+    // with the realistic soldiers
+    const b = this.battle;
+    const m = b.props.add(geoFor(kind), b.gfx && b.gfx.standard ? itemMaterial() : null);
+    b.scene.add(m);
     const p = { ...o, kind, mesh: m, age: 0, speed0: o.vel.length(), spin: kind === 'throwaxe' ? 0 : null };
     // defenders shoot over their own parapet
     p.fromFort = !!(o.owner && this.battle.terrain.fort && this.battle.terrain.level(o.owner.pos.x, o.owner.pos.z) === 1);

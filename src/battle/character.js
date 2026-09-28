@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { helmetGeo } from './models.js';
+import { helmetGeo, setTileIndex } from './models.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
 const state = { status: 'idle', promise: null, t: null };
@@ -27,6 +27,8 @@ export function loadCharacters() {
       const tex = assets.textures;
       t.layers = tex ? await decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null;
       t.tiles = tex && tex.tiles ? await decodeTiles(tex.tiles) : null;
+      // weapons and shields name their materials by these layers
+      if (t.tiles) setTileIndex(t.tiles.index);
       state.t = t;
       state.status = 'ready';
       return true;
@@ -171,7 +173,12 @@ function prepare(gltf) {
     if (o.isMesh && !o.isSkinnedMesh && o.name.startsWith('Helmet_')) loose.push(o);
   });
   for (const o of loose) {
-    t.helmets[o.name.slice('Helmet_'.length)] = o.geometry.clone().applyMatrix4(o.matrixWorld).applyMatrix4(t.headRestInv);
+    const g = o.geometry.clone().applyMatrix4(o.matrixWorld).applyMatrix4(t.headRestInv);
+    // the attributes of itemMaterial: tint (the colour) and metal
+    g.setAttribute('tint', g.getAttribute('color'));
+    g.setAttribute('metal', g.getAttribute('_metal'));
+    g.deleteAttribute('_metal');
+    t.helmets[o.name.slice('Helmet_'.length)] = g;
     o.removeFromParent();
   }
   // phase of each walking clip at which the left foot is furthest forward,
@@ -486,21 +493,22 @@ function soldierMat(spec, hidden) {
 }
 
 // ---------------------------------------------------------------------------
-// Carried items with tileable materials (the helmets): each vertex names its
-// material (_tile, -1: plain colour) and metalness (_metal); the colour is a
-// tint. Drawn instanced by props.js, so one material for all of them.
+// Carried items with tileable materials (helmets, weapons, shields): each
+// vertex names its material (_tile, -1: plain colour), the tint of the
+// texture and its metalness (metal). Drawn instanced by props.js, so one
+// material for all of them. Null until the textures are loaded.
 // ---------------------------------------------------------------------------
 
 let itemMat = null;
 
-function itemMaterial() {
+export function itemMaterial() {
   if (itemMat) return itemMat;
-  const tiles = state.t.tiles;
+  const tiles = state.t && state.t.tiles;
+  if (!tiles) return null;
   const names = tiles ? Object.keys(tiles.index) : [];
   const repeat = new Float32Array(Math.max(1, names.length)).fill(1);
   names.forEach((n, i) => (repeat[i] = tiles.repeat[n]));
   itemMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.7, metalness: 0, vertexColors: true });
-  if (!tiles) return itemMat;
   itemMat.onBeforeCompile = (shader) => {
     shader.uniforms.tileColor = { value: tiles.color };
     shader.uniforms.tileSurface = { value: tiles.surface };
@@ -508,26 +516,30 @@ function itemMaterial() {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float _tile;
-        attribute float _metal;
+        attribute float metal;
+        attribute vec3 tint;
         varying float vTile;
         varying float vMetal;
+        varying vec3 vTint;
         varying vec2 vTileUv;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vTile = _tile;
-        vMetal = _metal;
+        vMetal = metal;
+        vTint = tint;
         vTileUv = uv;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${TILE_FRAGMENT}
         uniform float tileRepeat[${repeat.length}];
         varying float vTile;
         varying float vMetal;
+        varying vec3 vTint;
         varying vec2 vTileUv;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
         vec2 tileUv = vTileUv;
         if (vTile > -0.5) {
           tileUv *= tileRepeat[int(vTile + 0.5)];
-          diffuseColor.rgb *= texture(tileColor, vec3(tileUv, vTile)).rgb;
+          diffuseColor.rgb = vTint * texture(tileColor, vec3(tileUv, vTile)).rgb;
           tileSurf = texture(tileSurface, vec3(tileUv, vTile)).rgb;
         }`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0);')
@@ -561,6 +573,7 @@ function helmetFor(look, team) {
     for (let i = 0; i < col.count; i++) {
       if (flags.getX(i) > 0.5) col.setXYZ(i, c.r * col.getX(i), c.g * col.getY(i), c.b * col.getZ(i));
     }
+    geo.setAttribute('tint', col);
   }
   helmetCache.set(key, geo);
   return geo;

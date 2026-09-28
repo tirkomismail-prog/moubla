@@ -5,7 +5,7 @@ import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
 import { T, allowedDir } from './combat.js';
-import { SkinnedHuman, charactersReady } from './character.js';
+import { SkinnedHuman, charactersReady, itemMaterial } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
 
 const Q = (arm, hint) => armQuat(arm, hint);
@@ -293,20 +293,22 @@ export class Agent {
     const r = this.rig;
     const props = this.battle.props;
     for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh]) if (m) props.remove(m);
+    // realistic soldiers carry textured items
+    const mat = this.body ? itemMaterial() : null;
     const w = this.weapon;
-    this.weaponMesh = props.add(weaponGeo(w.model));
+    this.weaponMesh = props.add(weaponGeo(w.model), mat);
     if (this.body) this.body.attach(this.weaponMesh, w.cls === 'bow' ? 'l' : 'r');
     else if (w.cls === 'bow') r.handL.add(this.weaponMesh);
     else r.wristR.add(this.weaponMesh);
     if (this.shield) {
       const it = ITEMS[this.shield];
-      this.shieldMesh = props.add(shieldGeo(it.model, it.color, this.colors.team));
+      this.shieldMesh = props.add(shieldGeo(it.model, it.color, this.colors.team, this.colors.team2), mat);
       r.shieldMount.add(this.shieldMesh);
     }
     // show an inactive bow / crossbow on the back
     const other = this.weapons.find((id, i) => i !== this.wi && (ITEMS[id].cls === 'bow' || ITEMS[id].cls === 'crossbow'));
     if (other) {
-      this.backMesh = props.add(weaponGeo(ITEMS[other].model));
+      this.backMesh = props.add(weaponGeo(ITEMS[other].model), mat);
       this.backMesh.rotation.set(0, HALF_PI, 0.6);
       this.backMesh.position.set(0, 0, -0.04);
       r.backMount.add(this.backMesh);
