@@ -48,6 +48,10 @@
    "lamellar": [
     "tile_lamellar.webp",
     "tile_lamellar_surface.webp"
+   ],
+   "fur": [
+    "tile_fur.webp",
+    "tile_fur_surface.webp"
    ]
   },
   "repeat": {
@@ -56,7 +60,8 @@
    "leather": 2.222,
    "mail": 10.0,
    "plate": 1.667,
-   "lamellar": 2.857
+   "lamellar": 2.857,
+   "fur": 5.0
   }
  }
 }

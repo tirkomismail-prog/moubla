@@ -10,8 +10,8 @@ The body, its skeleton and skin weights and the helper shells used for the
 clothes come from MakeHuman / MPFB; the skin texture, eyes, eyebrows,
 eyelashes, hair and beards from MakeHuman asset packs and the tileable cloth
 and armour textures from ambientCG (all CC0, downloaded into --cache, see
-mhassets.py and materials.py). The clothes, their ambient occlusion and three
-levels of detail are generated here; each level is exported as one mesh whose vertices name their
+mhassets.py and materials.py). The clothes, helmets, ambient occlusion and
+three levels of detail are generated here; each level is exported as one mesh whose vertices name their
 part (_PART attribute), and the textures as layers next to the model.
 """
 import argparse
@@ -29,9 +29,11 @@ from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import garments  # noqa: E402
+import helmets  # noqa: E402
 import materials  # noqa: E402
 import mhassets  # noqa: E402
 import mocap  # noqa: E402
+import outfits  # noqa: E402
 
 ARGS = None
 
@@ -246,12 +248,22 @@ def store_fit(rig, human, scalp):
     rig['eye_mid'] = to_gltf((le + re) / 2)
 
 
-PARTS = ['Body', 'Shirt', 'Skirt', 'Hose', 'Boots', 'Belt', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
+# the head and hands (in every soldier) and the garments (by outfit)
+COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
+PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
+
+
+def part_of(name):
+    """'Belt-Tunic_LOD1' -> 'Belt'"""
+    return name.split('_LOD')[0].split('-')[0]
+
+
 # small parts left out of the far models: {part: first level without it}
 DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
 # dense parts simplified already in the near model (the texture carries the detail)
-NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5}
+NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5,
+              'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7}
 
 
 def merge_parts(objs, name):
@@ -259,7 +271,7 @@ def merge_parts(objs, name):
     number of its part (_PART) so the game can colour it from a palette."""
     for o in objs:
         me = o.data
-        pid = PART_IDS[o.name.split('_LOD')[0]]
+        pid = PART_IDS[part_of(o.name)]
         attr = me.attributes.get('_PART') or me.attributes.new('_PART', 'FLOAT', 'POINT')
         for i in range(len(me.vertices)):
             attr.data[i].value = float(pid)
@@ -290,7 +302,6 @@ def merge_parts(objs, name):
     return merged
 
 
-GARMENTS = ('Shirt', 'Skirt', 'Hose', 'Boots', 'Belt')
 
 
 def world_uvs(obj):
@@ -320,7 +331,8 @@ def world_uvs(obj):
 
 def bake_ao(objs, distance=0.12, floor=0.4):
     """Ambient occlusion in the vertex colours (folds, the neck under the
-    chin, the skin under the hair), from `floor` in closed corners to 1."""
+    chin, the skin under the hair), from `floor` in closed corners to 1.
+    Everything visible in the scene casts it."""
     scene = bpy.context.scene
     scene.render.engine = 'CYCLES'
     scene.cycles.device = 'CPU'
@@ -362,16 +374,21 @@ def build():
     mhassets.fetch(ARGS.cache)
     fitted = mhassets.fit(hs, human, ARGS.cache)
 
-    parts = garments.build_all(human, rig, {
+    helpers = {
         'extract': extract, 'offset': offset, 'smooth_verts': smooth_verts, 'set_material': set_material,
         'shade_smooth': shade_smooth, 'bone_index': bone_index, 'dominant_bone': dominant_bone,
         'group_weight': group_weight, 'copy_object': copy_object,
-    })
-    scalp = parts.pop('Scalp')
+    }
+    basic = garments.build_all(human, rig, helpers)
+    scalp = basic.pop('Scalp')
+    pieces = outfits.build_all(human, rig, helpers)
+    pieces['Hose'] = basic.pop('Hose')
+    pieces['Boots'] = basic.pop('Boots')
 
-    # the visible skin: head, neck and hands (everything under the clothes is removed)
+    # the visible skin: head, neck and hands (everything under the clothes is
+    # removed; the basic tight clothes are what every outfit covers at least)
     body = extract(human, ['body'], 'Body')
-    covers = [parts[k] for k in ('Shirt', 'Hose', 'Boots', 'Skirt', 'Belt')]
+    covers = [basic['Shirt'], basic['Skirt'], basic['Belt'], pieces['Hose'], pieces['Boots']]
     L = garments.L
     # keep the skin where clothes meet or open up (waist, neck): if they part
     # in some pose, skin shows instead of a hole
@@ -379,44 +396,65 @@ def build():
     set_material(body, 'skin')
     shade_smooth(body)
     store_fit(rig, human, scalp)
-    bpy.data.objects.remove(scalp)
-    bpy.data.objects.remove(human)
-    parts['Body'] = body
-    parts.update(fitted)
-    for name in GARMENTS:
-        world_uvs(parts[name])
-    for name, obj in parts.items():
+    helmet_objs = helmets.build_all(human, rig, garments.L)
+    for obj in [scalp, human] + list(basic.values()):
+        bpy.data.objects.remove(obj)
+    common = {'Body': body, **fitted}
+    for name, obj in pieces.items():
+        world_uvs(obj)
+    for name, obj in common.items():
         mhassets.place_uvs(obj, name)
     for name, ratio in NEAR_RATIO.items():
-        near = decimate(parts[name], ratio, name + '_near')
-        bpy.data.objects.remove(parts[name])
+        group = common if name in common else pieces
+        near = decimate(group[name], ratio, name + '_near')
+        bpy.data.objects.remove(group[name])
         near.name = near.data.name = name
-        parts[name] = near
+        group[name] = near
 
-    for name, obj in parts.items():
+    everything = {**common, **pieces}
+    for name, obj in everything.items():
         obj.parent = rig
         if not any(m.type == 'ARMATURE' for m in obj.modifiers):
             m = obj.modifiers.new('Armature', 'ARMATURE')
             m.object = rig
-        print(f'{name:14s} {tri_count(obj):6d} tris')
-    bake_ao(list(parts.values()))
+        print(f'{name:16s} {tri_count(obj):6d} tris')
+    # ambient occlusion: the head and hands with the legs' clothes; each
+    # garment with the head and hands only (outfits combine them freely)
+    for obj in pieces.values():
+        obj.hide_render = True
+    for name in ('Hose', 'Boots'):
+        pieces[name].hide_render = False
+    bake_ao(list(common.values()))
+    for name, obj in pieces.items():
+        for other in pieces.values():
+            other.hide_render = other is not obj
+        bake_ao([obj])
+    for obj in everything.values():
+        obj.hide_render = False
+    for obj in helmet_objs.values():
+        obj.hide_render = False
 
-    # one mesh per level of detail, so a soldier is a single draw call; each
-    # vertex remembers which part it belongs to (_PART) for the game's palette.
-    # Small parts are copied as they are; the eyes are left out far away.
-    meshes = {}
+    # levels of detail. The head and hands of each level are one mesh
+    # (Soldier_LOD<n>), each garment another (Piece_<name>_LOD<n>); the game
+    # joins them into one mesh per outfit, so a soldier is a single draw
+    # call. Each vertex remembers which part it belongs to (_PART) for the
+    # game's palette. Small parts are copied as they are, some are left out
+    # far away.
+    levels = {0: dict(everything)}
     for level, ratio in ((1, ARGS.lod1), (2, ARGS.lod2)):
-        objs = []
-        for name, obj in parts.items():
+        levels[level] = {}
+        for name, obj in everything.items():
             if level >= DROP.get(name, 3):
                 continue
             lod = f'{name}_LOD{level}'
-            objs.append(copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod))
-        meshes[f'Soldier_LOD{level}'] = objs
-    meshes['Soldier_LOD0'] = list(parts.values())
-    parts = {name: merge_parts(objs, name) for name, objs in sorted(meshes.items())}
+            levels[level][name] = copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod)
+    parts = {}
+    for level, objs in levels.items():
+        parts[f'Soldier_LOD{level}'] = merge_parts([o for n, o in objs.items() if n in common], f'Soldier_LOD{level}')
+        for name in pieces:
+            parts[f'Piece_{name}_LOD{level}'] = merge_parts([objs[name]], f'Piece_{name}_LOD{level}')
     for name, obj in parts.items():
-        print(f'{name:14s} {tri_count(obj):6d} tris')
+        print(f'{name:24s} {tri_count(obj):6d} tris')
 
     if ARGS.bvh:
         mocap.add_clips(rig, ARGS.bvh)
@@ -430,7 +468,7 @@ def build():
         json.dump({
             'size': mhassets.LAYER_SIZE, 'layers': dict(zip(mhassets.LAYERS, files)),
             'tiles': {'size': materials.TILE_SIZE, 'layers': tiles,
-                      'repeat': {name: round(1 / metres, 3) for name, (_, metres, _) in materials.TILES.items()}},
+                      'repeat': {name: round(1 / metres, 3) for name, (_, _, metres, _) in materials.TILES.items()}},
         }, f, indent=1)
     rig['parts'] = PARTS
     rig['part_layers'] = {part: layer for part, (layer, _) in mhassets.PLACE.items()}
@@ -438,7 +476,7 @@ def build():
     os.makedirs(os.path.dirname(os.path.abspath(ARGS.out)), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
     rig.select_set(True)
-    for obj in parts.values():
+    for obj in list(parts.values()) + list(helmet_objs.values()):
         obj.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.export_scene.gltf(

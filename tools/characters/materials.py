@@ -1,41 +1,59 @@
-"""Tileable surface textures for the clothes and armour (CC0, ambientCG),
-see assets/characters/CREDITS.md. The game picks a material for each
-garment by the soldier's armour (src/battle/character.js)."""
+"""Tileable surface textures for the clothes, armour and helmets (CC0, from
+ambientCG and Poly Haven), see assets/characters/CREDITS.md. The game picks
+a material for each garment by the soldier's armour
+(src/battle/character.js); the helmets name theirs per vertex (helmets.py)."""
 import os
 import urllib.request
 import zipfile
 
-URL = 'https://ambientcg.com/get?file={id}_1K-JPG.zip'
-
-# material -> (ambientCG asset, metres covered by one repeat of the texture,
+# material -> (source, asset, metres covered by one repeat of the texture,
 # mean albedo (linear) the colour is scaled to: light for cloth the game
 # tints, like real steel for the metals)
 TILES = {
-    'wool': ('Fabric062', 0.22, 0.75),
-    'quilted': ('Fabric008', 0.32, 0.5),
-    'leather': ('Leather014', 0.45, 0.1),
-    'mail': ('Chainmail004', 0.1, 0.35),
-    'plate': ('Metal038', 0.6, 0.5),
-    'lamellar': ('Metal039', 0.35, 0.4),
+    'wool': ('ambientcg', 'Fabric062', 0.22, 0.75),
+    'quilted': ('ambientcg', 'Fabric008', 0.32, 0.5),
+    'leather': ('ambientcg', 'Leather014', 0.45, 0.1),
+    'mail': ('ambientcg', 'Chainmail004', 0.1, 0.35),
+    'plate': ('ambientcg', 'Metal038', 0.6, 0.5),
+    'lamellar': ('ambientcg', 'Metal039', 0.35, 0.4),
+    'fur': ('polyhaven', 'curly_teddy_natural', 0.2, 0.3),
 }
 TILE_SIZE = 512
 
+URLS = {
+    'ambientcg': ['https://ambientcg.com/get?file={id}_1K-JPG.zip'],
+    'polyhaven': ['https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/{id}/{id}_{map}_1k.jpg'],
+}
+# file name of each map in the downloaded folder
+FILES = {
+    'ambientcg': {'color': '{id}_1K-JPG_Color.jpg', 'normal': '{id}_1K-JPG_NormalGL.jpg',
+                  'rough': '{id}_1K-JPG_Roughness.jpg', 'opacity': '{id}_1K-JPG_Opacity.jpg'},
+    'polyhaven': {'color': '{id}_diff_1k.jpg', 'normal': '{id}_nor_gl_1k.jpg', 'rough': '{id}_rough_1k.jpg'},
+}
+
+
+def download(url, path):
+    print('downloading', url)
+    req = urllib.request.Request(url, headers={'User-Agent': 'moubla-build'})
+    with urllib.request.urlopen(req) as r, open(path, 'wb') as f:
+        f.write(r.read())
+
 
 def fetch(cache):
-    for asset, _, _ in TILES.values():
-        folder = os.path.join(cache, 'ambientcg', asset)
+    for source, asset, _, _ in TILES.values():
+        folder = os.path.join(cache, source, asset)
         if os.path.isdir(folder):
             continue
         os.makedirs(folder, exist_ok=True)
-        path = folder + '.zip'
-        if not os.path.exists(path):
-            url = URL.format(id=asset)
-            print('downloading', url)
-            req = urllib.request.Request(url, headers={'User-Agent': 'moubla-build'})
-            with urllib.request.urlopen(req) as r, open(path, 'wb') as f:
-                f.write(r.read())
-        with zipfile.ZipFile(path) as z:
-            z.extractall(folder)
+        if source == 'ambientcg':
+            path = folder + '.zip'
+            if not os.path.exists(path):
+                download(URLS[source][0].format(id=asset), path)
+            with zipfile.ZipFile(path) as z:
+                z.extractall(folder)
+        else:
+            for m in ('diff', 'nor_gl', 'rough'):
+                download(URLS[source][0].format(id=asset, map=m), os.path.join(folder, f'{asset}_{m}_1k.jpg'))
 
 
 def scale_albedo(img, mean):
@@ -64,22 +82,22 @@ def write_tiles(cache, out_dir):
     size = TILE_SIZE
     os.makedirs(out_dir, exist_ok=True)
     out = {}
-    for name, (asset, _, mean) in TILES.items():
-        folder = os.path.join(cache, 'ambientcg', asset)
+    for name, (source, asset, _, mean) in TILES.items():
+        folder = os.path.join(cache, source, asset)
 
         def img(kind, mode):
-            path = os.path.join(folder, f'{asset}_1K-JPG_{kind}.jpg')
+            path = os.path.join(folder, FILES[source].get(kind, '-').format(id=asset))
             return Image.open(path).convert(mode).resize((size, size), Image.LANCZOS) if os.path.exists(path) else None
 
-        color = img('Color', 'RGB')
-        opacity = img('Opacity', 'L')
+        color = img('color', 'RGB')
+        opacity = img('opacity', 'L')
         if opacity is not None:
             # gaps between the rings of mail: the dark padding underneath
             dark = opacity.point(lambda x: int(60 + 195 * x / 255))
             color = ImageChops.multiply(color, Image.merge('RGB', (dark, dark, dark)))
         color = scale_albedo(color, mean)
-        normal = img('NormalGL', 'RGB')
-        rough = img('Roughness', 'L') or Image.new('L', (size, size), 200)
+        normal = img('normal', 'RGB')
+        rough = img('rough', 'L') or Image.new('L', (size, size), 200)
         nx, ny, _ = normal.split()
         surf = Image.merge('RGB', (nx, ny, rough))
         files = []

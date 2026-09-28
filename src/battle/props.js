@@ -23,11 +23,12 @@ export class Props {
     this.models = new Map();
   }
 
-  // A holder standing in for a mesh of `geo`; place it in the rig.
-  add(geo) {
+  // A holder standing in for a mesh of `geo` (drawn with `mat`, by default
+  // the shared vertex-colour material); place it in the rig.
+  add(geo, mat = null) {
     let model = this.models.get(geo);
     if (!model) {
-      model = { geo, holders: [], near: null, far: null };
+      model = { geo, mat, holders: [], near: null, far: null };
       this.models.set(geo, model);
     }
     const holder = new THREE.Object3D();
@@ -59,7 +60,7 @@ export class Props {
       this.scene.remove(m);
       m.dispose();
     }
-    m = new THREE.InstancedMesh(model.geo, material(), size);
+    m = new THREE.InstancedMesh(model.geo, model.mat || material(), size);
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     m.frustumCulled = false;
     m.castShadow = shadow;

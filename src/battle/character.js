@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo } from './models.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
@@ -148,6 +149,31 @@ function prepare(gltf) {
   t.pelvisY = wpos(bones.pelvis).y;
   t.headRestQ = bones.head.getWorldQuaternion(new THREE.Quaternion());
   t.headRestInv = new THREE.Matrix4().copy(bones.head.matrixWorld).invert();
+  // garments (Piece_<name>_LOD<n>): joined with the head and hands of each
+  // level of detail (Soldier_LOD<n>) into one mesh per outfit, see outfitGeometry
+  t.common = [];
+  t.pieces = {};
+  const pieces = [];
+  scene.traverse((o) => {
+    const m = o.isSkinnedMesh && /^(Soldier|Piece_(.+))_LOD(\d)$/.exec(o.name);
+    if (!m) return;
+    if (m[2]) {
+      (t.pieces[m[2]] ||= [])[+m[3]] = o.geometry;
+      pieces.push(o);
+    } else t.common[+m[3]] = o.geometry;
+  });
+  for (const o of pieces) o.removeFromParent();
+  // helmets (tools/characters/helmets.py), moved into the head bone's space;
+  // they are drawn as carried items (props.js), not as part of the body
+  t.helmets = {};
+  const loose = [];
+  scene.traverse((o) => {
+    if (o.isMesh && !o.isSkinnedMesh && o.name.startsWith('Helmet_')) loose.push(o);
+  });
+  for (const o of loose) {
+    t.helmets[o.name.slice('Helmet_'.length)] = o.geometry.clone().applyMatrix4(o.matrixWorld).applyMatrix4(t.headRestInv);
+    o.removeFromParent();
+  }
   // phase of each walking clip at which the left foot is furthest forward,
   // so that walk and run can be blended in step
   const mixer = new THREE.AnimationMixer(scene);
@@ -251,23 +277,24 @@ function palette(spec) {
   // factor for the roughness the texture gives
   const tiled = (tile, color, roughness = 1, metalness = 0) => ({ color, roughness, metalness, tile });
   const team = tiled('wool', spec.team);
-  const quilted = tiled('quilted', '#ffffff');
-  const leather = tiled('leather', '#ffffff');
-  const boots = tiled('leather', '#b0a090');
-  const armour = {
-    mail: tiled('mail', '#ffffff', 1.2, 0.75),
-    lamellar: tiled('lamellar', '#ffffff', 0.8, 0.85),
-    plate: tiled('plate', '#ffffff', 1, 0.9),
-  };
+  const mail = tiled('mail', '#ffffff', 1.2, 0.75);
+  const plate = tiled('plate', '#ffffff', 1, 0.9);
+  // a gambeson dyed a little towards the team colour
+  const dyed = new THREE.Color('#ffffff').lerp(new THREE.Color(spec.team), 0.3);
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
   return {
     Body: surface(skin, 0.55),
-    Shirt: armour[look] || (look === 'padded' ? quilted : look === 'leather' ? leather : team),
-    Skirt: look === 'padded' ? quilted : team,
-    Hose: look === 'plate' || look === 'mail' ? armour[look] : tiled('wool', spec.pants),
-    Boots: look === 'plate' ? armour.plate : boots,
+    Tunic: team,
+    Gambeson: tiled('quilted', dyed),
+    Hauberk: mail,
+    Surcoat: team,
+    Jerkin: tiled('leather', '#ffffff'),
+    Cuirass: look === 'plate' ? plate : tiled('lamellar', '#ffffff', 0.8, 0.85),
+    Plates: plate,
+    Hose: look === 'plate' || look === 'mail' ? mail : tiled('wool', spec.pants),
+    Boots: tiled('leather', '#b0a090'),
     Belt: tiled('leather', '#8a7a6a'),
     Hair: surface(hair, 0.7),
     Beard: surface(hair, 0.7),
@@ -276,6 +303,32 @@ function palette(spec) {
     Lashes: surface('#2a211b', 0.7),
     Eyes: surface('#ffffff', 0.12),
   };
+}
+
+// The garments of each armour look (see tools/characters/outfits.py)
+const OUTFITS = {
+  cloth: ['Tunic', 'Belt-Tunic', 'Hose', 'Boots'],
+  padded: ['Gambeson', 'Belt-Gambeson', 'Hose', 'Boots'],
+  leather: ['Tunic', 'Jerkin', 'Belt-Jerkin', 'Hose', 'Boots'],
+  mail: ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose', 'Boots'],
+  lamellar: ['Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
+  plate: ['Hauberk', 'Cuirass', 'Plates', 'Belt-Cuirass', 'Hose', 'Boots'],
+};
+
+// The head and hands with the garments of `look`, for one level of detail.
+const outfits = new Map();
+
+function outfitGeometry(look, level) {
+  const t = state.t;
+  const names = (OUTFITS[look] || OUTFITS.cloth).filter((n) => t.pieces[n] && t.pieces[n][level]);
+  if (!names.length) return null;
+  const key = `${look}:${level}`;
+  let geo = outfits.get(key);
+  if (!geo) {
+    geo = mergeGeometries([t.common[level], ...names.map((n) => t.pieces[n][level])]);
+    outfits.set(key, geo);
+  }
+  return geo;
 }
 
 // parts made of see-through cards
@@ -433,6 +486,87 @@ function soldierMat(spec, hidden) {
 }
 
 // ---------------------------------------------------------------------------
+// Carried items with tileable materials (the helmets): each vertex names its
+// material (_tile, -1: plain colour) and metalness (_metal); the colour is a
+// tint. Drawn instanced by props.js, so one material for all of them.
+// ---------------------------------------------------------------------------
+
+let itemMat = null;
+
+function itemMaterial() {
+  if (itemMat) return itemMat;
+  const tiles = state.t.tiles;
+  const names = tiles ? Object.keys(tiles.index) : [];
+  const repeat = new Float32Array(Math.max(1, names.length)).fill(1);
+  names.forEach((n, i) => (repeat[i] = tiles.repeat[n]));
+  itemMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.7, metalness: 0, vertexColors: true });
+  if (!tiles) return itemMat;
+  itemMat.onBeforeCompile = (shader) => {
+    shader.uniforms.tileColor = { value: tiles.color };
+    shader.uniforms.tileSurface = { value: tiles.surface };
+    shader.uniforms.tileRepeat = { value: repeat };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute float _tile;
+        attribute float _metal;
+        varying float vTile;
+        varying float vMetal;
+        varying vec2 vTileUv;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vTile = _tile;
+        vMetal = _metal;
+        vTileUv = uv;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>${TILE_FRAGMENT}
+        uniform float tileRepeat[${repeat.length}];
+        varying float vTile;
+        varying float vMetal;
+        varying vec2 vTileUv;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 tileSurf = vec3(0.5, 0.5, -1.0);
+        vec2 tileUv = vTileUv;
+        if (vTile > -0.5) {
+          tileUv *= tileRepeat[int(vTile + 0.5)];
+          diffuseColor.rgb *= texture(tileColor, vec3(tileUv, vTile)).rgb;
+          tileSurf = texture(tileSurface, vec3(tileUv, vTile)).rgb;
+        }`)
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0);')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        if (tileSurf.z >= 0.0) {
+          mat3 frame = tileFrame(-vViewPosition, normal, tileUv);
+          normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
+        }`);
+  };
+  itemMat.customProgramCacheKey = () => 'tiled-item';
+  return itemMat;
+}
+
+// A helmet of `look` with the parts marked _team painted in `team`.
+const helmetCache = new Map();
+
+function helmetFor(look, team) {
+  const base = state.t.helmets && state.t.helmets[look];
+  if (!base) return null;
+  const key = `${look}:${team}`;
+  let geo = helmetCache.get(key);
+  if (geo) return geo;
+  geo = base;
+  const flags = base.getAttribute('_team');
+  const color = base.getAttribute('color');
+  if (flags && color && flags.array.some((v) => v > 0.5)) {
+    geo = base.clone();
+    const col = geo.getAttribute('color');
+    const c = new THREE.Color(team);
+    for (let i = 0; i < col.count; i++) {
+      if (flags.getX(i) > 0.5) col.setXYZ(i, c.r * col.getX(i), c.g * col.getY(i), c.b * col.getZ(i));
+    }
+  }
+  helmetCache.set(key, geo);
+  return geo;
+}
+
+// ---------------------------------------------------------------------------
 // One soldier
 // ---------------------------------------------------------------------------
 
@@ -467,6 +601,7 @@ export class SkinnedHuman {
     const shared = this.lod[0].skeleton;
     this.lod.forEach((o, level) => {
       if (o.skeleton !== shared) o.bind(shared, o.bindMatrix);
+      o.geometry = outfitGeometry(spec.look || 'cloth', level) || o.geometry;
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
       o.castShadow = level < 2;
@@ -511,6 +646,13 @@ export class SkinnedHuman {
   }
 
   addHelmet(spec, props) {
+    const fitted = helmetFor(spec.helmet, spec.team);
+    if (fitted) {
+      const m = props.add(fitted, itemMaterial());
+      this.bones.head.add(m);
+      this.helmet = m;
+      return;
+    }
     const geo = helmetGeo(spec.helmet, spec.team);
     if (!geo) return;
     const fit = this.t.fit;
