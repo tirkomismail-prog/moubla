@@ -635,8 +635,8 @@ def build(args):
     # the hair of the mane and tail (two-sided cards) is the heaviest part:
     # thinned more
     ratios = {name: (1.0, args.lod1, args.lod2) for name in parts}
-    ratios['Mane'] = (1.0, 0.2, 0.06)
-    ratios['Coat'] = (0.5, 0.11, 0.04)  # of the subdivided coat
+    ratios['Mane'] = (1.0, 0.12, 0.04)
+    ratios['Coat'] = (0.5, 0.07, 0.028)  # of the subdivided coat
     levels = {}
     for level in range(3):
         levels[level] = {}

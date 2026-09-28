@@ -55,6 +55,8 @@ function prepare(gltf) {
       q: b.quaternion.clone(),
       p: b.position.clone(),
       parentQ: b.parent.getWorldQuaternion(new THREE.Quaternion()),
+      parentInv: b.parent.getWorldQuaternion(new THREE.Quaternion()).invert(),
+      parent: b.parent.isBone ? b.parent.name : null,
       head: b.getWorldPosition(new THREE.Vector3()),
     };
   }
@@ -172,7 +174,8 @@ const GAITS = {
 };
 const GAIT_KEYS = ['legs', 'duty', 'bob', 'pitch', 'nod'];
 
-const LOD_DIST = [20, 50];
+// levels of detail: full model up close, then about 3.5k and 1.3k triangles
+const LOD_DIST = [16, 36];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.1, 0), 1.9);
 const X = new THREE.Vector3(1, 0, 0);
 const Y = new THREE.Vector3(0, 1, 0);
@@ -195,8 +198,14 @@ export class SkinnedHorse {
     this.root.add(this.object);
     this.bones = {};
     this.lod = [];
+    // per bone: [bone, its model-space rotation, its parent's, rest]
+    this.chain = [];
+    this.D = {};
     this.object.traverse((o) => {
-      if (o.isBone) this.bones[o.name] = o;
+      if (o.isBone) {
+        this.bones[o.name] = o;
+        this.D[o.name] = new THREE.Quaternion();
+      }
       const m = o.isSkinnedMesh && /_LOD(\d)$/.exec(o.name);
       if (m) this.lod[+m[1]] = o;
     });
@@ -224,8 +233,10 @@ export class SkinnedHorse {
     this.prevYaw = null;
     this.turn = 0;
     this.idle = Math.random() * 100;
-    this.D = {};
-    for (const n of Object.keys(this.bones)) this.D[n] = new THREE.Quaternion();
+    for (const [name, b] of Object.entries(this.bones)) {
+      const r = T.rest[name];
+      this.chain.push([b, this.D[name], r.parent ? this.D[r.parent] : null, r]);
+    }
     this.offset = new THREE.Vector3();
     // for the rider: how far the seat moved from its rest height, the
     // pitch and roll of the back, the stirrups (model space)
@@ -411,16 +422,13 @@ export class SkinnedHorse {
   // bone rotations from their model-space rotations D (relative to rest):
   // local = parentRest^-1 * D_parent^-1 * D * parentRest * localRest
   apply() {
-    const D = this.D;
-    for (const [name, b] of Object.entries(this.bones)) {
-      const r = T.rest[name];
-      const parent = b.parent.isBone ? D[b.parent.name] : null;
-      _q.copy(r.parentQ).invert();
+    for (const [b, d, parent, r] of this.chain) {
+      _q.copy(r.parentInv);
       if (parent) _q.multiply(_q2.copy(parent).invert());
-      b.quaternion.copy(_q).multiply(D[name]).multiply(r.parentQ).multiply(r.q);
+      b.quaternion.copy(_q).multiply(d).multiply(r.parentQ).multiply(r.q);
     }
     // the root carries the body's bob
-    _v.copy(this.offset).applyQuaternion(_q.copy(T.rest.root.parentQ).invert());
+    _v.copy(this.offset).applyQuaternion(T.rest.root.parentInv);
     this.bones.root.position.copy(T.rest.root.p).add(_v);
   }
 

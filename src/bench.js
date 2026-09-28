@@ -8,7 +8,7 @@ const ARMY = {
 };
 const PRESETS = ['low', 'medium', 'high'];
 const HEIGHTS = [720, 900, 1080];
-const WARMUP = 2.5; // seconds before measuring after each change
+const WARMUP = 4; // seconds before measuring after each change
 const MEASURE = 10; // seconds of measurement per case
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -22,6 +22,58 @@ function gpuName(renderer) {
   const gl = renderer.getContext();
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+}
+
+// A fixed piece of JavaScript work, timed: how fast the processor runs right
+// now (a hot laptop or one in power saving mode runs it slower), so that
+// runs on different days can be compared. Best of three, in milliseconds.
+function calibrate() {
+  let best = Infinity;
+  for (let k = 0; k < 3; k++) {
+    const t0 = performance.now();
+    const a = new Float64Array(20000);
+    let x = 1;
+    for (let r = 0; r < 60; r++) {
+      for (let i = 0; i < a.length; i++) {
+        x = (x * 1.000001 + Math.sin(i * 0.01)) % 1000;
+        a[i] = x;
+      }
+      a.sort();
+    }
+    best = Math.min(best, performance.now() - t0);
+    if (a[0] < -1) console.log(a[0]);
+  }
+  return +best.toFixed(1);
+}
+
+// GPU time of each frame, if the browser offers timer queries
+// (EXT_disjoint_timer_query_webgl2); results arrive a few frames later.
+function gpuTimer(renderer) {
+  const gl = renderer.getContext();
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) return null;
+  const pending = [];
+  const times = [];
+  let active = null;
+  return {
+    begin() {
+      if (active) return;
+      active = gl.createQuery();
+      gl.beginQuery(ext.TIME_ELAPSED_EXT, active);
+    },
+    end() {
+      if (!active) return;
+      gl.endQuery(ext.TIME_ELAPSED_EXT);
+      pending.push(active);
+      active = null;
+      while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+        const q = pending.shift();
+        if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) times.push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6);
+        gl.deleteQuery(q);
+      }
+    },
+    times,
+  };
 }
 
 function panel() {
@@ -45,10 +97,13 @@ function measure(game, seconds) {
     // count every pass of the frame (post-processing renders several times)
     const info = battle.renderer.info;
     info.autoReset = false;
+    const gpu = gpuTimer(battle.renderer);
     battle.frame = (dt) => {
       info.reset();
       const t0 = performance.now();
+      if (gpu) gpu.begin();
       origFrame(dt);
+      if (gpu) gpu.end();
       cpu.push(performance.now() - t0);
       calls += info.render.calls;
       tris += info.render.triangles;
@@ -88,6 +143,7 @@ function measure(game, seconds) {
           p90: +percentile(sorted, 0.9).toFixed(1),
           p99: +percentile(sorted, 0.99).toFixed(1),
           cpuP50: +percentile(cpuSorted, 0.5).toFixed(1),
+          gpuP50: gpu && gpu.times.length ? +percentile([...gpu.times].sort((a, b) => a - b), 0.5).toFixed(1) : null,
           calls: Math.round(calls / Math.max(1, n)),
           triangles: Math.round(tris / Math.max(1, n)),
           realistic: !!battle.agents.find((a) => a.body),
@@ -155,6 +211,7 @@ export async function runBenchmark(game) {
   await wait(500);
   const results = [];
   let device = null;
+  const calib = [calibrate()];
   for (const preset of PRESETS) {
     const battle = await startBattle(game, preset);
     const stop = orbit(battle);
@@ -177,15 +234,17 @@ export async function runBenchmark(game) {
     }
     stop();
   }
+  calib.push(calibrate());
   if (game.battle) game.battle.setRenderHeight(null);
-  const report = { date: new Date().toISOString(), device, army: ARMY, results };
+  // calibMs: the processor test before and after the run (lower is faster)
+  const report = { date: new Date().toISOString(), device, calibMs: calib, army: ARMY, results };
   const rows = results
-    .map((r) => `<tr><td>${r.preset}</td><td>${r.height}p</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
+    .map((r) => `<tr><td>${r.preset}</td><td>${r.height}p</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   out.innerHTML = `<b>Готово.</b> Скопіюйте JSON нижче й надішліть його.<br>
-    <small>${device.gpu}</small>
+    <small>${device.gpu}; тест процесора: ${calib.join(' / ')} мс</small>
     <table style="border-collapse:collapse;margin:8px 0;width:100%" cellpadding="3">
-      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>виклики</th><th>трикутники</th></tr>
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
       ${rows}
     </table>
     <textarea readonly style="width:100%;height:140px;font:12px monospace">${JSON.stringify(report)}</textarea>
