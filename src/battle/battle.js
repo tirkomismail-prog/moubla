@@ -14,6 +14,7 @@ import { Effects } from './effects.js';
 import { gfxPreset, Environment, PostFX } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
+import { SHADOW_LAYER } from './partmat.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
 import { h } from '../ui/dom.js';
@@ -98,6 +99,14 @@ export class Battle {
     r.setSize(window.innerWidth, window.innerHeight);
     r.shadowMap.enabled = this.gfx.shadows && this.settings.shadows !== false;
     r.shadowMap.type = THREE.PCFShadowMap;
+    // the shadow pass also draws the shadow-only stand-ins of the characters
+    // (their lightest level of detail, see partmat.js); the view never does
+    const shadowPass = r.shadowMap.render.bind(r.shadowMap);
+    r.shadowMap.render = (lights, scene, camera) => {
+      camera.layers.enable(SHADOW_LAYER);
+      shadowPass(lights, scene, camera);
+      camera.layers.disable(SHADOW_LAYER);
+    };
     this.root.append(r.domElement);
     this.renderer = r;
     this.scene = new THREE.Scene();

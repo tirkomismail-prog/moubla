@@ -7,7 +7,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, partMaterial, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { bytesOf, decodeLayers, decodeTiles, partMaterial, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
@@ -400,7 +400,10 @@ function helmetFor(look, team) {
 const LOCO = ['idle', 'walk', 'run', 'walk_back'];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
 // levels of detail: full model up close, then 30 % and 10 % of the triangles
-const LOD_DIST = [17, 45];
+// (about 40 pixels tall at 720p from 32 m); posed every frame, every second
+// or every fourth frame
+const LOD_DIST = [15, 32];
+const POSE_DIST = [17, 45];
 
 export class SkinnedHuman {
   // `props` draws the helmet (see props.js)
@@ -431,12 +434,15 @@ export class SkinnedHuman {
       o.geometry = outfitGeometry(spec.look || 'cloth', level) || o.geometry;
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
-      o.castShadow = level < 2;
+      // shadows: the full model up close; further away the lightest level
+      // casts them (shadowStandIn), the farthest soldiers cast none
+      o.castShadow = level === 0;
       o.receiveShadow = true;
       // a sphere that holds the body in any pose (arms up, lying dead), in
       // the mesh's own space: soldiers outside the view are not drawn
       o.boundingSphere = CULL_SPHERE;
     });
+    this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
     this.frameNo = Math.floor(Math.random() * 4);
@@ -470,6 +476,7 @@ export class SkinnedHuman {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
+    this.shadow.visible = level === 1;
   }
 
   addHelmet(spec, props) {
@@ -530,7 +537,7 @@ export class SkinnedHuman {
     this.setLod(level);
     // animation level of detail: distant soldiers are posed less often
     this.pending += dt;
-    const every = [1, 2, 4][level];
+    const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;
     if (dt > 0 && this.frameNo++ % every !== 0) return;
     dt = this.pending;
     this.pending = 0;

@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bytesOf, decodeLayers, partMaterial, surface, tiled } from './partmat.js';
+import { bytesOf, decodeLayers, partMaterial, shadowStandIn, surface, tiled } from './partmat.js';
 import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
@@ -217,10 +217,12 @@ export class SkinnedHorse {
       o.geometry = geometry(piece, level);
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
-      o.castShadow = level < 2;
+      // shadows: the full model up close, further away the lightest level
+      o.castShadow = level === 0;
       o.receiveShadow = true;
       o.boundingSphere = CULL_SPHERE;
     });
+    this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
     this.frameNo = Math.floor(Math.random() * 4);
@@ -251,6 +253,7 @@ export class SkinnedHorse {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
+    this.shadow.visible = level === 1;
   }
 
   // where a stirrup's tread is in the world (side 'l' or 'r')

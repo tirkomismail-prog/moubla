@@ -5,13 +5,14 @@
 // holders' world matrices are copied into the instances.
 //
 // Every model has two instanced meshes: items near the camera cast shadows,
-// far ones do not (like the far soldiers' bodies), and far items outside the
-// view are skipped.
+// far ones do not (like the far soldiers' bodies). Items outside the view
+// are skipped (near ones with a margin: their shadows may fall into it).
 import * as THREE from 'three';
 import { material } from './models.js';
 
-const SHADOW_DIST = 45;
+const SHADOW_DIST = 30;
 const ITEM_RADIUS = 1.5;
+const SHADOW_MARGIN = 4;
 
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
@@ -84,11 +85,11 @@ export class Props {
       for (const h of model.holders) {
         const e = h.matrixWorld.elements;
         _sphere.center.set(e[12], e[13], e[14]);
-        if (_sphere.center.distanceToSquared(cam) < d2) near.instanceMatrix.array.set(e, 16 * n++);
-        else {
-          _sphere.radius = ITEM_RADIUS;
-          if (_frustum.intersectsSphere(_sphere)) far.instanceMatrix.array.set(e, 16 * f++);
-        }
+        const close = _sphere.center.distanceToSquared(cam) < d2;
+        _sphere.radius = close ? SHADOW_MARGIN : ITEM_RADIUS;
+        if (!_frustum.intersectsSphere(_sphere)) continue;
+        if (close) near.instanceMatrix.array.set(e, 16 * n++);
+        else far.instanceMatrix.array.set(e, 16 * f++);
       }
       near.count = n;
       far.count = f;

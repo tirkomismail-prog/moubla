@@ -11,6 +11,52 @@ const HEIGHTS = [720, 900, 1080];
 const WARMUP = 4; // seconds before measuring after each change
 const MEASURE = 10; // seconds of measurement per case
 
+// Where the frame time of the medium preset goes: the same battle with one
+// part left out at a time
+const BREAKDOWN = { preset: 'medium', height: 900, warmup: 2.5, measure: 6 };
+const PART_NAMES = { base: 'усе', noShadows: 'без проходу тіней', noPost: 'без постобробки', noGrass: 'без трави', noCharacters: 'без воїнів і коней' };
+// each switches a part off and returns what switches it back on
+const PARTS = {
+  base: () => () => {},
+  // the shadow map stays as it was, it is just not drawn again
+  noShadows: (b) => {
+    const s = b.renderer.shadowMap;
+    s.autoUpdate = false;
+    return () => (s.autoUpdate = true);
+  },
+  noPost: (b) => {
+    const post = b.post;
+    b.post = null;
+    return () => (b.post = post);
+  },
+  noGrass: (b) => {
+    const grass = [];
+    b.scene.traverse((o) => {
+      if (o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass' && o.visible) grass.push(o);
+    });
+    for (const o of grass) o.visible = false;
+    return () => grass.forEach((o) => (o.visible = true));
+  },
+  noCharacters: (b) => {
+    const roots = [];
+    for (const a of b.agents) roots.push(a.rig.root, a.horse && a.horse.rig.root);
+    for (const h of [...b.looseHorses, ...b.deadHorses]) roots.push(h.rig.root);
+    const shown = roots.filter((r) => r && r.visible);
+    for (const r of shown) r.visible = false;
+    // and what they carry
+    const props = b.props;
+    const sync = props.sync;
+    props.sync = (camera) => {
+      sync.call(props, camera);
+      for (const m of props.models.values()) for (const mesh of [m.near, m.far]) if (mesh) mesh.visible = false;
+    };
+    return () => {
+      for (const r of shown) r.visible = true;
+      props.sync = sync;
+    };
+  },
+};
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function percentile(sorted, p) {
@@ -204,7 +250,7 @@ async function startBattle(game, preset) {
 
 export async function runBenchmark(game) {
   const out = panel();
-  out.innerHTML = '<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈3 хвилини. Підключіть зарядку.';
+  out.innerHTML = '<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈4 хвилини. Підключіть зарядку.';
   // a tab opened in the background does not draw: start once it is shown
   while (document.hidden) await wait(250);
   await game.charactersLoading;
@@ -212,6 +258,7 @@ export async function runBenchmark(game) {
   const results = [];
   let device = null;
   const calib = [calibrate()];
+  const breakdown = {};
   for (const preset of PRESETS) {
     const battle = await startBattle(game, preset);
     const stop = orbit(battle);
@@ -232,20 +279,39 @@ export async function runBenchmark(game) {
       const r = await measure(game, MEASURE);
       results.push({ preset, height: h, ...r });
     }
+    if (preset === BREAKDOWN.preset) {
+      battle.setRenderHeight(BREAKDOWN.height);
+      for (const [name, off] of Object.entries(PARTS)) {
+        out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${name}…`;
+        const restore = off(battle);
+        await wait(BREAKDOWN.warmup * 1000);
+        const r = await measure(game, BREAKDOWN.measure);
+        restore();
+        breakdown[name] = { fps: r.fps, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
+      }
+    }
     stop();
   }
   calib.push(calibrate());
   if (game.battle) game.battle.setRenderHeight(null);
   // calibMs: the processor test before and after the run (lower is faster)
-  const report = { date: new Date().toISOString(), device, calibMs: calib, army: ARMY, results };
+  const report = { date: new Date().toISOString(), device, calibMs: calib, army: ARMY, results, breakdown };
   const rows = results
     .map((r) => `<tr><td>${r.preset}</td><td>${r.height}p</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
+    .join('');
+  const breakdownRows = Object.entries(breakdown)
+    .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td><b>${r.fps}</b></td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   out.innerHTML = `<b>Готово.</b> Скопіюйте JSON нижче й надішліть його.<br>
     <small>${device.gpu}; тест процесора: ${calib.join(' / ')} мс</small>
     <table style="border-collapse:collapse;margin:8px 0;width:100%" cellpadding="3">
       <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
       ${rows}
+    </table>
+    <small>Середня графіка, ${BREAKDOWN.height}p, без однієї частини:</small>
+    <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>FPS</th><th>CPU, мс</th><th>GPU, мс</th><th>трикутники</th></tr>
+      ${breakdownRows}
     </table>
     <textarea readonly style="width:100%;height:140px;font:12px monospace">${JSON.stringify(report)}</textarea>
     <button id="bench-copy" style="margin-top:6px;padding:6px 14px">Копіювати JSON</button>`;

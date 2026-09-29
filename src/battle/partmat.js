@@ -119,6 +119,28 @@ export const TILE_FRAGMENT = `
     return mat3(t * scale, b * scale, n);
   }`;
 
+// Shadow-only stand-in of a skinned model: its lightest level of detail
+// `lod`, sharing the skeleton, on a layer only the shadow pass draws (see
+// Battle.setupRenderer). Characters at the middle distance cast their shadow
+// with it instead of with the mesh that is seen. Hidden until used.
+export const SHADOW_LAYER = 1;
+
+export function shadowStandIn(lod, mat, sphere) {
+  const s = new THREE.SkinnedMesh(lod.geometry, mat);
+  s.name = `${lod.name}_shadow`;
+  s.position.copy(lod.position);
+  s.quaternion.copy(lod.quaternion);
+  s.scale.copy(lod.scale);
+  s.bind(lod.skeleton, lod.bindMatrix);
+  s.layers.set(SHADOW_LAYER);
+  s.castShadow = true;
+  s.customDepthMaterial = mat.userData.depth;
+  s.boundingSphere = sphere;
+  s.visible = false;
+  lod.parent.add(s);
+  return s;
+}
+
 const materials = new Map();
 
 // One material per look, shared by all models that look alike.
