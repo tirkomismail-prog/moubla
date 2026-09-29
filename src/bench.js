@@ -13,8 +13,29 @@ const MEASURE = 10; // seconds of measurement per case
 
 // Where the frame time of the medium preset goes: the same battle with one
 // part left out at a time
+// (bench.html?parts: only this, about a minute and a half)
 const BREAKDOWN = { preset: 'medium', height: 900, warmup: 2.5, measure: 6 };
-const PART_NAMES = { base: 'усе', noShadows: 'без проходу тіней', noPost: 'без постобробки', noGrass: 'без трави', noCharacters: 'без воїнів і коней' };
+const PART_NAMES = {
+  base: 'усе',
+  noShadows: 'без проходу тіней',
+  noPost: 'без постобробки',
+  noGrass: 'без трави',
+  noTrees: 'без дерев і каміння',
+  noSky: 'без неба',
+  noSoldiers: 'без воїнів (і їхніх речей)',
+  noHorses: 'без коней',
+};
+// hide objects (those shown), give back what shows them again
+const hide = (objects) => {
+  const shown = objects.filter((o) => o && o.visible);
+  for (const o of shown) o.visible = false;
+  return () => shown.forEach((o) => (o.visible = true));
+};
+const find = (b, test) => {
+  const out = [];
+  b.scene.traverse((o) => test(o) && out.push(o));
+  return out;
+};
 // each switches a part off and returns what switches it back on
 const PARTS = {
   base: () => () => {},
@@ -29,20 +50,11 @@ const PARTS = {
     b.post = null;
     return () => (b.post = post);
   },
-  noGrass: (b) => {
-    const grass = [];
-    b.scene.traverse((o) => {
-      if (o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass' && o.visible) grass.push(o);
-    });
-    for (const o of grass) o.visible = false;
-    return () => grass.forEach((o) => (o.visible = true));
-  },
-  noCharacters: (b) => {
-    const roots = [];
-    for (const a of b.agents) roots.push(a.rig.root, a.horse && a.horse.rig.root);
-    for (const h of [...b.looseHorses, ...b.deadHorses]) roots.push(h.rig.root);
-    const shown = roots.filter((r) => r && r.visible);
-    for (const r of shown) r.visible = false;
+  noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass')),
+  noTrees: (b) => hide(find(b, (o) => o.name === 'vegetation')),
+  noSky: (b) => hide([b.sky]),
+  noSoldiers: (b) => {
+    const show = hide(b.agents.map((a) => a.rig.root));
     // and what they carry
     const props = b.props;
     const sync = props.sync;
@@ -51,10 +63,11 @@ const PARTS = {
       for (const m of props.models.values()) for (const mesh of [m.near, m.far]) if (mesh) mesh.visible = false;
     };
     return () => {
-      for (const r of shown) r.visible = true;
+      show();
       props.sync = sync;
     };
   },
+  noHorses: (b) => hide([...b.agents.map((a) => a.horse && a.horse.rig.root), ...[...b.looseHorses, ...b.deadHorses].map((h) => h.rig.root)]),
 };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -249,8 +262,12 @@ async function startBattle(game, preset) {
 }
 
 export async function runBenchmark(game) {
+  // bench.html?parts: only the breakdown of the medium preset
+  const partsOnly = /[?&]parts\b/.test(location.search);
+  const presets = partsOnly ? [BREAKDOWN.preset] : PRESETS;
+  const heights = partsOnly ? [] : HEIGHTS;
   const out = panel();
-  out.innerHTML = '<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈4 хвилини. Підключіть зарядку.';
+  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 2 : 5} хвилини. Підключіть зарядку.`;
   // a tab opened in the background does not draw: start once it is shown
   while (document.hidden) await wait(250);
   await game.charactersLoading;
@@ -259,7 +276,7 @@ export async function runBenchmark(game) {
   let device = null;
   const calib = [calibrate()];
   const breakdown = {};
-  for (const preset of PRESETS) {
+  for (const preset of presets) {
     const battle = await startBattle(game, preset);
     const stop = orbit(battle);
     if (!device) {
@@ -272,9 +289,9 @@ export async function runBenchmark(game) {
         cores: navigator.hardwareConcurrency,
       };
     }
-    for (const h of HEIGHTS) {
+    for (const h of heights) {
       battle.setRenderHeight(h);
-      out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, роздільність: ${h}p… (${results.length + 1} з ${PRESETS.length * HEIGHTS.length})`;
+      out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, роздільність: ${h}p… (${results.length + 1} з ${presets.length * heights.length})`;
       await wait(WARMUP * 1000);
       const r = await measure(game, MEASURE);
       results.push({ preset, height: h, ...r });
@@ -282,7 +299,7 @@ export async function runBenchmark(game) {
     if (preset === BREAKDOWN.preset) {
       battle.setRenderHeight(BREAKDOWN.height);
       for (const [name, off] of Object.entries(PARTS)) {
-        out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${name}…`;
+        out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${PART_NAMES[name]}…`;
         const restore = off(battle);
         await wait(BREAKDOWN.warmup * 1000);
         const r = await measure(game, BREAKDOWN.measure);

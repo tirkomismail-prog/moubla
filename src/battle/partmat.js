@@ -119,6 +119,45 @@ export const TILE_FRAGMENT = `
     return mat3(t * scale, b * scale, n);
   }`;
 
+// The bones of a skinned model taken out of the scene into a space of their
+// own, the model's: the scene graph no longer walks them and updates their
+// world matrices every frame, and the bone matrices (and the bone texture)
+// are recomputed only after the model was posed (see posed()). The meshes
+// stay in the scene; they are skinned in "detached" mode, which gives the
+// same result with bones in the model's space. Items held in a bone's space
+// name that space's place in the world (userData.space) for props.js.
+// Returns the bones' space: the root for animation clips.
+export function ownSpaceSkeleton(object, meshes) {
+  object.updateMatrixWorld(true);
+  let root = null;
+  object.traverse((o) => {
+    if (!root && o.isBone) root = o;
+  });
+  const space = new THREE.Object3D();
+  root.parent.matrixWorld.decompose(space.position, space.quaternion, space.scale);
+  space.add(root);
+  space.updateMatrixWorld(true);
+  for (const m of meshes) {
+    m.bindMode = THREE.DetachedBindMode;
+    m.bindMatrixInverse.copy(m.bindMatrix).invert();
+  }
+  const skeleton = meshes[0].skeleton;
+  const update = skeleton.update;
+  skeleton.posed = true;
+  skeleton.update = function () {
+    if (!this.posed) return;
+    update.call(this);
+    this.posed = false;
+  };
+  return space;
+}
+
+// after posing the bones of an ownSpaceSkeleton
+export function posed(space, skeleton) {
+  space.updateMatrixWorld(true);
+  skeleton.posed = true;
+}
+
 // Shadow-only stand-in of a skinned model: its lightest level of detail
 // `lod`, sharing the skeleton, on a layer only the shadow pass draws (see
 // Battle.setupRenderer). Characters at the middle distance cast their shadow
@@ -132,6 +171,7 @@ export function shadowStandIn(lod, mat, sphere) {
   s.quaternion.copy(lod.quaternion);
   s.scale.copy(lod.scale);
   s.bind(lod.skeleton, lod.bindMatrix);
+  s.bindMode = lod.bindMode;
   s.layers.set(SHADOW_LAYER);
   s.castShadow = true;
   s.customDepthMaterial = mat.userData.depth;

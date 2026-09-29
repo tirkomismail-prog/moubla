@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bytesOf, decodeLayers, partMaterial, shadowStandIn, surface, tiled } from './partmat.js';
+import { bytesOf, decodeLayers, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled } from './partmat.js';
 import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
@@ -222,6 +222,9 @@ export class SkinnedHorse {
       o.receiveShadow = true;
       o.boundingSphere = CULL_SPHERE;
     });
+    // the bones in the horse's own space, out of the scene
+    this.space = ownSpaceSkeleton(this.object, this.lod);
+    this.skeleton = shared;
     this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
@@ -433,6 +436,7 @@ export class SkinnedHorse {
     // the root carries the body's bob
     _v.copy(this.offset).applyQuaternion(T.rest.root.parentInv);
     this.bones.root.position.copy(T.rest.root.p).add(_v);
+    posed(this.space, this.skeleton);
   }
 
   // ---- falling dead ------------------------------------------------------------------------

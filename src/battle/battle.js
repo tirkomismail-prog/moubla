@@ -1234,6 +1234,7 @@ export class Battle {
     this.scene.updateMatrixWorld();
     this.camera.updateMatrixWorld();
     this.props.sync(this.camera);
+    this.terrain.lod(this.camera);
     if (this.post) this.post.render();
     else this.renderer.render(this.scene, this.camera);
   }

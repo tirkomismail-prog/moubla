@@ -16,6 +16,7 @@ const SHADOW_MARGIN = 4;
 
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
+const _w = new THREE.Matrix4();
 const _sphere = new THREE.Sphere();
 
 export class Props {
@@ -83,7 +84,9 @@ export class Props {
       let n = 0;
       let f = 0;
       for (const h of model.holders) {
-        const e = h.matrixWorld.elements;
+        // held in a skeleton's own space (ownSpaceSkeleton): into the world
+        const space = h.userData.space;
+        const e = space ? _w.multiplyMatrices(space.matrixWorld, h.matrixWorld).elements : h.matrixWorld.elements;
         _sphere.center.set(e[12], e[13], e[14]);
         const close = _sphere.center.distanceToSquared(cam) < d2;
         _sphere.radius = close ? SHADOW_MARGIN : ITEM_RADIUS;

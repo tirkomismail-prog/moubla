@@ -6,6 +6,9 @@ import { clamp, smoothstep } from '../core/util.js';
 import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
 
+// cells of trees whose middle is further from the camera get the lighter crowns
+const TREE_NEAR = 70;
+
 const PALETTES = {
   plains: { grass: '#6f9a46', grass2: '#8aab55', dirt: '#8c7650', rock: '#7d7870', trees: 0.004, pines: 0.0005, rocks: 0.0008, relief: 4, sky: ['#8fbfe6', '#dfe9ef'], fog: '#c9d8e0' },
   forest: { grass: '#557f3a', grass2: '#6b8f45', dirt: '#6f5a3c', rock: '#6f6b64', trees: 0.02, pines: 0.004, rocks: 0.0008, relief: 5, sky: ['#86b4d8', '#d6e3e8'], fog: '#b9cbc8' },
@@ -259,6 +262,16 @@ export class BattleTerrain {
     if (this.grassTime) this.grassTime.value = time;
   }
 
+  // Trees in the cells far from the camera: the lighter crowns.
+  lod(camera) {
+    const d2 = TREE_NEAR * TREE_NEAR;
+    for (const t of this.treeLods || []) {
+      const near = camera.position.distanceToSquared(t.center) < d2;
+      t.near.visible = near;
+      t.far.visible = !near;
+    }
+  }
+
   buildVegetation() {
     const { half, pal } = this;
     const rand = this.rand;
@@ -288,7 +301,8 @@ export class BattleTerrain {
     place(rocks, Math.round(area * pal.rocks), 0.6);
 
     const dummy = new THREE.Object3D();
-    const addInstanced = (geo, mat, list, scaleFn, yOff, colorVar = 0) => {
+    // (farGeo: a lighter model shown in the cells far from the camera, see lod())
+    const addInstanced = (geo, mat, list, scaleFn, yOff, colorVar = 0, farGeo = null) => {
       const chunks = new Chunks(50);
       for (const [x, z, s] of list) {
         dummy.position.set(x, this.heightAt(x, z) + yOff * s, z);
@@ -304,18 +318,34 @@ export class BattleTerrain {
         chunks.add(x, z, dummy.matrix, col);
       }
       for (const m of chunks.meshes(geo, mat)) {
+        m.name = 'vegetation';
         m.castShadow = true;
         m.receiveShadow = true;
         this.group.add(m);
+        if (!farGeo) continue;
+        // the same instances with the lighter model
+        const far = new THREE.InstancedMesh(farGeo, mat, m.count);
+        far.instanceMatrix = m.instanceMatrix;
+        far.instanceColor = m.instanceColor;
+        far.boundingSphere = m.boundingSphere;
+        far.name = m.name;
+        far.castShadow = true;
+        far.receiveShadow = true;
+        far.visible = false;
+        this.group.add(far);
+        this.treeLods.push({ near: m, far, center: m.boundingSphere.center });
       }
     };
+    this.treeLods = [];
     const dry = this.type === 'steppe' || this.type === 'desert';
     const bark = this.material({ vertexColors: true, roughness: 1 });
     const leaves = this.material({ vertexColors: true, roughness: 0.85 });
     addInstanced(trunkGeo('#5a4028'), bark, trees, (s) => [s, s, s], 0, 0.1);
-    addInstanced(canopyGeo(dry ? ['#5f6d33', '#76803d', '#4f5c2a'] : ['#2f5a22', '#3f6a2b', '#4d7832', '#2a4f1f'], 5), leaves, trees, (s) => [s, s * 0.95, s], 4.1, 0.16);
+    const crown = dry ? ['#5f6d33', '#76803d', '#4f5c2a'] : ['#2f5a22', '#3f6a2b', '#4d7832', '#2a4f1f'];
+    addInstanced(canopyGeo(crown, 5), leaves, trees, (s) => [s, s * 0.95, s], 4.1, 0.16, canopyGeo(crown, 5, 0));
     addInstanced(trunkGeo('#4a3422', 0.8), bark, pines, (s) => [s * 0.8, s, s * 0.8], 0, 0.1);
-    addInstanced(pineGeo(this.type === 'snow' ? ['#23402f', '#2f4d3c', '#e4ecef'] : ['#1f4230', '#28503a', '#315c43']), leaves, pines, (s) => [s, s, s], 0.6, 0.12);
+    const needles = this.type === 'snow' ? ['#23402f', '#2f4d3c', '#e4ecef'] : ['#1f4230', '#28503a', '#315c43'];
+    addInstanced(pineGeo(needles), leaves, pines, (s) => [s, s, s], 0.6, 0.12, pineGeo(needles, 6));
     addInstanced(rockGeo(pal.rock), this.material({ vertexColors: true, roughness: 0.85, flatShading: true }), rocks, (s) => [s * 1.3, s * 0.8, s], 0.15, 0.12);
     for (const [x, z, s] of trees) this.obstacles.push({ x, z, r: 0.35 * s });
     for (const [x, z, s] of pines) this.obstacles.push({ x, z, r: 0.3 * s });
@@ -583,11 +613,12 @@ function trunkGeo(color, scale = 1) {
   return b.build();
 }
 
-// Broadleaf crown: a core plus clusters of leaves around it.
-function canopyGeo(colors, seed) {
+// Broadleaf crown: a core plus clusters of leaves around it (`detail` 0: the
+// same crown, coarser, for far away).
+function canopyGeo(colors, seed, detail = 1) {
   const b = new GeoBuilder();
   const rand = mulberry32(seed);
-  b.add(jitter(new THREE.IcosahedronGeometry(1.75, 1), 0.5, seed), colors[0], [0, 0, 0]);
+  b.add(jitter(new THREE.IcosahedronGeometry(1.75, detail), 0.5, seed), colors[0], [0, 0, 0]);
   const n = 11;
   for (let i = 0; i < n; i++) {
     // spread the clusters evenly over an ellipsoid, a bit more on top
@@ -596,25 +627,25 @@ function canopyGeo(colors, seed) {
     const rr = Math.sqrt(Math.max(0, 1 - u * u));
     const dist = 1.35 + rand() * 0.5;
     const r = 0.8 + rand() * 0.45;
-    const g = jitter(new THREE.IcosahedronGeometry(r, 1), r * 0.32, Math.floor(rand() * 1e6));
+    const g = jitter(new THREE.IcosahedronGeometry(r, detail), r * 0.32, Math.floor(rand() * 1e6));
     b.add(g, colors[Math.floor(rand() * colors.length)], [Math.cos(a) * rr * dist * 1.12, u * dist * 0.85 + 0.2, Math.sin(a) * rr * dist * 1.12]);
   }
   return foliage(b.build(), (p, out) => out.set(p.x, p.y - 0.1, p.z), 2.9, -2, 2.6, 0.55, 1.12);
 }
 
-function pineGeo(colors) {
+function pineGeo(colors, segments = 11) {
   const b = new GeoBuilder();
   const tiers = [[2.1, 2.4, 1.6], [1.75, 2.2, 2.6], [1.45, 2.0, 3.5], [1.1, 1.8, 4.35], [0.75, 1.6, 5.1], [0.4, 1.2, 5.8]];
   tiers.forEach(([r, h, y], i) => {
     // drooping tier: the rim hangs lower than a plain cone
-    const g = jitter(new THREE.ConeGeometry(r, h, 11, 2), 0.2, 31 + i);
+    const g = jitter(new THREE.ConeGeometry(r, h, segments, 2), 0.2, 31 + i);
     const p = g.attributes.position;
     for (let k = 0; k < p.count; k++) {
       const rad = Math.hypot(p.getX(k), p.getZ(k)) / r;
       p.setY(k, p.getY(k) - rad * rad * 0.35);
     }
     b.add(g, colors[i % 2], [0, y, 0], [0, i * 0.5, 0]);
-    if (colors[2] && i % 2 === 0) b.add(new THREE.ConeGeometry(r * 0.55, h * 0.35, 11), colors[2], [0, y + h * 0.33, 0]);
+    if (colors[2] && i % 2 === 0) b.add(new THREE.ConeGeometry(r * 0.55, h * 0.35, segments), colors[2], [0, y + h * 0.33, 0]);
   });
   // normals lean outwards and up like a cone, so the tree is lit softly
   return foliage(b.build(), (p, out) => out.set(p.x, Math.hypot(p.x, p.z) * 0.7, p.z), 0, 0.5, 6, 0.55, 1.12);

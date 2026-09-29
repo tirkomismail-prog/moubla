@@ -7,7 +7,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, partMaterial, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { bytesOf, decodeLayers, decodeTiles, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
@@ -442,12 +442,15 @@ export class SkinnedHuman {
       // the mesh's own space: soldiers outside the view are not drawn
       o.boundingSphere = CULL_SPHERE;
     });
+    // the bones in the soldier's own space, out of the scene
+    this.space = ownSpaceSkeleton(this.object, this.lod);
+    this.skeleton = shared;
     this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
     this.frameNo = Math.floor(Math.random() * 4);
     this.pending = 0;
-    this.mixer = new THREE.AnimationMixer(this.object);
+    this.mixer = new THREE.AnimationMixer(this.space);
     this.actions = {};
     for (const k of LOCO) {
       const c = t.clips[k];
@@ -484,6 +487,7 @@ export class SkinnedHuman {
     if (fitted) {
       const m = props.add(fitted, itemMaterial());
       this.bones.head.add(m);
+      m.userData.space = this.object;
       this.helmet = m;
       return;
     }
@@ -506,6 +510,7 @@ export class SkinnedHuman {
     m.position.set(0, -0.19 * s, 0);
     holder.add(m);
     this.bones.head.add(holder);
+    m.userData.space = this.object;
     this.helmet = m;
   }
 
@@ -524,13 +529,14 @@ export class SkinnedHuman {
     this.grip[side].add(obj);
     obj.position.set(0, 0, 0);
     obj.rotation.set(0, 0, 0);
+    // (the hands are in the soldier's space: props.js places it in the world)
+    obj.userData.space = this.object;
   }
 
   // ---- per frame ----------------------------------------------------------------------
 
   update(agent, dt) {
     const r = agent.rig;
-    const b = this.bones;
     const cam = agent.battle.camera;
     const d2 = cam.position.distanceToSquared(agent.pos);
     const level = d2 < LOD_DIST[0] ** 2 ? 0 : d2 < LOD_DIST[1] ** 2 ? 1 : 2;
@@ -541,11 +547,29 @@ export class SkinnedHuman {
     if (dt > 0 && this.frameNo++ % every !== 0) return;
     dt = this.pending;
     this.pending = 0;
+    // Pose in the soldier's own space, where its bones are (see
+    // ownSpaceSkeleton): the pose rig's root stands at the origin meanwhile,
+    // so that everything the pose code reads of the rig is in that space too.
+    const root = r.root;
+    U.p.copy(root.position);
+    U.q.copy(root.quaternion);
+    U.toLocal.compose(U.p, U.q, U.one).invert();
+    root.position.set(0, 0, 0);
+    root.quaternion.identity();
+    this.pose(agent, dt);
+    root.position.copy(U.p);
+    root.quaternion.copy(U.q);
+    posed(this.space, this.skeleton);
+  }
+
+  pose(agent, dt) {
+    const r = agent.rig;
+    const b = this.bones;
     this.locomotion(agent, dt);
     b.pelvis.updateWorldMatrix(true, false);
     const rootQ = r.root.getWorldQuaternion(U.rootQ);
 
-    if (agent.horse && agent.alive) this.ride(rootQ, agent.horse.rig);
+    if (agent.horse && agent.alive) this.ride(rootQ, agent.horse.rig, U.toLocal);
 
     // hips turn towards the walking direction; the torso follows the aim
     if (Math.abs(this.hipYaw) > 1e-3) rotateWorld(b.pelvis, worldRot(rootQ, U.a.setFromAxisAngle(Y, this.hipYaw), U.inc));
@@ -606,14 +630,15 @@ export class SkinnedHuman {
     this.mixer.update(0);
   }
 
-  // legs astride the horse, the feet in its stirrups (realistic horses) or
-  // where they would be
-  ride(rootQ, horse) {
+  // legs astride the horse, the feet in its stirrups (realistic horses; they
+  // are in the world, `toLocal` brings them into the pose's space) or where
+  // they would be
+  ride(rootQ, horse, toLocal) {
     const b = this.bones;
     for (const s of ['l', 'r']) {
       const side = s === 'l' ? 1 : -1;
       const hip = b[`thigh_${s}`].getWorldPosition(U.v1);
-      const foot = horse.stirrup ? horse.stirrup(s, U.v2).add(U.v3.set(0, 0.07, -0.06).applyQuaternion(rootQ))
+      const foot = horse.stirrup ? horse.stirrup(s, U.v2).applyMatrix4(toLocal).add(U.v3.set(0, 0.07, -0.06).applyQuaternion(rootQ))
         : U.v2.set(side * 0.3, -0.78, 0.18).applyQuaternion(rootQ).add(hip);
       const pole = U.v3.set(side * 0.3, 0, 1).applyQuaternion(rootQ).add(hip);
       solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.t.limbs[`leg_${s}`], foot, pole);
@@ -718,7 +743,7 @@ const scratch = (vs, qs, extra = {}) => {
   for (const n of qs) o[n] = new THREE.Quaternion();
   return o;
 };
-const U = scratch(['v1', 'v2', 'v3'], ['rootQ', 'a', 'b', 'c', 'd', 'inc']);
+const U = scratch(['v1', 'v2', 'v3', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1) });
 const A = scratch(['wristP', 'pos', 'dir', 'hang'], ['wristQ', 'q', 'q2']);
 const H = scratch(['len', 'knuck', 'palm', 'wrist', 'shoulder', 'pole'], ['q', 'inv'], { m: new THREE.Matrix4() });
 const WR = scratch([], ['inv']);
