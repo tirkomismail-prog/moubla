@@ -11,7 +11,7 @@ import { Projectiles } from './projectiles.js';
 import { BattleHud } from './hud.js';
 import { BattleInput } from './input.js';
 import { Effects } from './effects.js';
-import { gfxPreset, Environment, PostFX } from './graphics.js';
+import { gfxPreset, Environment, createPost } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
 import { SHADOW_LAYER } from './partmat.js';
@@ -141,7 +141,7 @@ export class Battle {
     this.sun = this.env.sun;
     this.sunDir = this.env.sunDir;
     this.sky = this.env.sky;
-    if (this.gfx.post) this.post = new PostFX(this.renderer, this.scene, this.camera, this.gfx);
+    if (this.gfx.post) this.post = createPost(this.renderer, this.scene, this.camera, this.gfx);
   }
 
   buildObstacleGrid() {

@@ -7,6 +7,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 
 export const GFX_PRESETS = {
   // aa: anti-aliasing (MSAA doubles the frame time on integrated GPUs, FXAA is
@@ -81,14 +83,17 @@ export class Environment {
       u.mieCoefficient.value = 0.004;
       u.mieDirectionalG.value = 0.82;
       u.sunPosition.value.copy(this.sunDir).multiplyScalar(1000);
-      this.sky = sky;
+      // the sun stands still during a battle: the sky is drawn once into the
+      // background instead of on every pixel of every frame
+      this.skyTarget = bakeSky(renderer, sky);
+      this.sky = null;
       fogCol = L.elev < 0.2 ? '#d3a88c' : pal.fog;
     } else {
       fogCol = L.elev < 0.2 ? '#c8a088' : pal.fog;
       this.sky = gradientDome(L.elev < 0.2 ? '#5a6aa0' : pal.sky[0], L.elev < 0.2 ? '#f0a870' : pal.sky[1]);
     }
-    scene.add(this.sky);
-    scene.background = new THREE.Color(fogCol);
+    if (this.sky) scene.add(this.sky);
+    scene.background = this.skyTarget ? this.skyTarget.texture : new THREE.Color(fogCol);
     const far = battle.config.kind === 'arena' ? 260 : 460;
     scene.fog = preset.standard ? new THREE.FogExp2(fogCol, L.night ? 0.009 : 0.0042) : new THREE.Fog(fogCol, 70, far);
 
@@ -116,16 +121,29 @@ export class Environment {
     const d = this.sunDir;
     this.sun.position.set(pivot.x + d.x * 150, pivot.y + d.y * 150, pivot.z + d.z * 150);
     this.sun.target.position.copy(pivot);
-    this.sky.position.copy(camera.position);
+    if (this.sky) this.sky.position.copy(camera.position);
   }
 
   dispose() {
     if (this.envRT) this.envRT.dispose();
+    if (this.skyTarget) this.skyTarget.dispose();
     if (this.sky) {
       this.sky.geometry.dispose();
       this.sky.material.dispose();
     }
   }
+}
+
+// The physical sky drawn once into a cube map (linear, the renderer tone maps
+// the background like any sky); the sky mesh is not needed afterwards.
+function bakeSky(renderer, sky) {
+  const target = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+  const scene = new THREE.Scene();
+  scene.add(sky);
+  new THREE.CubeCamera(1, 2000, target).update(renderer, scene);
+  sky.geometry.dispose();
+  sky.material.dispose();
+  return target;
 }
 
 // Sky dome: zenith/horizon gradient, optional ground colour below the
@@ -156,6 +174,61 @@ function gradientDome(top, horizon, ground = null, sunDir = null, sunCol = null)
       }`,
   });
   return new THREE.Mesh(geo, mat);
+}
+
+// The post-processing a preset needs: without ambient occlusion and MSAA
+// (medium) the light FastPost, else the full chain.
+export function createPost(renderer, scene, camera, preset) {
+  if (!preset.ao && !preset.msaa && preset.aa === 'fxaa') return new FastPost(renderer, scene, camera);
+  return new PostFX(renderer, scene, camera, preset);
+}
+
+// FXAA alone, cheaply: the scene is drawn straight into an 8-bit target
+// that three.js treats like the screen (the materials tone map and encode
+// for display themselves), then one FXAA pass puts it on the screen. No
+// half-float buffer and no separate tone mapping pass.
+export class FastPost {
+  constructor(renderer, scene, camera) {
+    this.renderer = renderer;
+    this.scene = scene;
+    this.camera = camera;
+    this.target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType });
+    this.target.texture.colorSpace = THREE.SRGBColorSpace;
+    // stored as the materials write it (already encoded), read as such
+    this.target.texture.internalFormat = 'RGBA8';
+    this.target.isXRRenderTarget = true;
+    this.material = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
+      vertexShader: FXAAShader.vertexShader,
+      fragmentShader: FXAAShader.fragmentShader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.material.uniforms.tDiffuse.value = this.target.texture;
+    this.quad = new FullScreenQuad(this.material);
+    this.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+  }
+
+  render() {
+    const r = this.renderer;
+    r.setRenderTarget(this.target);
+    r.render(this.scene, this.camera);
+    r.setRenderTarget(null);
+    this.quad.render(r);
+  }
+
+  resize(w, h, pixelRatio = this.renderer.getPixelRatio()) {
+    const W = Math.max(1, Math.floor(w * pixelRatio));
+    const H = Math.max(1, Math.floor(h * pixelRatio));
+    this.target.setSize(W, H);
+    this.material.uniforms.resolution.value.set(1 / W, 1 / H);
+  }
+
+  dispose() {
+    this.target.dispose();
+    this.material.dispose();
+    this.quad.dispose();
+  }
 }
 
 // Post-processing chain: ambient occlusion, tone mapping, then FXAA.

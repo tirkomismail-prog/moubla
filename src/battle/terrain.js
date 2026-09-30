@@ -6,8 +6,11 @@ import { clamp, smoothstep } from '../core/util.js';
 import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
 
-// cells of trees whose middle is further from the camera get the lighter crowns
+// cells of trees whose middle is further from the camera get the lighter
+// crowns; cells of grass further than GRASS_NEAR show a share of their tufts
 const TREE_NEAR = 70;
+const GRASS_NEAR = 60;
+const GRASS_FAR_SHARE = 0.35;
 
 const PALETTES = {
   plains: { grass: '#6f9a46', grass2: '#8aab55', dirt: '#8c7650', rock: '#7d7870', trees: 0.004, pines: 0.0005, rocks: 0.0008, relief: 4, sky: ['#8fbfe6', '#dfe9ef'], fog: '#c9d8e0' },
@@ -262,13 +265,19 @@ export class BattleTerrain {
     if (this.grassTime) this.grassTime.value = time;
   }
 
-  // Trees in the cells far from the camera: the lighter crowns.
+  // Trees in the cells far from the camera: the lighter crowns. Grass there:
+  // only some of the tufts (they are in no order, so the field thins out).
   lod(camera) {
+    const cam = camera.position;
     const d2 = TREE_NEAR * TREE_NEAR;
     for (const t of this.treeLods || []) {
-      const near = camera.position.distanceToSquared(t.center) < d2;
+      const near = cam.distanceToSquared(t.center) < d2;
       t.near.visible = near;
       t.far.visible = !near;
+    }
+    const g2 = GRASS_NEAR * GRASS_NEAR;
+    for (const g of this.grassCells || []) {
+      g.mesh.count = cam.distanceToSquared(g.center) < g2 ? g.all : Math.ceil(g.all * GRASS_FAR_SHARE);
     }
   }
 
@@ -405,10 +414,12 @@ export class BattleTerrain {
       chunks.add(x, z, dummy.matrix, tint);
       n++;
     }
+    this.grassCells = [];
     for (const mesh of chunks.meshes(geo, mat)) {
       mesh.receiveShadow = true;
       mesh.castShadow = false;
       this.group.add(mesh);
+      this.grassCells.push({ mesh, center: mesh.boundingSphere.center, all: mesh.count });
     }
   }
 
