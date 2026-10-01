@@ -24,6 +24,7 @@ const PART_NAMES = {
   noSky: 'без неба',
   noSoldiers: 'без воїнів (і їхніх речей)',
   noHorses: 'без коней',
+  baseAgain: 'усе ще раз (розкид замірів)',
 };
 // hide objects (those shown), give back what shows them again
 const hide = (objects) => {
@@ -52,7 +53,16 @@ const PARTS = {
   },
   noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass')),
   noTrees: (b) => hide(find(b, (o) => o.name === 'vegetation')),
-  noSky: (b) => hide([b.sky]),
+  // the sky is the scene's background (baked once) or a dome
+  noSky: (b) => {
+    const background = b.scene.background;
+    b.scene.background = null;
+    const show = hide([b.sky]);
+    return () => {
+      b.scene.background = background;
+      show();
+    };
+  },
   noSoldiers: (b) => {
     const show = hide(b.agents.map((a) => a.rig.root));
     // and what they carry
@@ -68,6 +78,8 @@ const PARTS = {
     };
   },
   noHorses: (b) => hide([...b.agents.map((a) => a.horse && a.horse.rig.root), ...[...b.looseHorses, ...b.deadHorses].map((h) => h.rig.root)]),
+  // the first measurement again at the end: how much the numbers drift
+  baseAgain: () => () => {},
 };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -301,7 +313,8 @@ export async function runBenchmark(game) {
       for (const [name, off] of Object.entries(PARTS)) {
         out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${PART_NAMES[name]}…`;
         const restore = off(battle);
-        await wait(BREAKDOWN.warmup * 1000);
+        // (longer first: the resolution has just changed)
+        await wait((name === 'base' ? WARMUP : BREAKDOWN.warmup) * 1000);
         const r = await measure(game, BREAKDOWN.measure);
         restore();
         breakdown[name] = { fps: r.fps, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
