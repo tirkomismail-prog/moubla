@@ -21,7 +21,6 @@ const PART_NAMES = {
   noPost: 'без постобробки',
   noGrass: 'без трави',
   noTrees: 'без дерев і каміння',
-  noTreeDepth: 'дерева без попереднього проходу глибини листя',
   noSky: 'без неба',
   noSoldiers: 'без воїнів (і їхніх речей)',
   noHorses: 'без коней',
@@ -54,13 +53,6 @@ const PARTS = {
   },
   noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass')),
   noTrees: (b) => hide(find(b, (o) => o.name === 'vegetation')),
-  // the leaves drawn in one pass (does their depth pass pay off here?)
-  noTreeDepth: (b) => {
-    const forest = b.terrain.forest;
-    if (!forest) return () => {};
-    forest.setDepthPass(false);
-    return () => forest.setDepthPass(true);
-  },
   // the sky is the scene's background (baked once) or a dome
   noSky: (b) => {
     const background = b.scene.background;

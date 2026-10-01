@@ -15,6 +15,8 @@ import { bytesOf, decodeLayers, SHADOW_LAYER } from './partmat.js';
 // metres past a limit (no flicker when the camera stands on it)
 const LOD_DIST = [28, 60];
 const HYST = 3;
+// the trees this much (metres) beyond the edge of the view count as in it
+const VIEW_MARGIN = 6;
 
 let T = null;
 
@@ -102,11 +104,7 @@ const ALPHA_MIP = `
     diffuseColor.a *= 1.0 + 0.2 * max(mip - 1.0, 0.0);
   }
   #endif
-  #include <alphatest_fragment>
-  #ifdef TREE_PREPASS
-    gl_FragColor = vec4(0.0);
-    return;
-  #endif`;
+  #include <alphatest_fragment>`;
 
 // A card takes the crown's normal on both sides (lit as one soft volume);
 // where that normal points away from the camera (the far side of the crown,
@@ -147,13 +145,11 @@ const DULL = `
   reflectedLight.indirectSpecular *= 0.35;
   reflectedLight.directSpecular *= 0.6;`;
 
-// (invariant: the leaves' depth pass and colour pass place their vertices
-// exactly alike, see materials())
 function windy(material, wind, key, fragment) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.windTime = wind;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float windTime;\n#ifdef TREE_LEAVES\ninvariant gl_Position;\n#endif')
+      .replace('#include <common>', '#include <common>\nuniform float windTime;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${SWAY}`)
       .replace('#include <defaultnormal_vertex>', FACING);
     if (fragment) fragment(shader);
@@ -192,18 +188,11 @@ function materials(kind, wind) {
     m.defines = defines;
     return m;
   };
-  // The cards of a crown lie on top of each other: their depth is drawn
-  // first (only the cut-out, before everything else), then their colour
-  // only where they are in front - each pixel of a crown is lit once.
   const leaves = leafMat('tree-leaves', { TREE_LEAVES: '' });
-  const leavesDepth = leafMat('tree-leaves-depth', { TREE_LEAVES: '', TREE_PREPASS: '' });
   const impostor = leafMat('tree-impostor', { TREE_LEAVES: '', TREE_IMPOSTOR: '' });
-  const impostorDepth = leafMat('tree-impostor-depth', { TREE_LEAVES: '', TREE_IMPOSTOR: '', TREE_PREPASS: '' });
-  for (const m of [leaves, impostor]) m.depthWrite = false;
-  for (const m of [leavesDepth, impostorDepth]) m.colorWrite = false;
   // the shadow pass copies map and alphaTest from the leaves
   const depth = windy(new THREE.MeshDepthMaterial(), wind, 'tree-depth', cutout(T.atlasSize, false));
-  return { bark, leaves, leavesDepth, impostor, impostorDepth, depth };
+  return { bark, leaves, impostor, depth };
 }
 
 // ---------------------------------------------------------------------------
@@ -243,8 +232,6 @@ export class Forest {
     this.tints = new Float32Array(n * 3);
     this.level = new Int8Array(n).fill(-1);
     this.setOf = new Uint16Array(n);
-    this.dist = new Float32Array(n);
-    this.order = [];
     this.sets = [];
     // the camera's matrices at the last update (doubles, like the matrices)
     this.last = new Float64Array(32);
@@ -278,33 +265,23 @@ export class Forest {
       const list = (parts, opts) => {
         const matrix = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16).setUsage(THREE.DynamicDrawUsage);
         const color = opts.tint ? new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage) : null;
-        const meshes = [];
-        const add = (geo, m, opt) => {
+        const meshes = parts.map(([geo, m, tinted]) => {
           const mesh = new THREE.InstancedMesh(geo, m, 0);
           mesh.instanceMatrix = matrix;
-          if (opt.tinted) mesh.instanceColor = color;
+          if (tinted) mesh.instanceColor = color;
           mesh.frustumCulled = false;
           mesh.castShadow = !!opts.cast;
           mesh.receiveShadow = !!opts.receive;
-          if (opt.first) mesh.renderOrder = -1;
-          mesh.visible = false;
-          this.group.add(mesh);
-          meshes.push(mesh);
-          return mesh;
-        };
-        for (const [geo, m, tinted] of parts) {
           if (opts.cast) {
-            const mesh = add(geo, m, {});
             mesh.layers.set(SHADOW_LAYER);
             if (m === mat.leaves) mesh.customDepthMaterial = mat.depth;
-            continue;
           }
-          // the depth pass of the leaves (see materials())
-          if (m === mat.leaves) add(geo, mat.leavesDepth, { first: true }).userData.depthPass = true;
-          if (m === mat.impostor) add(geo, mat.impostorDepth, { first: true }).userData.depthPass = true;
-          add(geo, m, { tinted });
-        }
-        return { meshes, matrix, color, k: 0, shown: -1 };
+          mesh.visible = false;
+          this.group.add(mesh);
+          return mesh;
+        });
+        // ids: the trees in the list (by number); n: how many this time
+        return { meshes, matrix, color, ids: new Int32Array(cap).fill(-1), n: 0, count: 0, changed: false };
       };
       set.levels = [
         list([[v.bark[0], mat.bark], [v.leaves[0], mat.leaves, true]], { receive: true, tint: true }),
@@ -313,23 +290,14 @@ export class Forest {
       ];
       set.shadow = shadows ? list([[v.bark[1], mat.bark], [v.leaves[1], mat.leaves]], { cast: true }) : null;
     }
-    this.byDistance = (a, b) => this.dist[a] - this.dist[b];
-    this.depthPass = true;
-    this.materials = Object.values(mats);
   }
 
-  // The leaves with (true) or without their depth pass (for the benchmark).
-  setDepthPass(on) {
-    this.depthPass = on;
-    for (const m of this.materials) m.leaves.depthWrite = m.impostor.depthWrite = !on;
-    for (const s of this.sets) for (const l of s.levels) l.shown = -1;
-    this.last.fill(0);
-  }
-
-  // Sorts the trees in view into the levels (near to far: the near crowns
-  // hide the far ones before these are shaded) and the ones whose shadow can
-  // fall into the shadow map into the casters. Nothing to do while the
-  // camera stands still.
+  // Sorts the trees in view into the levels and the ones whose shadow can
+  // fall into the shadow map into the casters. A list goes to the graphics
+  // card again only when other trees are in it (a whole list: a buffer the
+  // card is still drawing from is then replaced, not waited for); the trees
+  // just outside the view are kept in, so turning the camera a little
+  // changes nothing. Nothing to do while the camera stands still.
   update(camera, light) {
     const e = camera.matrixWorld.elements;
     const pr = camera.projectionMatrix.elements;
@@ -352,33 +320,23 @@ export class Forest {
       light.shadow.updateMatrices(light);
       sun = light.shadow.getFrustum().planes;
     }
-    for (const s of this.sets) {
-      for (const l of s.levels) l.k = 0;
-      if (s.shadow) s.shadow.k = 0;
-    }
     const { x: cx, y: cy, z: cz } = camera.position;
     const b = this.bounds;
-    const order = this.order;
-    order.length = 0;
     for (let i = 0; i < this.n; i++) {
       const x = b[i * 4];
       const y = b[i * 4 + 1];
       const z = b[i * 4 + 2];
       const r = b[i * 4 + 3];
-      if (sun && inside(sun, x, y, z, r)) this.put(this.sets[this.setOf[i]].shadow, i);
-      if (!inside(view, x, y, z, r)) continue;
-      this.dist[i] = Math.hypot(x - cx, y - cy, z - cz);
-      order.push(i);
-    }
-    order.sort(this.byDistance);
-    for (const i of order) {
-      const d = this.dist[i];
+      const set = this.sets[this.setOf[i]];
+      if (sun && inside(sun, x, y, z, r + VIEW_MARGIN)) this.put(set.shadow, i);
+      if (!inside(view, x, y, z, r + VIEW_MARGIN)) continue;
+      const d = Math.hypot(x - cx, y - cy, z - cz);
       let lv = this.level[i];
       const want = d < LOD_DIST[0] ? 0 : d < LOD_DIST[1] ? 1 : 2;
       if (want !== lv && (lv < 0 || Math.abs(want - lv) > 1 || Math.abs(d - LOD_DIST[Math.min(want, lv)]) > HYST)) {
         lv = this.level[i] = want;
       }
-      this.put(this.sets[this.setOf[i]].levels[lv], i);
+      this.put(set.levels[lv], i);
     }
     for (const s of this.sets) {
       for (const l of s.levels) this.done(l);
@@ -387,34 +345,38 @@ export class Forest {
   }
 
   put(l, i) {
-    const a = l.matrix.array;
-    const m = this.mats;
-    const o = l.k * 16;
-    const s = i * 16;
-    for (let j = 0; j < 16; j++) a[o + j] = m[s + j];
-    if (l.color) {
-      const c = l.color.array;
-      c[l.k * 3] = this.tints[i * 3];
-      c[l.k * 3 + 1] = this.tints[i * 3 + 1];
-      c[l.k * 3 + 2] = this.tints[i * 3 + 2];
+    if (l.ids[l.n] !== i) {
+      l.ids[l.n] = i;
+      l.changed = true;
     }
-    l.k++;
+    l.n++;
   }
 
-  // uploads only the part of the lists in use
+  // a list whose trees changed: its matrices and tints, uploaded whole
   done(l) {
-    if (l.k === 0 && l.shown === 0) return;
-    l.shown = l.k;
+    const n = l.n;
+    l.n = 0;
+    if (!l.changed && n === l.count) return;
+    l.changed = false;
+    l.count = n;
+    const a = l.matrix.array;
+    const c = l.color ? l.color.array : null;
+    for (let k = 0; k < n; k++) {
+      const i = l.ids[k];
+      for (let j = 0; j < 16; j++) a[k * 16 + j] = this.mats[i * 16 + j];
+      if (c) {
+        c[k * 3] = this.tints[i * 3];
+        c[k * 3 + 1] = this.tints[i * 3 + 1];
+        c[k * 3 + 2] = this.tints[i * 3 + 2];
+      }
+    }
     for (const m of l.meshes) {
-      m.count = l.k;
-      m.visible = l.k > 0 && (this.depthPass || !m.userData.depthPass);
+      m.count = n;
+      m.visible = n > 0;
     }
-    if (l.k === 0) return;
-    for (const a of l.color ? [l.matrix, l.color] : [l.matrix]) {
-      a.clearUpdateRanges();
-      a.addUpdateRange(0, l.k * a.itemSize);
-      a.needsUpdate = true;
-    }
+    if (n === 0) return;
+    l.matrix.needsUpdate = true;
+    if (l.color) l.color.needsUpdate = true;
   }
 
   setTime(time) {
