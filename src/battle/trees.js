@@ -17,6 +17,9 @@ const LOD_DIST = [28, 60];
 const HYST = 3;
 // the trees this much (metres) beyond the edge of the view count as in it
 const VIEW_MARGIN = 6;
+// a list is put in order from near to far again once the camera has moved
+// this far (metres) since
+const RESORT = 8;
 
 let T = null;
 
@@ -232,7 +235,13 @@ export class Forest {
     this.tints = new Float32Array(n * 3);
     this.level = new Int8Array(n).fill(-1);
     this.setOf = new Uint16Array(n);
+    this.dist = new Float32Array(n);
+    // the list each tree is drawn in (-1: none) and the one it casts its
+    // shadow in
+    this.drawnIn = new Int16Array(n).fill(-1);
+    this.castIn = new Int16Array(n).fill(-1);
     this.sets = [];
+    this.lists = [];
     // the camera's matrices at the last update (doubles, like the matrices)
     this.last = new Float64Array(32);
 
@@ -280,8 +289,11 @@ export class Forest {
           this.group.add(mesh);
           return mesh;
         });
-        // ids: the trees in the list (by number); n: how many this time
-        return { meshes, matrix, color, ids: new Int32Array(cap).fill(-1), n: 0, count: 0, changed: false };
+        // ids: the trees in the list this time (n of them); from: where the
+        // camera was when it was last put in order (casters: no order)
+        const l = { id: this.lists.length, meshes, matrix, color, ids: new Int32Array(cap), n: 0, changed: false, sorted: !opts.cast, from: [0, 0, 0] };
+        this.lists.push(l);
+        return l;
       };
       set.levels = [
         list([[v.bark[0], mat.bark], [v.leaves[0], mat.leaves, true]], { receive: true, tint: true }),
@@ -290,13 +302,16 @@ export class Forest {
       ];
       set.shadow = shadows ? list([[v.bark[1], mat.bark], [v.leaves[1], mat.leaves]], { cast: true }) : null;
     }
+    this.byDistance = (a, b) => this.dist[a] - this.dist[b];
   }
 
   // Sorts the trees in view into the levels and the ones whose shadow can
   // fall into the shadow map into the casters. A list goes to the graphics
-  // card again only when other trees are in it (a whole list: a buffer the
-  // card is still drawing from is then replaced, not waited for); the trees
-  // just outside the view are kept in, so turning the camera a little
+  // card again only when other trees are in it, or, to stay in order from
+  // near to far (the near crowns hide the far ones before these are
+  // shaded), when the camera has moved RESORT metres; a whole list: a buffer
+  // the card is still drawing from is then replaced, not waited for. The
+  // trees just outside the view are kept in, so turning the camera a little
   // changes nothing. Nothing to do while the camera stands still.
   update(camera, light) {
     const e = camera.matrixWorld.elements;
@@ -320,45 +335,61 @@ export class Forest {
       light.shadow.updateMatrices(light);
       sun = light.shadow.getFrustum().planes;
     }
-    const { x: cx, y: cy, z: cz } = camera.position;
+    const cam = camera.position;
     const b = this.bounds;
+    const lists = this.lists;
     for (let i = 0; i < this.n; i++) {
       const x = b[i * 4];
       const y = b[i * 4 + 1];
       const z = b[i * 4 + 2];
       const r = b[i * 4 + 3];
       const set = this.sets[this.setOf[i]];
-      if (sun && inside(sun, x, y, z, r + VIEW_MARGIN)) this.put(set.shadow, i);
-      if (!inside(view, x, y, z, r + VIEW_MARGIN)) continue;
-      const d = Math.hypot(x - cx, y - cy, z - cz);
-      let lv = this.level[i];
-      const want = d < LOD_DIST[0] ? 0 : d < LOD_DIST[1] ? 1 : 2;
-      if (want !== lv && (lv < 0 || Math.abs(want - lv) > 1 || Math.abs(d - LOD_DIST[Math.min(want, lv)]) > HYST)) {
-        lv = this.level[i] = want;
+      let cast = -1;
+      if (sun && inside(sun, x, y, z, r + VIEW_MARGIN)) {
+        cast = set.shadow.id;
+        set.shadow.ids[set.shadow.n++] = i;
       }
-      this.put(set.levels[lv], i);
+      let drawn = -1;
+      if (inside(view, x, y, z, r + VIEW_MARGIN)) {
+        const d = Math.hypot(x - cam.x, y - cam.y, z - cam.z);
+        this.dist[i] = d;
+        let lv = this.level[i];
+        const want = d < LOD_DIST[0] ? 0 : d < LOD_DIST[1] ? 1 : 2;
+        if (want !== lv && (lv < 0 || Math.abs(want - lv) > 1 || Math.abs(d - LOD_DIST[Math.min(want, lv)]) > HYST)) {
+          lv = this.level[i] = want;
+        }
+        const l = set.levels[lv];
+        drawn = l.id;
+        l.ids[l.n++] = i;
+      }
+      // a tree came into a list or left one: both lists change
+      if (drawn !== this.drawnIn[i]) {
+        if (this.drawnIn[i] >= 0) lists[this.drawnIn[i]].changed = true;
+        if (drawn >= 0) lists[drawn].changed = true;
+        this.drawnIn[i] = drawn;
+      }
+      if (cast !== this.castIn[i]) {
+        if (this.castIn[i] >= 0) lists[this.castIn[i]].changed = true;
+        if (cast >= 0) lists[cast].changed = true;
+        this.castIn[i] = cast;
+      }
     }
-    for (const s of this.sets) {
-      for (const l of s.levels) this.done(l);
-      if (s.shadow) this.done(s.shadow);
-    }
+    for (const l of lists) this.done(l, cam);
   }
 
-  put(l, i) {
-    if (l.ids[l.n] !== i) {
-      l.ids[l.n] = i;
-      l.changed = true;
-    }
-    l.n++;
-  }
-
-  // a list whose trees changed: its matrices and tints, uploaded whole
-  done(l) {
+  // a list whose trees changed (or that has to be put in order again): its
+  // matrices and tints, uploaded whole
+  done(l, cam) {
     const n = l.n;
     l.n = 0;
-    if (!l.changed && n === l.count) return;
+    const f = l.from;
+    const moved = l.sorted && n > 1 && Math.hypot(cam.x - f[0], cam.y - f[1], cam.z - f[2]) > RESORT;
+    if (!l.changed && !moved) return;
     l.changed = false;
-    l.count = n;
+    f[0] = cam.x;
+    f[1] = cam.y;
+    f[2] = cam.z;
+    if (l.sorted && n > 1) l.ids.subarray(0, n).sort(this.byDistance);
     const a = l.matrix.array;
     const c = l.color ? l.color.array : null;
     for (let k = 0; k < n; k++) {
