@@ -269,7 +269,7 @@ def broadleaf(rng, H, tile):
             bpts = bend(p, end, Vector((0, 0, -0.08 * L)), 3)
             rr = r1 * (1 - 0.6 * t) * 0.5
             branches.append((bpts, max(0.02, rr), 0.008))
-            for s in (0.4, 0.62, 0.84, 1.0):
+            for s in (0.55, 1.0):
                 q = bpts[0].lerp(bpts[-1], s) + Vector((0, 0, -0.08 * L * 4 * s * (1 - s)))
                 anchors.append(q)
         for s in (0.82, 1.0):
@@ -300,10 +300,12 @@ def broadleaf_meshes(rng, tree, tile, level):
             tube(bark, pts, [r1, (r1 + r2) / 2, (r1 + r2) / 3, r2], 4, tile)
     centre, half = tree['centre'], tree['half']
     anchors = list(tree['anchors'])
-    size = (0.7, 0.95)
+    # one card per clump, turned and tilted at random: about four cards on
+    # top of each other across the crown (the gaps of one show the next)
+    size = (0.75, 1.0)
     if level == 1:
         anchors = merge(anchors, max(20, len(anchors) // 3), rng)
-        size = (1.15, 1.45)
+        size = (1.25, 1.55)
 
     def normal(p):
         # leaves lit as one soft volume: normals point out of the crown
@@ -315,14 +317,12 @@ def broadleaf_meshes(rng, tree, tile, level):
         # deeper in the crown and lower: darker
         ao = 0.55 + 0.45 * min(1.0, rel.length) * (0.75 + 0.25 * max(-1.0, min(1.0, rel.z)))
         s = rng.uniform(*size)
-        az = rng.uniform(0, math.pi)
-        for k in range(2):
-            ang = az + k * math.pi / 2
-            right = Vector((math.cos(ang), math.sin(ang), 0)) * s
-            tilt = rng.uniform(-0.25, 0.25)
-            up = Vector((-math.sin(ang) * tilt, math.cos(ang) * tilt, 1)).normalized() * s
-            uv0, uv1 = tile_rect(rng.randrange(FOLIAGE_TILES), 0.02)
-            quad(leaves, a, right, up, uv0, uv1, normal, ao)
+        ang = rng.uniform(0, math.pi)
+        right = Vector((math.cos(ang), math.sin(ang), 0)) * s
+        tilt = rng.uniform(-0.6, 0.6)
+        up = Vector((-math.sin(ang) * tilt, math.cos(ang) * tilt, 1)).normalized() * s
+        uv0, uv1 = tile_rect(rng.randrange(FOLIAGE_TILES), 0.02)
+        quad(leaves, a, right, up, uv0, uv1, normal, ao)
     return bark, leaves
 
 
@@ -343,7 +343,7 @@ def merge(points, k, rng):
 # ---------------------------------------------------------------------------
 
 def conifer(rng, H, tile):
-    r0 = 0.017 * H + rng.uniform(0, 0.03)
+    r0 = 0.012 * H + rng.uniform(0, 0.02)
     first = rng.uniform(1.4, 2.4)
     R = rng.uniform(0.21, 0.26) * H
     lean = Vector((rng.uniform(-1, 1), rng.uniform(-1, 1), 0)) * 0.015 * H
@@ -390,7 +390,10 @@ def conifer_meshes(rng, tree, tile, level):
         half_len = d.length * 0.55 * grow
         half_w = max(0.18, d.length * 0.32) * grow
         uv0, uv1 = tile_rect(rng.randrange(FOLIAGE_TILES), 0.02)
-        for tilt in (rng.uniform(-0.35, -0.15), rng.uniform(0.9, 1.3)):
+        # a flat frond and a steep one (seen from the side); the lighter
+        # level: one, half way
+        tilts = (rng.uniform(-0.35, -0.15), rng.uniform(0.9, 1.3)) if level == 0 else (rng.uniform(0.45, 0.7),)
+        for tilt in tilts:
             # the frond flat along the branch, then turned about it
             w = (side * math.cos(tilt) + Vector((0, 0, 1)) * math.sin(tilt)).normalized()
             quad(leaves, mid, along * half_len, w * half_w, uv0, uv1, normal, ao)
@@ -524,14 +527,30 @@ def broadleaf_tiles(src, work, rng):
     dense = sorted(outer, key=lambda p: -sum(1 for q in outer if (q - p).length_squared < 0.16))[: len(outer) // 4]
     paths = []
     r = 0.5
-    depth = 1.1  # a slab of the crown this deep (each way): many leaves on top of each other
-    for k in range(FOLIAGE_TILES):
-        p = rng.choice(dense)
+    depth = 0.8  # a slab of the crown this deep (each way): many leaves on top of each other
+    tries = 0
+    while len(paths) < FOLIAGE_TILES:
+        p = rng.choice(dense if tries % 2 else outer)
         out = Vector((p.x - c.x, p.y - c.y, 0)).normalized()
         cam = ortho_camera(p + out * 5, p, 2 * r, (5 - depth, 5 + depth))
-        paths.append(render(os.path.join(work, f'leaf_{k}.png')))
+        path = render(os.path.join(work, f'leaf_{len(paths)}.png'))
         bpy.data.objects.remove(cam)
+        tries += 1
+        # neither a solid disc of leaves nor a few twigs (the last tries take anything)
+        if 0.35 <= coverage(path) <= 0.65 or tries > 60:
+            paths.append(path)
     return paths
+
+
+def coverage(path):
+    """Share of the inner disc of a rendered tile that is leaves."""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert('RGBA').split()[3], dtype=np.float32) / 255
+    n = a.shape[0]
+    y, x = np.mgrid[0:n, 0:n]
+    inner = (x - n / 2) ** 2 + (y - n / 2) ** 2 < (n * 0.4) ** 2
+    return float((a[inner] > 0.5).mean())
 
 
 def fir_tiles(src, work, rng):
@@ -620,14 +639,21 @@ def atlas(tiles, impostors, out_dir, kind):
     from PIL import Image, ImageDraw, ImageFilter
     color = Image.new('RGB', (ATLAS, ATLAS), (60, 70, 40))
     alpha = Image.new('L', (ATLAS, ATLAS), 0)
-    fade = Image.new('L', (TILE, TILE), 0)
-    ImageDraw.Draw(fade).ellipse((TILE * 0.06, TILE * 0.06, TILE * 0.94, TILE * 0.94), fill=255)
-    fade = fade.filter(ImageFilter.GaussianBlur(TILE * 0.06))
+    import numpy as np
+    disc = Image.new('L', (TILE, TILE), 0)
+    ImageDraw.Draw(disc).ellipse((TILE * 0.06, TILE * 0.06, TILE * 0.94, TILE * 0.94), fill=255)
+    disc = np.asarray(disc.filter(ImageFilter.GaussianBlur(TILE * 0.06)), dtype=np.float32) / 255
+    noise = np.random.default_rng(5)
     for slot, path in enumerate(tiles + impostors):
         im = Image.open(path).convert('RGBA').resize((TILE, TILE), Image.LANCZOS)
         r, g, b, a = im.split()
         if slot < FOLIAGE_TILES and kind == 'oak':
-            a = Image.composite(a, Image.new('L', a.size, 0), fade)
+            # faded out towards a ragged edge (no round outline of the card)
+            blobs = Image.fromarray((noise.random((TILE, TILE)) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(TILE * 0.03))
+            blobs = np.asarray(blobs, dtype=np.float32) / 255
+            blobs = (blobs - blobs.mean()) / (blobs.std() + 1e-6)
+            fade = np.clip(disc * 1.25 + blobs * 0.22 - 0.12, 0, 1)
+            a = Image.fromarray((np.asarray(a, dtype=np.float32) * fade).astype(np.uint8))
         # colour bleeds under the transparent parts (no dark fringes)
         rgb = Image.merge('RGB', (r, g, b))
         solid = a.point(lambda v: 255 if v > 40 else 0)

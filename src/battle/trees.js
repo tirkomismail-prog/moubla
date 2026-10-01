@@ -13,7 +13,7 @@ import { bytesOf, decodeLayers, SHADOW_LAYER } from './partmat.js';
 // the full trees closer than LOD_DIST[0] metres, the lighter ones up to
 // LOD_DIST[1], the impostors further; a tree changes its level only HYST
 // metres past a limit (no flicker when the camera stands on it)
-const LOD_DIST = [32, 80];
+const LOD_DIST = [28, 60];
 const HYST = 3;
 
 let T = null;
@@ -102,16 +102,33 @@ const ALPHA_MIP = `
     diffuseColor.a *= 1.0 + 0.2 * max(mip - 1.0, 0.0);
   }
   #endif
-  #include <alphatest_fragment>`;
+  #include <alphatest_fragment>
+  #ifdef TREE_PREPASS
+    gl_FragColor = vec4(0.0);
+    return;
+  #endif`;
 
-// Leaves let some sunlight through: lit from behind when one looks towards
-// the sun (the sun is the last directional light, with its shadow).
+// A card takes the crown's normal on both sides (lit as one soft volume);
+// where that normal points away from the camera (the far side of the crown,
+// seen through the gaps) it is mirrored towards it: one sees the side of
+// the leaves turned away from the light, not a sheen at a grazing angle.
+const CROWN_NORMAL = THREE.ShaderChunk.normal_fragment_begin.replace(
+  'normal *= faceDirection;',
+  `float crownNV = dot(normal, normalize(vViewPosition));
+  if (crownNV < 0.0) normal = normalize(normal - 2.0 * crownNV * normalize(vViewPosition));`,
+);
+
+// Leaves let sunlight through: they glow when one looks towards the sun
+// (the sun is the last directional light; through other leaves, in their
+// shadow, less).
 const THROUGH = `
   #include <lights_fragment_begin>
   #if NUM_DIR_LIGHTS > 0
   {
+    vec3 sunColor = directionalLights[NUM_DIR_LIGHTS - 1].color;
+    float sunLit = dot(directLight.color, vec3(1.0)) / max(dot(sunColor, vec3(1.0)), 1e-4);
     float through = max(dot(normalize(-vViewPosition), directLight.direction), 0.0);
-    reflectedLight.directDiffuse += diffuseColor.rgb * directLight.color * (through * through * 0.4 * RECIPROCAL_PI);
+    reflectedLight.directDiffuse += diffuseColor.rgb * sunColor * (through * through * (0.3 + 0.7 * sunLit) * 0.9 * RECIPROCAL_PI);
   }
   #endif`;
 
@@ -123,11 +140,20 @@ const FACING = `
     transformedNormal = normalize(normalize(transformedNormal) + vec3(0.0, 0.0, 1.2));
   #endif`;
 
+// Leaves are dark (they keep the light they do not let through): the sheen
+// of the sky on them, at full strength, would wash their green out.
+const DULL = `
+  #include <lights_fragment_end>
+  reflectedLight.indirectSpecular *= 0.35;
+  reflectedLight.directSpecular *= 0.6;`;
+
+// (invariant: the leaves' depth pass and colour pass place their vertices
+// exactly alike, see materials())
 function windy(material, wind, key, fragment) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.windTime = wind;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float windTime;')
+      .replace('#include <common>', '#include <common>\nuniform float windTime;\n#ifdef TREE_LEAVES\ninvariant gl_Position;\n#endif')
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${SWAY}`)
       .replace('#include <defaultnormal_vertex>', FACING);
     if (fragment) fragment(shader);
@@ -141,12 +167,11 @@ const cutout = (size, leaves) => (shader) => {
   let f = shader.fragmentShader
     .replace('#include <common>', '#include <common>\nuniform float atlasSize;')
     .replace('#include <alphatest_fragment>', ALPHA_MIP);
-  // leaves: both sides of a card take the crown's normal (lit as one soft
-  // volume), and the sun shines through them
   if (leaves) {
     f = f
-      .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''))
-      .replace('#include <lights_fragment_begin>', THROUGH);
+      .replace('#include <normal_fragment_begin>', CROWN_NORMAL)
+      .replace('#include <lights_fragment_begin>', THROUGH)
+      .replace('#include <lights_fragment_end>', DULL);
   }
   shader.fragmentShader = f;
 };
@@ -167,11 +192,18 @@ function materials(kind, wind) {
     m.defines = defines;
     return m;
   };
+  // The cards of a crown lie on top of each other: their depth is drawn
+  // first (only the cut-out, before everything else), then their colour
+  // only where they are in front - each pixel of a crown is lit once.
   const leaves = leafMat('tree-leaves', { TREE_LEAVES: '' });
+  const leavesDepth = leafMat('tree-leaves-depth', { TREE_LEAVES: '', TREE_PREPASS: '' });
   const impostor = leafMat('tree-impostor', { TREE_LEAVES: '', TREE_IMPOSTOR: '' });
+  const impostorDepth = leafMat('tree-impostor-depth', { TREE_LEAVES: '', TREE_IMPOSTOR: '', TREE_PREPASS: '' });
+  for (const m of [leaves, impostor]) m.depthWrite = false;
+  for (const m of [leavesDepth, impostorDepth]) m.colorWrite = false;
   // the shadow pass copies map and alphaTest from the leaves
   const depth = windy(new THREE.MeshDepthMaterial(), wind, 'tree-depth', cutout(T.atlasSize, false));
-  return { bark, leaves, impostor, depth };
+  return { bark, leaves, leavesDepth, impostor, impostorDepth, depth };
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +246,8 @@ export class Forest {
     this.dist = new Float32Array(n);
     this.order = [];
     this.sets = [];
-    this.last = new Float32Array(32);
+    // the camera's matrices at the last update (doubles, like the matrices)
+    this.last = new Float64Array(32);
 
     const mats = {};
     const index = new Map();
@@ -237,7 +270,6 @@ export class Forest {
       this.bounds.set([_c.x, _c.y, _c.z, v.sphere.radius * t.scale], i * 4);
       t.tint.toArray(this.tints, i * 3);
     });
-    this.materials = Object.values(mats);
 
     // per set: an instance list per level (the bark and the leaves of a level
     // share it) and one of the shadow casters (the lighter model)
@@ -246,22 +278,33 @@ export class Forest {
       const list = (parts, opts) => {
         const matrix = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16).setUsage(THREE.DynamicDrawUsage);
         const color = opts.tint ? new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage) : null;
-        const meshes = parts.map(([geo, m, tinted]) => {
+        const meshes = [];
+        const add = (geo, m, opt) => {
           const mesh = new THREE.InstancedMesh(geo, m, 0);
           mesh.instanceMatrix = matrix;
-          if (tinted) mesh.instanceColor = color;
+          if (opt.tinted) mesh.instanceColor = color;
           mesh.frustumCulled = false;
           mesh.castShadow = !!opts.cast;
           mesh.receiveShadow = !!opts.receive;
-          if (opts.cast) {
-            mesh.layers.set(SHADOW_LAYER);
-            if (m === mat.leaves) mesh.customDepthMaterial = mat.depth;
-          }
+          if (opt.first) mesh.renderOrder = -1;
           mesh.visible = false;
           this.group.add(mesh);
+          meshes.push(mesh);
           return mesh;
-        });
-        return { meshes, matrix, color, k: 0, shown: 0 };
+        };
+        for (const [geo, m, tinted] of parts) {
+          if (opts.cast) {
+            const mesh = add(geo, m, {});
+            mesh.layers.set(SHADOW_LAYER);
+            if (m === mat.leaves) mesh.customDepthMaterial = mat.depth;
+            continue;
+          }
+          // the depth pass of the leaves (see materials())
+          if (m === mat.leaves) add(geo, mat.leavesDepth, { first: true }).userData.depthPass = true;
+          if (m === mat.impostor) add(geo, mat.impostorDepth, { first: true }).userData.depthPass = true;
+          add(geo, m, { tinted });
+        }
+        return { meshes, matrix, color, k: 0, shown: -1 };
       };
       set.levels = [
         list([[v.bark[0], mat.bark], [v.leaves[0], mat.leaves, true]], { receive: true, tint: true }),
@@ -271,6 +314,16 @@ export class Forest {
       set.shadow = shadows ? list([[v.bark[1], mat.bark], [v.leaves[1], mat.leaves]], { cast: true }) : null;
     }
     this.byDistance = (a, b) => this.dist[a] - this.dist[b];
+    this.depthPass = true;
+    this.materials = Object.values(mats);
+  }
+
+  // The leaves with (true) or without their depth pass (for the benchmark).
+  setDepthPass(on) {
+    this.depthPass = on;
+    for (const m of this.materials) m.leaves.depthWrite = m.impostor.depthWrite = !on;
+    for (const s of this.sets) for (const l of s.levels) l.shown = -1;
+    this.last.fill(0);
   }
 
   // Sorts the trees in view into the levels (near to far: the near crowns
@@ -354,7 +407,7 @@ export class Forest {
     l.shown = l.k;
     for (const m of l.meshes) {
       m.count = l.k;
-      m.visible = l.k > 0;
+      m.visible = l.k > 0 && (this.depthPass || !m.userData.depthPass);
     }
     if (l.k === 0) return;
     for (const a of l.color ? [l.matrix, l.color] : [l.matrix]) {
