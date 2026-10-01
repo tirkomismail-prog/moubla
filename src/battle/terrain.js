@@ -5,6 +5,7 @@ import { mulberry32 } from '../core/rng.js';
 import { clamp, smoothstep } from '../core/util.js';
 import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
+import { Forest, treesReady } from './trees.js';
 
 // cells of trees whose middle is further from the camera get the lighter
 // crowns; cells of grass further than GRASS_NEAR show a share of their tufts
@@ -263,11 +264,15 @@ export class BattleTerrain {
   // Animate what moves by itself (grass in the wind).
   update(time) {
     if (this.grassTime) this.grassTime.value = time;
+    if (this.forest) this.forest.setTime(time);
   }
 
-  // Trees in the cells far from the camera: the lighter crowns. Grass there:
-  // only some of the tufts (they are in no order, so the field thins out).
-  lod(camera) {
+  // Trees in the cells far from the camera: the lighter crowns (the
+  // realistic trees choose their level each by itself, see trees.js; `light`
+  // casts their shadows). Grass there: only some of the tufts (they are in
+  // no order, so the field thins out).
+  lod(camera, light) {
+    if (this.forest) this.forest.update(camera, light);
     const cam = camera.position;
     const d2 = TREE_NEAR * TREE_NEAR;
     for (const t of this.treeLods || []) {
@@ -346,19 +351,54 @@ export class BattleTerrain {
       }
     };
     this.treeLods = [];
+    this.forest = null;
     const dry = this.type === 'steppe' || this.type === 'desert';
-    const bark = this.material({ vertexColors: true, roughness: 1 });
-    const leaves = this.material({ vertexColors: true, roughness: 0.85 });
-    addInstanced(trunkGeo('#5a4028'), bark, trees, (s) => [s, s, s], 0, 0.1);
-    const crown = dry ? ['#5f6d33', '#76803d', '#4f5c2a'] : ['#2f5a22', '#3f6a2b', '#4d7832', '#2a4f1f'];
-    addInstanced(canopyGeo(crown, 5), leaves, trees, (s) => [s, s * 0.95, s], 4.1, 0.16, canopyGeo(crown, 5, 0));
-    addInstanced(trunkGeo('#4a3422', 0.8), bark, pines, (s) => [s * 0.8, s, s * 0.8], 0, 0.1);
-    const needles = this.type === 'snow' ? ['#23402f', '#2f4d3c', '#e4ecef'] : ['#1f4230', '#28503a', '#315c43'];
-    addInstanced(pineGeo(needles), leaves, pines, (s) => [s, s, s], 0.6, 0.12, pineGeo(needles, 6));
+    if (this.std && treesReady()) {
+      this.buildForest(trees, pines, dry);
+    } else {
+      const bark = this.material({ vertexColors: true, roughness: 1 });
+      const leaves = this.material({ vertexColors: true, roughness: 0.85 });
+      addInstanced(trunkGeo('#5a4028'), bark, trees, (s) => [s, s, s], 0, 0.1);
+      const crown = dry ? ['#5f6d33', '#76803d', '#4f5c2a'] : ['#2f5a22', '#3f6a2b', '#4d7832', '#2a4f1f'];
+      addInstanced(canopyGeo(crown, 5), leaves, trees, (s) => [s, s * 0.95, s], 4.1, 0.16, canopyGeo(crown, 5, 0));
+      addInstanced(trunkGeo('#4a3422', 0.8), bark, pines, (s) => [s * 0.8, s, s * 0.8], 0, 0.1);
+      const needles = this.type === 'snow' ? ['#23402f', '#2f4d3c', '#e4ecef'] : ['#1f4230', '#28503a', '#315c43'];
+      addInstanced(pineGeo(needles), leaves, pines, (s) => [s, s, s], 0.6, 0.12, pineGeo(needles, 6));
+    }
     addInstanced(rockGeo(pal.rock), this.material({ vertexColors: true, roughness: 0.85, flatShading: true }), rocks, (s) => [s * 1.3, s * 0.8, s], 0.15, 0.12);
     for (const [x, z, s] of trees) this.obstacles.push({ x, z, r: 0.35 * s });
     for (const [x, z, s] of pines) this.obstacles.push({ x, z, r: 0.3 * s });
     for (const [x, z, s] of rocks) this.obstacles.push({ x, z, r: 1.0 * s });
+  }
+
+  // The realistic trees (trees.js): broadleaf ones where the procedural
+  // trees would stand (8-14 m), firs for the pines (9-17 m); in the steppe
+  // and the desert the leaves are drier, in the snow paler.
+  buildForest(trees, pines, dry) {
+    const rand = mulberry32(77);
+    const tint = this.type === 'snow' ? [0.92, 0.97, 1.02] : dry ? [1.12, 1.0, 0.62] : [1, 1, 1];
+    const list = [];
+    const add = (kind, x, z, scale) => {
+      // the foot of the trunk a little in the ground on its lowest side
+      const h = (dx, dz) => this.heightAt(x + dx, z + dz);
+      const y = Math.min(h(-0.5, 0), h(0.5, 0), h(0, -0.5), h(0, 0.5)) - 0.1;
+      const v = 0.86 + rand() * 0.28;
+      list.push({
+        kind,
+        variant: Math.floor(rand() * 3),
+        x,
+        y,
+        z,
+        scale,
+        yaw: rand() * Math.PI * 2,
+        tilt: [(rand() - 0.5) * 0.06, (rand() - 0.5) * 0.06],
+        tint: new THREE.Color(v * tint[0] * (0.96 + rand() * 0.08), v * tint[1], v * tint[2] * (0.92 + rand() * 0.1)),
+      });
+    };
+    for (const [x, z, s] of trees) add('oak', x, z, 0.7 + (s - 0.8) * 0.6);
+    for (const [x, z, s] of pines) add('fir', x, z, 0.6 + (s - 0.7) * 0.6);
+    this.forest = new Forest(list, { shadows: this.gfx.shadows !== false });
+    this.group.add(this.forest.group);
   }
 
   // Instanced tufts of grass that sway in the wind.

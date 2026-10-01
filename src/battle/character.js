@@ -9,6 +9,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { helmetGeo, setTileIndex } from './models.js';
 import { bytesOf, decodeLayers, decodeTiles, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
+import { loadTrees } from './trees.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
 const state = { status: 'idle', promise: null, t: null };
@@ -37,6 +38,14 @@ export function loadCharacters() {
           await loadHorse(assets, t.tiles);
         } catch (e) {
           console.warn('Horse model unusable:', e);
+        }
+      }
+      // the trees (tools/trees/build_trees.py); the procedural ones without them
+      if (assets.trees) {
+        try {
+          await loadTrees(assets);
+        } catch (e) {
+          console.warn('Tree models unusable:', e);
         }
       }
       state.t = t;

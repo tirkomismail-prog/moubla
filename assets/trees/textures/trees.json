@@ -1,0 +1,28 @@
+{
+ "atlasSize": 1024,
+ "barkSize": 512,
+ "kinds": {
+  "oak": {
+   "atlas": [
+    "tree_oak.webp",
+    "tree_oak_alpha.webp"
+   ],
+   "bark": [
+    "bark_oak.webp",
+    "bark_oak_normal.webp"
+   ],
+   "variants": 3
+  },
+  "fir": {
+   "atlas": [
+    "tree_fir.webp",
+    "tree_fir_alpha.webp"
+   ],
+   "bark": [
+    "bark_fir.webp",
+    "bark_fir_normal.webp"
+   ],
+   "variants": 3
+  }
+ }
+}
