@@ -15,3 +15,7 @@ ambientCG textures, all **CC0 1.0** (public domain); the script downloads them i
 - **trodden_snow**: "Snow 03" (https://polyhaven.com/a/snow_03) by Rob Tuytel
 - **mossy_rock**: "Mossy Rock" (https://polyhaven.com/a/mossy_rock) by Rob Tuytel
 - **rock**: "Rock Face" (https://polyhaven.com/a/rock_face) by Greg Zaal, Dario Barresi
+
+`grass*.webp` (`tools/ground/build_grass.py`): clumps of "Grass Medium 01"
+(https://polyhaven.com/a/grass_medium_01, Rob Tuytel and Rico Cilliers) and "Grass Medium 02"
+(https://polyhaven.com/a/grass_medium_02, Rico Cilliers), Poly Haven, CC0, rendered from the side.

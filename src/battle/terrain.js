@@ -6,7 +6,7 @@ import { clamp, smoothstep } from '../core/util.js';
 import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
 import { Forest, treesReady } from './trees.js';
-import { groundMaterial, groundMean, groundReady } from './ground.js';
+import { grassGeometry, grassMaterial, grassReady, groundMaterial, groundMean, groundReady } from './ground.js';
 
 // cells of trees whose middle is further from the camera get the lighter
 // crowns; cells of grass further than GRASS_NEAR show a share of their tufts
@@ -449,9 +449,16 @@ export class BattleTerrain {
     const gc = GRASS[this.type];
     if (!gc || count <= 0) return;
     const rand = mulberry32(99);
+    const time = { value: 0 };
+    this.grassTime = time;
+    // medium and high: cards of real grass clumps (ground.js), a little
+    // larger than life
+    if (this.std && grassReady()) {
+      this.placeGrass(Math.round(count * 1.8), gc, rand, grassGeometry(), grassMaterial(this.type, time), (sc) => [sc, sc * (0.9 + rand() * 0.4), sc], 1.3, 0.8);
+      return;
+    }
     const geo = grassClumpGeo(gc, rand);
     const mat = this.material({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.9 });
-    const time = { value: 0 };
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = time;
       shader.vertexShader = shader.vertexShader
@@ -471,7 +478,12 @@ export class BattleTerrain {
         );
     };
     mat.customProgramCacheKey = () => 'grass';
-    this.grassTime = time;
+    this.placeGrass(count, gc, rand, geo, mat, (sc) => [sc, sc * (0.8 + rand() * 0.5), sc], 0.75, 0.6);
+  }
+
+  // `count` tufts of `geo` scattered over the field (scale from `minScale`,
+  // `spread` more at most; `scaleFn` gives the x, y, z scale), in cells.
+  placeGrass(count, gc, rand, geo, mat, scaleFn, minScale, spread) {
     const dummy = new THREE.Object3D();
     const tint = new THREE.Color();
     const chunks = new Chunks(40);
@@ -489,8 +501,8 @@ export class BattleTerrain {
       if (this.fort && (this.level(x, z) !== 0 || (Math.abs(x) < 8 && z > -40 && z < -5))) continue;
       dummy.position.set(x, this.heightAt(x, z) - 0.02, z);
       dummy.rotation.set(0, rand() * 6.28, 0);
-      const sc = 0.75 + rand() * 0.6;
-      dummy.scale.set(sc, sc * (0.8 + rand() * 0.5), sc);
+      const sc = minScale + rand() * spread;
+      dummy.scale.set(...scaleFn(sc));
       dummy.updateMatrix();
       const v = 0.85 + rand() * 0.3;
       tint.setRGB(v * (0.95 + rand() * 0.12), v, v * 0.95);

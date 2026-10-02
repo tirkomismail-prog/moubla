@@ -82,6 +82,14 @@ if (fs.existsSync(groundManifest)) {
     packed.layers[name] = { ...l, color: b64(path.join(groundDir, l.color)), surface: b64(path.join(groundDir, l.surface)) };
     textures += 2;
   }
+  // the grass cards (tools/ground/build_grass.py)
+  const grassManifest = path.join(groundDir, 'grass.json');
+  if (fs.existsSync(grassManifest)) {
+    const g = JSON.parse(fs.readFileSync(grassManifest, 'utf8'));
+    const color = Object.fromEntries(Object.entries(g.color).map(([k, f]) => [k, b64(path.join(groundDir, f))]));
+    packed.grass = { ...g, color, alpha: b64(path.join(groundDir, g.alpha)) };
+    textures += Object.keys(color).length + 1;
+  }
   lines.push(`  ground: ${JSON.stringify(packed)},`);
 }
 

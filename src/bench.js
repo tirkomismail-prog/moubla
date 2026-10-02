@@ -51,7 +51,7 @@ const PARTS = {
     b.post = null;
     return () => (b.post = post);
   },
-  noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey() === 'grass')),
+  noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey().startsWith('grass'))),
   noTrees: (b) => hide(find(b, (o) => o.name === 'vegetation')),
   // the sky is the scene's background (baked once) or a dome
   noSky: (b) => {
