@@ -18,6 +18,11 @@ export const GFX_PRESETS = {
   high: { name: 'Висока', standard: true, sky: true, post: true, ao: true, aa: 'msaa', grass: 22000, shadowSize: 4096, shadows: true, msaa: 4, maxPixelRatio: 1.5 },
 };
 
+// The order of the opaque things (three.js draws by renderOrder first): the
+// ground after everything standing on it, the sky last. What covers them is
+// drawn by then, their hidden pixels are skipped by the depth test.
+export const DRAW_ORDER = { ground: 1, sky: 2 };
+
 export function gfxPreset(settings) {
   return GFX_PRESETS[settings.graphics] || GFX_PRESETS.medium;
 }
@@ -83,17 +88,24 @@ export class Environment {
       u.mieCoefficient.value = 0.004;
       u.mieDirectionalG.value = 0.82;
       u.sunPosition.value.copy(this.sunDir).multiplyScalar(1000);
-      // the sun stands still during a battle: the sky is drawn once into the
-      // background instead of on every pixel of every frame
+      // the sun stands still during a battle: the sky is drawn once into a
+      // cube map instead of on every pixel of every frame
       this.skyTarget = bakeSky(renderer, sky);
-      this.sky = null;
+      // shown by a box drawn after everything else, only where nothing
+      // covers it (the scene's background is drawn first, on every pixel);
+      // not with ambient occlusion, whose pass draws the scene's normals
+      // with its own material (the box would cover them)
+      this.sky = preset.ao ? null : skyBox(this.skyTarget.texture);
       fogCol = L.elev < 0.2 ? '#d3a88c' : pal.fog;
     } else {
       fogCol = L.elev < 0.2 ? '#c8a088' : pal.fog;
       this.sky = gradientDome(L.elev < 0.2 ? '#5a6aa0' : pal.sky[0], L.elev < 0.2 ? '#f0a870' : pal.sky[1]);
     }
-    if (this.sky) scene.add(this.sky);
-    scene.background = this.skyTarget ? this.skyTarget.texture : new THREE.Color(fogCol);
+    if (this.sky) {
+      this.sky.renderOrder = DRAW_ORDER.sky;
+      scene.add(this.sky);
+    }
+    scene.background = this.skyTarget && !this.sky ? this.skyTarget.texture : new THREE.Color(fogCol);
     const far = battle.config.kind === 'arena' ? 260 : 460;
     scene.fog = preset.standard ? new THREE.FogExp2(fogCol, L.night ? 0.009 : 0.0042) : new THREE.Fog(fogCol, 70, far);
 
@@ -144,6 +156,30 @@ function bakeSky(renderer, sky) {
   sky.geometry.dispose();
   sky.material.dispose();
   return target;
+}
+
+// The baked sky (a cube map) on a box around the camera, drawn after the
+// opaque things and only where none of them was drawn: three.js's own
+// background shader, at the far plane (just in front of it, so that it
+// passes the depth test against the cleared depth).
+function skyBox(texture) {
+  const lib = THREE.ShaderLib.backgroundCube;
+  const mat = new THREE.ShaderMaterial({
+    name: 'SkyBox',
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader.replace('gl_Position.z = gl_Position.w;', 'gl_Position.z = gl_Position.w * 0.99999;'),
+    fragmentShader: lib.fragmentShader,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+  });
+  mat.uniforms.envMap.value = texture;
+  // (the renderer picks the shader's cube map path by the material's envMap)
+  Object.defineProperty(mat, 'envMap', { get: () => mat.uniforms.envMap.value });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+  box.frustumCulled = false;
+  box.onBeforeRender = (renderer, scene, camera) => box.matrixWorld.copyPosition(camera.matrixWorld);
+  return box;
 }
 
 // Sky dome: zenith/horizon gradient, optional ground colour below the

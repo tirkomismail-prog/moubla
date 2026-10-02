@@ -7,6 +7,7 @@ import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
 import { Forest, treesReady } from './trees.js';
 import { grassGeometry, grassMaterial, grassReady, groundMaterial, groundMean, groundReady } from './ground.js';
+import { DRAW_ORDER } from './graphics.js';
 
 // cells of trees whose middle is further from the camera get the lighter
 // crowns; cells of grass further than GRASS_NEAR show a share of their tufts
@@ -251,6 +252,8 @@ export class BattleTerrain {
     }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
+    // (after what stands on it: the ground under them is not shaded)
+    mesh.renderOrder = DRAW_ORDER.ground;
     this.group.add(mesh);
     this.mesh = mesh;
 
@@ -259,6 +262,7 @@ export class BattleTerrain {
     const far = new THREE.Mesh(new THREE.RingGeometry(half * 0.98, half * 6, 48, 1), this.material({ color: skirt }));
     far.rotation.x = -Math.PI / 2;
     far.position.y = -0.8;
+    far.renderOrder = DRAW_ORDER.ground;
     this.group.add(far);
 
     this.buildVegetation();

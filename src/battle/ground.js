@@ -70,7 +70,10 @@ function textures(l) {
       t.flipY = false;
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.minFilter = THREE.LinearMipmapLinearFilter;
-      t.anisotropy = 4;
+      // (the ground is seen at a slant, each step of the anisotropic filter
+      // is another look-up of every layer: 2 looks almost as sharp as 4 and
+      // costs much less)
+      t.anisotropy = 2;
       t.needsUpdate = true;
       return t;
     };
@@ -101,10 +104,11 @@ const FRAGMENT = `
   varying vec3 vGround;`;
 
 // one layer: its colour at its size and/or as the larger copy, its surface
-// near (normal, height), each only in its zone; inactive layers are not
-// looked up. textureGrad: the derivatives come from outside the branches.
+// near (normal, height), each only in its zone; layers that cannot show
+// are not looked up. textureGrad: the derivatives come from outside the
+// branches.
 const LAYER = (i, c) => `
-  if (w.${c} > 0.004) {
+  if (use.${c} > 0.5) {
     vec2 uv = gp * groundScale.${c} + vec2(${(0.37 * i).toFixed(2)}, ${(0.61 * i).toFixed(2)});
     vec2 dx = gdx * groundScale.${c};
     vec2 dy = gdy * groundScale.${c};
@@ -131,6 +135,11 @@ const MAP = `
   // of the same patterns in the distance
   vec2 warp = vec2(sin(gp.y * 0.043 + sin(gp.x * 0.029) * 1.7), sin(gp.x * 0.037 + sin(gp.y * 0.031) * 1.9)) * 0.22;
   vec4 w = vSplat / max(dot(vSplat, vec4(1.0)), 1e-4);
+  // the layers that can show here (below): its height moves a layer by at
+  // most 0.3 * surface1 either way, and only those within 0.2 of the
+  // highest show; the others are not looked up
+  float wTop = max(max(w.x, w.y), max(w.z, w.w));
+  vec4 use = step(0.004, w) * step(wTop - 0.2 - 0.6 * surface1, w);
   vec3 gc0 = vec3(0.0), gc1 = vec3(0.0), gc2 = vec3(0.0), gc3 = vec3(0.0);
   vec2 gn0 = vec2(0.0), gn1 = vec2(0.0), gn2 = vec2(0.0), gn3 = vec2(0.0);
   vec4 gh = vec4(0.5);
@@ -140,9 +149,9 @@ const MAP = `
   ${LAYER(3, 'w')}
   // the layer standing highest where they meet wins (near, where the
   // heights are looked up; further the weights blend)
-  vec4 hw = w + (gh - 0.5) * 0.6 * step(0.004, w);
+  vec4 hw = w + (gh - 0.5) * 0.6;
   float top = max(max(hw.x, hw.y), max(hw.z, hw.w));
-  vec4 gb = max(hw - (top - 0.2), 0.0) * step(0.004, w);
+  vec4 gb = max(hw - (top - 0.2), 0.0) * use;
   gb /= max(dot(gb, vec4(1.0)), 1e-4);
   diffuseColor.rgb *= gc0 * gb.x + gc1 * gb.y + gc2 * gb.z + gc3 * gb.w;
   vec2 groundNormal = (gn0 * gb.x + gn1 * gb.y + gn2 * gb.z + gn3 * gb.w) * surface1;
