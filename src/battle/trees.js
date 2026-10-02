@@ -141,6 +141,14 @@ const FACING = `
     transformedNormal = normalize(normalize(transformedNormal) + vec3(0.0, 0.0, 1.2));
   #endif`;
 
+// Leaves are rough: the sky they reflect is about the light they get from
+// it (no second look-up in the environment map, which the leaves' many
+// fragments would pay for).
+const SKY_SHEEN = THREE.ShaderChunk.lights_fragment_maps.replace(
+  'vec3 iblRadiance = getIBLRadiance( geometryViewDir, geometryNormal, material.roughness );',
+  'vec3 iblRadiance = iblIrradiance * RECIPROCAL_PI;',
+);
+
 // Leaves are dark (they keep the light they do not let through): the sheen
 // of the sky on them, at full strength, would wash their green out.
 const DULL = `
@@ -170,6 +178,7 @@ const cutout = (size, leaves) => (shader) => {
     f = f
       .replace('#include <normal_fragment_begin>', CROWN_NORMAL)
       .replace('#include <lights_fragment_begin>', THROUGH)
+      .replace('#include <lights_fragment_maps>', SKY_SHEEN)
       .replace('#include <lights_fragment_end>', DULL);
   }
   shader.fragmentShader = f;

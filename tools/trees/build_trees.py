@@ -196,6 +196,62 @@ def quad(m, center, right, up, uv0, uv1, normal_fn, col):
     m.f.append((idx[0], idx[2], idx[3]))
 
 
+# Outline of the content of each atlas slot (see outlines()): the cards are
+# cut to it, so that the graphics card does not run the leaves' shader over
+# the empty corners of the tiles only to throw it away.
+SHAPES = {}
+
+
+def card(m, center, right, up, slot, inset, normal_fn, col):
+    """A card showing atlas slot `slot` (inset: the UV margin, as in
+    tile_rect), cut to the slot's outline (a square without one)."""
+    uv0, uv1 = tile_rect(slot, inset)
+    idx = []
+    for s, t in SHAPES.get(slot, [(0, 0), (1, 0), (1, 1), (0, 1)]):
+        cx = max(-1.0, min(1.0, 2 * (s - inset) / (1 - 2 * inset) - 1))
+        cy = max(-1.0, min(1.0, 2 * (t - inset) / (1 - 2 * inset) - 1))
+        p = center + right * cx + up * cy
+        uv = (uv0[0] + (uv1[0] - uv0[0]) * (cx + 1) / 2, uv0[1] + (uv1[1] - uv0[1]) * (cy + 1) / 2)
+        idx.append(m.add(p, uv, normal_fn(p), col))
+    for k in range(1, len(idx) - 1):
+        m.f.append((idx[0], idx[k], idx[k + 1]))
+
+
+def outlines(alpha_path, slots, threshold=0.2, pad=3):
+    """For each slot: the 8-sided outline (axis-aligned and diagonal sides,
+    counter-clockwise, tile coordinates with t up) around the texels whose
+    alpha is above `threshold` (raised far away, see trees.js), `pad` texels
+    out."""
+    from PIL import Image
+    import numpy as np
+    alpha = np.asarray(Image.open(alpha_path).convert('L'), dtype=np.float32) / 255
+    out = {}
+    for slot in slots:
+        x0, y0 = (slot % 4) * TILE, (slot // 4) * TILE
+        a = alpha[y0:y0 + TILE, x0:x0 + TILE]
+        ys, xs = np.nonzero(a > threshold)
+        if len(xs) == 0:
+            continue
+        s = (xs + 0.5) / TILE
+        t = 1 - (ys + 0.5) / TILE
+        d = pad / TILE
+        d2 = d * math.sqrt(2)
+        s0, s1, t0, t1 = s.min() - d, s.max() + d, t.min() - d, t.max() + d
+        a0, a1 = (s + t).min() - d2, (s + t).max() + d2
+        b0, b1 = (s - t).min() - d2, (s - t).max() + d2
+        pts = [(a0 - t0, t0), (b1 + t0, t0), (s1, s1 - b1), (s1, a1 - s1),
+               (a1 - t1, t1), (b0 + t1, t1), (s0, s0 - b0), (s0, a0 - s0)]
+        poly = []
+        for ps, pt in pts:
+            q = (min(max(ps, s0, 0.0), s1, 1.0), min(max(pt, t0, 0.0), t1, 1.0))
+            if not poly or abs(q[0] - poly[-1][0]) + abs(q[1] - poly[-1][1]) > 1e-4:
+                poly.append(q)
+        if len(poly) > 2 and abs(poly[0][0] - poly[-1][0]) + abs(poly[0][1] - poly[-1][1]) <= 1e-4:
+            poly.pop()
+        out[slot] = poly
+    return out
+
+
 def tile_rect(slot, inset=0.0):
     """UV rectangle of atlas slot (row-major from the top-left, glTF UVs
     with v up)."""
@@ -321,8 +377,7 @@ def broadleaf_meshes(rng, tree, tile, level):
         right = Vector((math.cos(ang), math.sin(ang), 0)) * s
         tilt = rng.uniform(-0.6, 0.6)
         up = Vector((-math.sin(ang) * tilt, math.cos(ang) * tilt, 1)).normalized() * s
-        uv0, uv1 = tile_rect(rng.randrange(FOLIAGE_TILES), 0.02)
-        quad(leaves, a, right, up, uv0, uv1, normal, ao)
+        card(leaves, a, right, up, rng.randrange(FOLIAGE_TILES), 0.02, normal, ao)
     return bark, leaves
 
 
@@ -389,14 +444,14 @@ def conifer_meshes(rng, tree, tile, level):
         ao = 0.6 + 0.4 * (1 - rel) ** 0.5
         half_len = d.length * 0.55 * grow
         half_w = max(0.18, d.length * 0.32) * grow
-        uv0, uv1 = tile_rect(rng.randrange(FOLIAGE_TILES), 0.02)
+        slot = rng.randrange(FOLIAGE_TILES)
         # a flat frond and a steep one (seen from the side); the lighter
         # level: one, half way
         tilts = (rng.uniform(-0.35, -0.15), rng.uniform(0.9, 1.3)) if level == 0 else (rng.uniform(0.45, 0.7),)
         for tilt in tilts:
             # the frond flat along the branch, then turned about it
             w = (side * math.cos(tilt) + Vector((0, 0, 1)) * math.sin(tilt)).normalized()
-            quad(leaves, mid, along * half_len, w * half_w, uv0, uv1, normal, ao)
+            card(leaves, mid, along * half_len, w * half_w, slot, 0.02, normal, ao)
     return bark, leaves
 
 
@@ -653,6 +708,11 @@ def atlas(tiles, impostors, out_dir, kind):
             blobs = np.asarray(blobs, dtype=np.float32) / 255
             blobs = (blobs - blobs.mean()) / (blobs.std() + 1e-6)
             fade = np.clip(disc * 1.25 + blobs * 0.22 - 0.12, 0, 1)
+            # and nothing beyond 0.46 of the tile from its middle: the card is
+            # cut to an octagon around that (see outlines())
+            yy, xx = np.mgrid[0:TILE, 0:TILE]
+            rad = np.hypot(xx + 0.5 - TILE / 2, yy + 0.5 - TILE / 2) / TILE
+            fade *= np.clip((0.46 - rad) / 0.04, 0, 1)
             a = Image.fromarray((np.asarray(a, dtype=np.float32) * fade).astype(np.uint8))
         # colour bleeds under the transparent parts (no dark fringes)
         rgb = Image.merge('RGB', (r, g, b))
@@ -707,6 +767,8 @@ def build(args):
         tiles = broadleaf_tiles(src, work, rng) if spec['type'] == 'broadleaf' else fir_tiles(src, work, rng)
         # the atlas with the foliage alone first (for rendering the impostors)
         files = atlas(tiles, [], tex_dir, kind)
+        SHAPES.clear()
+        SHAPES.update(outlines(os.path.join(tex_dir, files[1]), range(FOLIAGE_TILES)))
         from PIL import Image
         png = os.path.join(work, f'{kind}_atlas.png')
         rgb = Image.open(os.path.join(tex_dir, files[0])).convert('RGB')
@@ -746,6 +808,10 @@ def build(args):
             sizes.append(max(H * 1.05, width) * 1.04)
             built.append(levels)
         files = atlas(tiles, views, tex_dir, kind)
+        SHAPES.update(outlines(os.path.join(tex_dir, files[1]), range(FOLIAGE_TILES, FOLIAGE_TILES + len(views))))
+        for slot, poly in sorted(SHAPES.items()):
+            area = 0.5 * abs(sum(poly[k][0] * poly[k - 1][1] - poly[k - 1][0] * poly[k][1] for k in range(len(poly))))
+            print(f'{kind} slot {slot:2d}: outline {len(poly)} sides, {area:.2f} of the tile')
         manifest['kinds'][kind] = {'atlas': files, 'bark': bark_texture(src, kind, tex_dir), 'variants': spec['variants']}
         # the meshes, with the impostor quads
         for v, levels in enumerate(built):
@@ -757,10 +823,9 @@ def build(args):
             for k, ang in enumerate((0.0, math.pi / 2)):
                 d = Vector((math.cos(ang), math.sin(ang), 0))
                 right = d.cross(Vector((0, 0, 1))) * (-S / 2)
-                uv0, uv1 = tile_rect(FOLIAGE_TILES + v * 2 + k)
                 # lit as one round crown
                 centre = Vector((0, 0, S * 0.55))
-                quad(imp, Vector((0, 0, S / 2)), right, Vector((0, 0, S / 2)), uv0, uv1,
+                card(imp, Vector((0, 0, S / 2)), right, Vector((0, 0, S / 2)), FOLIAGE_TILES + v * 2 + k, 0.0,
                      lambda p, c=centre: ((p - c).normalized() + Vector((0, 0, 0.4))).normalized(), 1.0)
             meshes.append((f'Tree_{kind}_{v}_Leaves_LOD2', imp))
     clear_scene()
