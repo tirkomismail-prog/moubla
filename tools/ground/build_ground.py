@@ -129,8 +129,8 @@ def build(args):
         # repeated, it would draw stripes across the field
         # (blurred as a tile among copies of itself: no seams at its edges)
         tiled = Image.fromarray((np.tile(np.clip(c, 0, 1), (3, 3, 1)) * 255).astype(np.uint8))
-        low = np.asarray(tiled.filter(ImageFilter.GaussianBlur(COLOR / 8)), dtype=np.float32)[COLOR:2 * COLOR, COLOR:2 * COLOR] / 255
-        c = c * (c.reshape(-1, 3).mean(0) / np.maximum(low, 1e-3)) ** 0.8
+        low = np.asarray(tiled.filter(ImageFilter.GaussianBlur(COLOR / 12)), dtype=np.float32)[COLOR:2 * COLOR, COLOR:2 * COLOR] / 255
+        c = c * (c.reshape(-1, 3).mean(0) / np.maximum(low, 1e-3))
         target = next((o for o in opts if isinstance(o, float)), None)
         if target:
             lin = srgb_to_linear(c)

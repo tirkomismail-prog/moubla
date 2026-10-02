@@ -2,6 +2,8 @@
 // and ~50 horses, filmed by an orbiting camera, at several graphics presets
 // and internal resolutions. Reports frame times, draw calls and triangles as
 // a table and as JSON to send back to the developer.
+import * as THREE from 'three';
+
 const ARMY = {
   allies: [['velmar_sergeant', 30], ['velmar_crossbow', 15], ['velmar_knight', 25]],
   enemies: [['nord_veteran', 40], ['nord_archer', 15], ['kag_horse_archer', 25]],
@@ -21,6 +23,7 @@ const PART_NAMES = {
   noPost: 'без постобробки',
   noGrass: 'без трави',
   noTrees: 'без дерев і каміння',
+  noGround: 'земля простим матеріалом (без фототекстур)',
   noSky: 'без неба',
   noSoldiers: 'без воїнів (і їхніх речей)',
   noHorses: 'без коней',
@@ -53,6 +56,16 @@ const PARTS = {
   },
   noGrass: (b) => hide(find(b, (o) => o.isInstancedMesh && o.material.customProgramCacheKey().startsWith('grass'))),
   noTrees: (b) => hide(find(b, (o) => o.name === 'vegetation')),
+  // the terrain in a plain material instead of the photographed layers
+  noGround: (b) => {
+    const mesh = b.terrain.mesh;
+    const mat = mesh.material;
+    mesh.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+    return () => {
+      mesh.material.dispose();
+      mesh.material = mat;
+    };
+  },
   // the sky is the scene's background (baked once) or a dome
   noSky: (b) => {
     const background = b.scene.background;
@@ -317,7 +330,8 @@ export async function runBenchmark(game) {
         await wait((name === 'base' ? WARMUP : BREAKDOWN.warmup) * 1000);
         const r = await measure(game, BREAKDOWN.measure);
         restore();
-        breakdown[name] = { fps: r.fps, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
+        // (p50, p90: whether the frames come evenly with this part left out)
+        breakdown[name] = { fps: r.fps, p50: r.p50, p90: r.p90, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
       }
     }
     stop();

@@ -4,8 +4,8 @@
 // carries (`splat`: two kinds of the ground of the place, bare earth, rock).
 // Where layers meet, the one standing higher at that point of its surface
 // wins (grass between the stones, sand in the hollows). The layers repeat
-// at their real size; further than GROUND_FAR they are also drawn four
-// times larger and blended in, so that the repetition does not show.
+// at their real size; further away they are blended with, then replaced by,
+// a four times larger copy, so that the repetition does not show.
 import * as THREE from 'three';
 import { bytesOf } from './partmat.js';
 
@@ -79,10 +79,12 @@ function textures(l) {
   return l.textures;
 }
 
-// metres from the camera where the ground starts to be blended with its
-// larger copy, and where only that is left
-const GROUND_NEAR = 18;
-const GROUND_FAR = 60;
+// Three zones by the distance from the camera, at most two look-ups per
+// layer: near, the colour and the surface (normal, height); then the
+// surface fades out and the colour is blended with its four times larger
+// copy; far, only that copy.
+const SURFACE_END = [14, 22];
+const LARGE_COPY = [22, 40];
 
 const VERTEX = `
   attribute vec4 splat;
@@ -98,30 +100,36 @@ const FRAGMENT = `
   varying vec4 vSplat;
   varying vec3 vGround;`;
 
-// one layer: its colour near and far (by the blend of the two), its surface
-// near (normal, height); inactive layers are not looked up. textureGrad:
-// the derivatives come from outside the branches.
+// one layer: its colour at its size and/or as the larger copy, its surface
+// near (normal, height), each only in its zone; inactive layers are not
+// looked up. textureGrad: the derivatives come from outside the branches.
 const LAYER = (i, c) => `
   if (w.${c} > 0.004) {
     vec2 uv = gp * groundScale.${c} + vec2(${(0.37 * i).toFixed(2)}, ${(0.61 * i).toFixed(2)});
     vec2 dx = gdx * groundScale.${c};
     vec2 dy = gdy * groundScale.${c};
     vec3 near = vec3(0.0);
-    if (far < 0.999) {
-      near = textureGrad(groundColor${i}, uv, dx, dy).rgb;
+    vec3 large = vec3(0.0);
+    if (large1 < 0.999) near = textureGrad(groundColor${i}, uv, dx, dy).rgb;
+    if (large1 > 0.001) large = textureGrad(groundColor${i}, uv * 0.23 + 0.5 + warp, dx * 0.23, dy * 0.23).rgb;
+    if (surface1 > 0.001) {
       vec4 s = textureGrad(groundSurface${i}, uv, dx, dy);
       gn${i} = s.rg * 2.0 - 1.0;
-      gh.${c} = s.b;
+      gh.${c} = mix(0.5, s.b, surface1);
     }
-    vec3 farC = far > 0.001 ? textureGrad(groundColor${i}, uv * 0.23 + 0.5, dx * 0.23, dy * 0.23).rgb : near;
-    gc${i} = mix(near, farC, far) * groundTint[${i}];
+    gc${i} = mix(near, large, large1) * groundTint[${i}];
   }`;
 
 const MAP = `
   vec2 gp = vGround.xz;
   vec2 gdx = dFdx(gp);
   vec2 gdy = dFdy(gp);
-  float far = smoothstep(${GROUND_NEAR.toFixed(1)}, ${GROUND_FAR.toFixed(1)}, distance(vGround, cameraPosition));
+  float gd = distance(vGround, cameraPosition);
+  float surface1 = 1.0 - smoothstep(${SURFACE_END[0].toFixed(1)}, ${SURFACE_END[1].toFixed(1)}, gd);
+  float large1 = smoothstep(${LARGE_COPY[0].toFixed(1)}, ${LARGE_COPY[1].toFixed(1)}, gd);
+  // the larger copy bent a little, slowly over the field: no straight rows
+  // of the same patterns in the distance
+  vec2 warp = vec2(sin(gp.y * 0.043 + sin(gp.x * 0.029) * 1.7), sin(gp.x * 0.037 + sin(gp.y * 0.031) * 1.9)) * 0.22;
   vec4 w = vSplat / max(dot(vSplat, vec4(1.0)), 1e-4);
   vec3 gc0 = vec3(0.0), gc1 = vec3(0.0), gc2 = vec3(0.0), gc3 = vec3(0.0);
   vec2 gn0 = vec2(0.0), gn1 = vec2(0.0), gn2 = vec2(0.0), gn3 = vec2(0.0);
@@ -130,14 +138,14 @@ const MAP = `
   ${LAYER(1, 'y')}
   ${LAYER(2, 'z')}
   ${LAYER(3, 'w')}
-  // the layer standing highest where they meet wins (heights count less
-  // far away, where they are not looked up)
-  vec4 hw = w + (gh - 0.5) * 0.6 * (1.0 - far) * step(0.004, w);
+  // the layer standing highest where they meet wins (near, where the
+  // heights are looked up; further the weights blend)
+  vec4 hw = w + (gh - 0.5) * 0.6 * step(0.004, w);
   float top = max(max(hw.x, hw.y), max(hw.z, hw.w));
   vec4 gb = max(hw - (top - 0.2), 0.0) * step(0.004, w);
   gb /= max(dot(gb, vec4(1.0)), 1e-4);
   diffuseColor.rgb *= gc0 * gb.x + gc1 * gb.y + gc2 * gb.z + gc3 * gb.w;
-  vec2 groundNormal = (gn0 * gb.x + gn1 * gb.y + gn2 * gb.z + gn3 * gb.w) * (1.0 - far);
+  vec2 groundNormal = (gn0 * gb.x + gn1 * gb.y + gn2 * gb.z + gn3 * gb.w) * surface1;
   float groundRoughness = dot(gb, groundRough);`;
 
 // the surface's normal on the terrain: tangent along +x, the image's up
