@@ -6,6 +6,7 @@ import { clamp, smoothstep } from '../core/util.js';
 import { GeoBuilder } from './models.js';
 import { groundTextures, stoneTextures, woodTextures, antiTiling } from './textures.js';
 import { Forest, treesReady } from './trees.js';
+import { groundMaterial, groundMean, groundReady } from './ground.js';
 
 // cells of trees whose middle is further from the camera get the lighter
 // crowns; cells of grass further than GRASS_NEAR show a share of their tufts
@@ -198,6 +199,10 @@ export class BattleTerrain {
     const cStone = new THREE.Color('#8f8a82');
     const cWood = new THREE.Color('#7a5a36');
     const c = new THREE.Color();
+    // medium and high: the photographed ground (ground.js), weighted per
+    // vertex; the colours then only shade it
+    const photo = this.std && groundReady();
+    const splat = photo ? new Float32Array(pos.count * 4) : null;
     for (let k = 0; k < pos.count; k++) {
       const x = pos.getX(k);
       const z = pos.getZ(k);
@@ -206,6 +211,12 @@ export class BattleTerrain {
       const slope = this.slopeAt(x, z);
       const n = this.noise(x * 0.08, z * 0.08) * 0.5 + 0.5;
       const n2 = this.dirtNoise(x, z);
+      if (photo) {
+        this.groundWeights(x, z, slope, n2, splat, k * 4);
+        const shade = 0.84 + n * 0.12 + (this.noise(x * 0.021 - 5, z * 0.021 + 9) * 0.5 + 0.5) * 0.1;
+        colors[k * 3] = colors[k * 3 + 1] = colors[k * 3 + 2] = shade;
+        continue;
+      }
       c.copy(cGrass).lerp(cGrass2, n);
       if (n2 > 0.72 && this.type !== 'arena') c.lerp(cDirt, Math.min(1, (n2 - 0.72) * 2.5));
       c.lerp(cRock, smoothstep(0.35, 0.9, slope));
@@ -225,20 +236,27 @@ export class BattleTerrain {
       colors[k * 3 + 2] = c.b * shade;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    if (photo) geo.setAttribute('splat', new THREE.BufferAttribute(splat, 4));
     geo.computeVertexNormals();
-    const tex = groundTextures(GROUND_KIND[this.type] || 'grass');
-    const tile = 3.5;
-    tex.map.repeat.set(this.size / tile, this.size / tile);
-    tex.normalMap.repeat.copy(tex.map.repeat);
-    const mat = this.material({ vertexColors: true, map: tex.map, normalMap: this.std ? tex.normalMap : null, normalScale: new THREE.Vector2(0.8, 0.8) });
-    antiTiling(mat);
+    let mat;
+    if (photo) {
+      mat = groundMaterial(this.type);
+    } else {
+      const tex = groundTextures(GROUND_KIND[this.type] || 'grass');
+      const tile = 3.5;
+      tex.map.repeat.set(this.size / tile, this.size / tile);
+      tex.normalMap.repeat.copy(tex.map.repeat);
+      mat = this.material({ vertexColors: true, map: tex.map, normalMap: this.std ? tex.normalMap : null, normalScale: new THREE.Vector2(0.8, 0.8) });
+      antiTiling(mat);
+    }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     this.group.add(mesh);
     this.mesh = mesh;
 
     // skirt of distant terrain so the edge is not visible
-    const far = new THREE.Mesh(new THREE.RingGeometry(half * 0.98, half * 6, 48, 1), this.material({ color: pal.grass2 }));
+    const skirt = photo ? groundMean(this.type).multiplyScalar(0.9) : pal.grass2;
+    const far = new THREE.Mesh(new THREE.RingGeometry(half * 0.98, half * 6, 48, 1), this.material({ color: skirt }));
     far.rotation.x = -Math.PI / 2;
     far.position.y = -0.8;
     this.group.add(far);
@@ -248,6 +266,31 @@ export class BattleTerrain {
     if (this.fort) this.buildFort();
     if (this.kind === 'arena') this.buildArena();
     scene.add(this.group);
+  }
+
+  // Weights of the four ground layers at a vertex (see ground.js): the
+  // ground of the place and its second kind in patches, bare earth where
+  // the dirt noise is high, rock on the steep slopes; the fortress's
+  // plateau is paved (rock and earth), its ramp trodden earth.
+  groundWeights(x, z, slope, n2, out, o) {
+    let patch = smoothstep(0.45, 0.68, this.noise(x * 0.025 + 31, z * 0.025 - 17) * 0.5 + 0.5);
+    let dirt = this.type !== 'arena' && n2 > 0.7 ? Math.min(1, (n2 - 0.7) * 2.5) : 0;
+    let rock = smoothstep(0.35, 0.9, slope);
+    if (this.fort) {
+      const lv = this.level(x, z);
+      if (lv === 1) {
+        rock = 0.55;
+        dirt = 1;
+      } else if (lv === 0.5) {
+        rock = 0;
+        dirt = 1;
+      } else if (slope > 1) rock = 1;
+    }
+    if (this.type === 'arena') patch = Math.hypot(x, z) > 25 ? 1 : 0;
+    out[o] = (1 - patch) * (1 - dirt) * (1 - rock);
+    out[o + 1] = patch * (1 - dirt) * (1 - rock);
+    out[o + 2] = dirt * (1 - rock);
+    out[o + 3] = rock;
   }
 
   slopeAt(x, z) {

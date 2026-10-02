@@ -10,6 +10,7 @@ import { helmetGeo, setTileIndex } from './models.js';
 import { bytesOf, decodeLayers, decodeTiles, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
+import { loadGround } from './ground.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
 
 const state = { status: 'idle', promise: null, t: null };
@@ -46,6 +47,14 @@ export function loadCharacters() {
           await loadTrees(assets);
         } catch (e) {
           console.warn('Tree models unusable:', e);
+        }
+      }
+      // the photographed ground (tools/ground/build_ground.py)
+      if (assets.ground) {
+        try {
+          await loadGround(assets);
+        } catch (e) {
+          console.warn('Ground textures unusable:', e);
         }
       }
       state.t = t;

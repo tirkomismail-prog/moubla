@@ -1,0 +1,138 @@
+{
+ "size": 1024,
+ "surfaceSize": 512,
+ "layers": {
+  "meadow": {
+   "color": "meadow.webp",
+   "surface": "meadow_surface.webp",
+   "tile": 1.4,
+   "roughness": 0.95,
+   "mean": [
+    0.1092,
+    0.1377,
+    0.0304
+   ]
+  },
+  "moss_ground": {
+   "color": "moss_ground.webp",
+   "surface": "moss_ground_surface.webp",
+   "tile": 2.1,
+   "roughness": 0.95,
+   "mean": [
+    0.3236,
+    0.3005,
+    0.109
+   ]
+  },
+  "grass_twigs": {
+   "color": "grass_twigs.webp",
+   "surface": "grass_twigs_surface.webp",
+   "tile": 2.0,
+   "roughness": 0.95,
+   "mean": [
+    0.1739,
+    0.1473,
+    0.0754
+   ]
+  },
+  "dry_grass": {
+   "color": "dry_grass.webp",
+   "surface": "dry_grass_surface.webp",
+   "tile": 2.51,
+   "roughness": 0.95,
+   "mean": [
+    0.1316,
+    0.0992,
+    0.0417
+   ]
+  },
+  "dirt": {
+   "color": "dirt.webp",
+   "surface": "dirt_surface.webp",
+   "tile": 3.15,
+   "roughness": 0.9,
+   "mean": [
+    0.1355,
+    0.0968,
+    0.0577
+   ]
+  },
+  "needles": {
+   "color": "needles.webp",
+   "surface": "needles_surface.webp",
+   "tile": 2.0,
+   "roughness": 0.95,
+   "mean": [
+    0.195,
+    0.1294,
+    0.0822
+   ]
+  },
+  "cracked_earth": {
+   "color": "cracked_earth.webp",
+   "surface": "cracked_earth_surface.webp",
+   "tile": 4.0,
+   "roughness": 0.9,
+   "mean": [
+    0.1466,
+    0.1233,
+    0.0917
+   ]
+  },
+  "sand_gravel": {
+   "color": "sand_gravel.webp",
+   "surface": "sand_gravel_surface.webp",
+   "tile": 2.53,
+   "roughness": 0.9,
+   "mean": [
+    0.2781,
+    0.1497,
+    0.0749
+   ]
+  },
+  "snow": {
+   "color": "snow.webp",
+   "surface": "snow_surface.webp",
+   "tile": 2.0,
+   "roughness": 0.75,
+   "mean": [
+    0.6141,
+    0.6135,
+    0.6312
+   ]
+  },
+  "trodden_snow": {
+   "color": "trodden_snow.webp",
+   "surface": "trodden_snow_surface.webp",
+   "tile": 2.0,
+   "roughness": 0.8,
+   "mean": [
+    0.4104,
+    0.4023,
+    0.386
+   ]
+  },
+  "mossy_rock": {
+   "color": "mossy_rock.webp",
+   "surface": "mossy_rock_surface.webp",
+   "tile": 3.0,
+   "roughness": 0.85,
+   "mean": [
+    0.1436,
+    0.1373,
+    0.0898
+   ]
+  },
+  "rock": {
+   "color": "rock.webp",
+   "surface": "rock_surface.webp",
+   "tile": 2.38,
+   "roughness": 0.85,
+   "mean": [
+    0.1192,
+    0.0605,
+    0.0315
+   ]
+  }
+ }
+}
