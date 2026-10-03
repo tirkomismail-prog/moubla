@@ -4,6 +4,8 @@
 // a table and as JSON to send back to the developer.
 import * as THREE from 'three';
 
+// the commit the game was built on (tools/build.mjs)
+const BUILD = typeof __BUILD__ !== 'undefined' ? __BUILD__ : 'dev';
 const ARMY = {
   allies: [['velmar_sergeant', 30], ['velmar_crossbow', 15], ['velmar_knight', 25]],
   enemies: [['nord_veteran', 40], ['nord_archer', 15], ['kag_horse_archer', 25]],
@@ -28,6 +30,9 @@ const PART_NAMES = {
   noSoldiers: 'без воїнів (і їхніх речей)',
   noHorses: 'без коней',
   baseAgain: 'усе ще раз (розкид замірів)',
+  groundNoSurface: 'земля без рельєфу шарів (нормалей і висот)',
+  groundOneLayer: 'земля одним шаром (без змішування шарів)',
+  groundNoShadow: 'земля без тіней на ній',
 };
 // hide objects (those shown), give back what shows them again
 const hide = (objects) => {
@@ -95,6 +100,37 @@ const PARTS = {
   baseAgain: () => () => {},
 };
 
+// What the ground's cost is made of: its shader changed in a copy of its
+// material (the photographed layers only).
+function groundVariant(key, edit) {
+  return (b) => {
+    const mesh = b.terrain.mesh;
+    const mat = mesh.material;
+    if (!mat.customProgramCacheKey || mat.customProgramCacheKey() !== 'ground') return () => {};
+    const copy = mat.clone();
+    copy.onBeforeCompile = (shader, renderer) => {
+      mat.onBeforeCompile(shader, renderer);
+      shader.fragmentShader = edit(shader.fragmentShader);
+    };
+    copy.customProgramCacheKey = () => `ground-${key}`;
+    mesh.material = copy;
+    return () => {
+      mesh.material = mat;
+      copy.dispose();
+    };
+  };
+}
+const STILL_PARTS = {
+  ...Object.fromEntries(Object.entries(PARTS).filter(([name]) => name !== 'baseAgain')),
+  groundNoSurface: groundVariant('no-surface', (f) => f.split('if (surface1 > 0.001) {').join('if (false) {')),
+  groundOneLayer: groundVariant('one-layer', (f) => f.replace(/vec4 use = [^;]*;/, 'vec4 use = step(wTop, w);')),
+  groundNoShadow: (b) => {
+    const mesh = b.terrain.mesh;
+    mesh.receiveShadow = false;
+    return () => (mesh.receiveShadow = true);
+  },
+};
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function percentile(sorted, p) {
@@ -150,11 +186,18 @@ function gpuTimer(renderer) {
       gl.endQuery(ext.TIME_ELAPSED_EXT);
       pending.push(active);
       active = null;
+      this.poll();
+    },
+    // collect the results that have arrived
+    poll() {
       while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
         const q = pending.shift();
         if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) times.push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6);
         gl.deleteQuery(q);
       }
+    },
+    get waiting() {
+      return pending.length;
     },
     times,
   };
@@ -240,28 +283,101 @@ function measure(game, seconds) {
   });
 }
 
+// the camera 30 m from the middle of the armies, 9 m up, looking at it from
+// `angle`
+function viewAt(battle, angle) {
+  let cx = 0;
+  let cz = 0;
+  let k = 0;
+  for (const a of battle.agents) {
+    if (!a.alive) continue;
+    cx += a.pos.x;
+    cz += a.pos.z;
+    k++;
+  }
+  if (!k) return;
+  cx /= k;
+  cz /= k;
+  const y = battle.terrain.heightAt(cx, cz);
+  battle.debugCam = { x: cx + Math.cos(angle) * 30, y: y + 9, z: cz + Math.sin(angle) * 30, tx: cx, ty: y + 1.2, tz: cz };
+}
+
 function orbit(battle) {
-  // circle the middle of the armies at 30 m, 9 m up
+  // circle the middle of the armies
   let angle = 0;
   const timer = setInterval(() => {
     if (!battle.agents) return;
-    let cx = 0;
-    let cz = 0;
-    let k = 0;
-    for (const a of battle.agents) {
-      if (!a.alive) continue;
-      cx += a.pos.x;
-      cz += a.pos.z;
-      k++;
-    }
-    if (!k) return;
-    cx /= k;
-    cz /= k;
     angle += 0.012;
-    const y = battle.terrain.heightAt(cx, cz);
-    battle.debugCam = { x: cx + Math.cos(angle) * 30, y: y + 9, z: cz + Math.sin(angle) * 30, tx: cx, ty: y + 1.2, tz: cz };
+    viewAt(battle, angle);
   }, 33);
   return () => clearInterval(timer);
+}
+
+// The GPU time of each part on still frames: the battle paused, the camera
+// at a few fixed places, each part left out in turn, round after round (slow
+// drift, heat and clocks, falls on all parts alike). Exact where the
+// breakdown of the moving battle is not; GPU only.
+// (late: at most so many frames more for the timer results)
+export const STILL = { views: 3, rounds: 2, settle: 3, frames: 16, late: 40 };
+
+// median GPU time (ms) of `n` frames drawn from now on, after `skip` left
+// out (a changed shader is compiled on its first); the results come some
+// frames later, a few more frames are drawn (untimed) until they are in
+function stillGpu(battle, n, skip = STILL.settle) {
+  return new Promise((resolve) => {
+    const gpu = gpuTimer(battle.renderer);
+    const frame = battle.frame;
+    let k = 0;
+    battle.frame = (dt) => {
+      const timed = k >= skip && k < skip + n;
+      k++;
+      if (timed) gpu.begin();
+      frame.call(battle, dt);
+      if (timed) gpu.end();
+      else gpu.poll();
+      if (k >= skip + n && (!gpu.waiting || k > skip + n + STILL.late)) {
+        battle.frame = frame;
+        const t = [...gpu.times].sort((a, b) => a - b);
+        resolve(t.length ? percentile(t, 0.5) : null);
+      }
+    };
+  });
+}
+
+export async function stillBreakdown(battle, show) {
+  if (!gpuTimer(battle.renderer)) return null;
+  const names = Object.keys(STILL_PARTS);
+  const times = Object.fromEntries(names.map((name) => [name, []]));
+  battle.paused = true;
+  for (let r = 0; r < STILL.rounds; r++) {
+    for (let v = 0; v < STILL.views; v++) {
+      viewAt(battle, 0.4 + (v / STILL.views) * Math.PI * 2);
+      // (the new view settles first: shadows, levels of detail, sorting)
+      await stillGpu(battle, 0, STILL.settle * 4);
+      // everything at the start and again at the end of the view
+      for (const name of [...names, 'base']) {
+        show(`Нерухомі кадри (${r * STILL.views + v + 1} з ${STILL.rounds * STILL.views}): ${PART_NAMES[name]}…`);
+        const restore = STILL_PARTS[name](battle);
+        const t = await stillGpu(battle, STILL.frames);
+        restore();
+        if (times[name].length > r * STILL.views + v) {
+          const first = times.base[times.base.length - 1];
+          times.base[times.base.length - 1] = first != null && t != null ? (first + t) / 2 : first ?? t;
+        } else times[name].push(t);
+      }
+    }
+  }
+  battle.paused = false;
+  // per part: the GPU time, and how much less it is than with everything
+  // (the mean over the views and rounds, each against its own base)
+  const out = {};
+  for (const name of names) {
+    const pairs = times[name].map((t, i) => [t, times.base[i]]).filter(([t, b]) => t != null && b != null);
+    if (!pairs.length) continue;
+    const mean = (f) => +(pairs.reduce((a, p) => a + f(p), 0) / pairs.length).toFixed(1);
+    out[name] = { gpu: mean(([t]) => t), saves: mean(([t, b]) => b - t) };
+  }
+  return out;
 }
 
 async function startBattle(game, preset) {
@@ -292,7 +408,7 @@ export async function runBenchmark(game) {
   const presets = partsOnly ? [BREAKDOWN.preset] : PRESETS;
   const heights = partsOnly ? [] : HEIGHTS;
   const out = panel();
-  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 2 : 5} хвилини. Підключіть зарядку.`;
+  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 3 : 6} хвилин. Підключіть зарядку.`;
   // a tab opened in the background does not draw: start once it is shown
   while (document.hidden) await wait(250);
   await game.charactersLoading;
@@ -301,6 +417,7 @@ export async function runBenchmark(game) {
   let device = null;
   const calib = [calibrate()];
   const breakdown = {};
+  let still = null;
   for (const preset of presets) {
     const battle = await startBattle(game, preset);
     const stop = orbit(battle);
@@ -333,21 +450,29 @@ export async function runBenchmark(game) {
         // (p50, p90: whether the frames come evenly with this part left out)
         breakdown[name] = { fps: r.fps, p50: r.p50, p90: r.p90, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
       }
+      stop();
+      still = await stillBreakdown(battle, (text) => (out.innerHTML = `<b>Бенчмарк битви</b><br>${text}`));
     }
     stop();
   }
   calib.push(calibrate());
   if (game.battle) game.battle.setRenderHeight(null);
   // calibMs: the processor test before and after the run (lower is faster)
-  const report = { date: new Date().toISOString(), device, calibMs: calib, army: ARMY, results, breakdown };
+  // still: GPU ms of still frames per part left out, and what that saves
+  const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, results, breakdown, still };
   const rows = results
     .map((r) => `<tr><td>${r.preset}</td><td>${r.height}p</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   const breakdownRows = Object.entries(breakdown)
     .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td><b>${r.fps}</b></td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
+  const stillRows = Object.entries(still || {})
+    .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td>${r.gpu}</td><td><b>${name === 'base' ? '' : r.saves}</b></td></tr>`)
+    .join('');
+  // the processor slower at the end than at the start: it got hot
+  const hot = calib[1] > calib[0] * 1.25;
   out.innerHTML = `<b>Готово.</b> Скопіюйте JSON нижче й надішліть його.<br>
-    <small>${device.gpu}; тест процесора: ${calib.join(' / ')} мс</small>
+    <small>Версія ${BUILD}; ${device.gpu}; тест процесора: ${calib.join(' / ')} мс${hot ? ' — <b>під кінець процесор сповільнився (перегрів чи режим економії): числа занижені</b>' : ''}</small>
     <table style="border-collapse:collapse;margin:8px 0;width:100%" cellpadding="3">
       <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
       ${rows}
@@ -357,6 +482,11 @@ export async function runBenchmark(game) {
       <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>FPS</th><th>CPU, мс</th><th>GPU, мс</th><th>трикутники</th></tr>
       ${breakdownRows}
     </table>
+    ${still ? `<small>Нерухомі кадри, ${BREAKDOWN.height}p: GPU без однієї частини і скільки це економить:</small>
+    <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>GPU, мс</th><th>економія, мс</th></tr>
+      ${stillRows}
+    </table>` : ''}
     <textarea readonly style="width:100%;height:140px;font:12px monospace">${JSON.stringify(report)}</textarea>
     <button id="bench-copy" style="margin-top:6px;padding:6px 14px">Копіювати JSON</button>`;
   const ta = out.querySelector('textarea');

@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node tools/pack-assets.mjs && esbuild src/main.js --bundle --minify --format=iife --target=es2020 --outfile=dist/game.js",
+    "build": "node tools/pack-assets.mjs && node tools/build.mjs",
     "dev": "node tools/pack-assets.mjs && esbuild src/main.js --bundle --sourcemap --format=iife --target=es2020 --outfile=dist/game.js --servedir=. --serve=8000",
     "test": "node --test tests/*.test.js"
   },
