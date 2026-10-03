@@ -219,10 +219,44 @@ export function createPost(renderer, scene, camera, preset) {
   return new PostFX(renderer, scene, camera, preset);
 }
 
+// FXAA in its light form (as FXAA 3.11's console version): four looks
+// between the pixels and the pixel itself; where they differ enough, two or
+// four more along the edge. three.js's FXAAShader looks up 9 to 22 times per
+// pixel, on a textured field nearly everywhere (it costs several
+// milliseconds on integrated graphics).
+const LIGHT_FXAA = `
+  uniform sampler2D tDiffuse;
+  uniform vec2 resolution;
+  varying vec2 vUv;
+  float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+  void main() {
+    vec4 m = texture(tDiffuse, vUv);
+    // (each the mean of four pixels: half a pixel off, bilinear)
+    float nw = luma(texture(tDiffuse, vUv + vec2(-0.5, 0.5) * resolution).rgb);
+    float ne = luma(texture(tDiffuse, vUv + vec2(0.5, 0.5) * resolution).rgb);
+    float sw = luma(texture(tDiffuse, vUv + vec2(-0.5, -0.5) * resolution).rgb);
+    float se = luma(texture(tDiffuse, vUv + vec2(0.5, -0.5) * resolution).rgb);
+    float lm = luma(m.rgb);
+    float lo = min(lm, min(min(nw, ne), min(sw, se)));
+    float hi = max(lm, max(max(nw, ne), max(sw, se)));
+    if (hi - lo < max(0.04, hi * 0.125)) {
+      gl_FragColor = m;
+      return;
+    }
+    // across the edge, blurred along it
+    vec2 dir = vec2((sw + se) - (nw + ne), (nw + sw) - (ne + se));
+    float reduce = max((nw + ne + sw + se) * 0.03125, 1.0 / 128.0);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8.0, 8.0) * resolution;
+    vec3 a = 0.5 * (texture(tDiffuse, vUv - dir / 6.0).rgb + texture(tDiffuse, vUv + dir / 6.0).rgb);
+    vec3 b = 0.5 * a + 0.25 * (texture(tDiffuse, vUv - dir * 0.5).rgb + texture(tDiffuse, vUv + dir * 0.5).rgb);
+    float lb = luma(b);
+    gl_FragColor = vec4(lb < lo || lb > hi ? a : b, m.a);
+  }`;
+
 // FXAA alone, cheaply: the scene is drawn straight into an 8-bit target
 // that three.js treats like the screen (the materials tone map and encode
-// for display themselves), then one FXAA pass puts it on the screen. No
-// half-float buffer and no separate tone mapping pass.
+// for display themselves), then one FXAA pass (LIGHT_FXAA) puts it on the
+// screen. No half-float buffer and no separate tone mapping pass.
 export class FastPost {
   constructor(renderer, scene, camera) {
     this.renderer = renderer;
@@ -236,7 +270,7 @@ export class FastPost {
     this.material = new THREE.ShaderMaterial({
       uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
       vertexShader: FXAAShader.vertexShader,
-      fragmentShader: FXAAShader.fragmentShader,
+      fragmentShader: LIGHT_FXAA,
       depthTest: false,
       depthWrite: false,
     });

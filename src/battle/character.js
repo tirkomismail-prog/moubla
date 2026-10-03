@@ -7,7 +7,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { bytesOf, decodeLayers, decodeTiles, lodMesh, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
@@ -28,6 +28,8 @@ export function loadCharacters() {
     try {
       const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(bytesOf(assets.soldier).buffer, '', resolve, reject));
       const t = prepare(gltf);
+      // (for the farthest level of detail, made here)
+      await simplifierReady();
       const tex = assets.textures;
       t.layers = tex ? await decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null;
       t.tiles = tex && tex.tiles ? await decodeTiles(tex.tiles) : null;
@@ -288,19 +290,27 @@ const OUTFITS = {
   plate: ['Hauberk', 'Cuirass', 'Plates', 'Belt-Cuirass', 'Hose', 'Boots'],
 };
 
-// The head and hands with the garments of `look`, for one level of detail.
+// The head and hands with the garments of `look`, for one level of detail;
+// the farthest (FAR_LEVEL) is the far one simplified further here.
 const outfits = new Map();
+const FAR_LEVEL = 3;
+// of the far level's triangles; how far its surface may move (of the height)
+const FAR_SHARE = 0.2;
+const FAR_ERROR = 0.04;
 
 function outfitGeometry(look, level) {
   const t = state.t;
-  const names = (OUTFITS[look] || OUTFITS.cloth).filter((n) => t.pieces[n] && t.pieces[n][level]);
-  if (!names.length) return null;
   const key = `${look}:${level}`;
   let geo = outfits.get(key);
-  if (!geo) {
-    geo = mergeGeometries([t.common[level], ...names.map((n) => t.pieces[n][level])]);
-    outfits.set(key, geo);
+  if (geo !== undefined) return geo;
+  if (level === FAR_LEVEL) {
+    const far = outfitGeometry(look, FAR_LEVEL - 1);
+    geo = far && simplified(far, FAR_SHARE, FAR_ERROR);
+  } else {
+    const names = (OUTFITS[look] || OUTFITS.cloth).filter((n) => t.pieces[n] && t.pieces[n][level]);
+    geo = names.length ? mergeGeometries([t.common[level], ...names.map((n) => t.pieces[n][level])]) : null;
   }
+  outfits.set(key, geo);
   return geo;
 }
 
@@ -417,10 +427,10 @@ function helmetFor(look, team) {
 
 const LOCO = ['idle', 'walk', 'run', 'walk_back'];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
-// levels of detail: full model up close, then 30 % and 10 % of the triangles
-// (about 40 pixels tall at 720p from 32 m); posed every frame, every second
-// or every fourth frame
-const LOD_DIST = [15, 32];
+// levels of detail: full model up close, then 30 % and 10 % of the
+// triangles, and 2 % from 40 m on (about 35 pixels tall at 900p); posed
+// every frame, every second or every fourth frame
+const LOD_DIST = [15, 30, 40];
 const POSE_DIST = [17, 45];
 
 export class SkinnedHuman {
@@ -444,6 +454,9 @@ export class SkinnedHuman {
     if (!spec.beard) hide.add('Moustache');
     if (this.helmet) hide.add('Hair');
     const mat = soldierMat(spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
+    // the farthest level, made at run time (outfitGeometry)
+    const far = outfitGeometry(spec.look || 'cloth', FAR_LEVEL);
+    if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Soldier_LOD${FAR_LEVEL}`);
     // the levels of detail share one skeleton: one bone update and one bone
     // texture per soldier
     const shared = this.lod[0].skeleton;
@@ -453,7 +466,7 @@ export class SkinnedHuman {
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
       // shadows: the full model up close; further away the lightest level
-      // casts them (shadowStandIn), the farthest soldiers cast none
+      // casts them (shadowStandIn)
       o.castShadow = level === 0;
       o.receiveShadow = true;
       // a sphere that holds the body in any pose (arms up, lying dead), in
@@ -463,7 +476,7 @@ export class SkinnedHuman {
     // the bones in the soldier's own space, out of the scene
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
-    this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
+    this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
     this.frameNo = Math.floor(Math.random() * 4);
@@ -497,7 +510,7 @@ export class SkinnedHuman {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    this.shadow.visible = level === 1;
+    this.shadow.visible = level > 0;
   }
 
   addHelmet(spec, props) {
@@ -557,7 +570,8 @@ export class SkinnedHuman {
     const r = agent.rig;
     const cam = agent.battle.camera;
     const d2 = cam.position.distanceToSquared(agent.pos);
-    const level = d2 < LOD_DIST[0] ** 2 ? 0 : d2 < LOD_DIST[1] ** 2 ? 1 : 2;
+    let level = 0;
+    while (level < this.lod.length - 1 && d2 >= LOD_DIST[level] ** 2) level++;
     this.setLod(level);
     // animation level of detail: distant soldiers are posed less often
     this.pending += dt;

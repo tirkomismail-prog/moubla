@@ -4,6 +4,7 @@
 // layer, normal map and tileable material, and can hide a part (no beard,
 // hair under a helmet). Also the decoding of the packed textures.
 import * as THREE from 'three';
+import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
 
 export function bytesOf(b64) {
   const bin = atob(b64);
@@ -150,6 +151,48 @@ export function ownSpaceSkeleton(object, meshes) {
     this.posed = false;
   };
   return space;
+}
+
+// A lighter copy of an indexed geometry: its triangles simplified to about
+// `share` of them (meshoptimizer) on the same vertices, whose attributes
+// (skin weights and all) it shares, only the index is new. `error`: how far
+// the surface may move, a share of the model's size. Null without the
+// simplifier (simplifierReady, once before).
+let simplifier = false;
+
+export async function simplifierReady() {
+  try {
+    await MeshoptSimplifier.ready;
+    simplifier = MeshoptSimplifier.supported;
+  } catch (e) {
+    console.warn('No mesh simplifier:', e);
+  }
+  return simplifier;
+}
+
+export function simplified(geo, share, error) {
+  const pos = geo.getAttribute('position');
+  if (!simplifier || !geo.index || !(pos.array instanceof Float32Array) || pos.itemSize !== 3 || pos.isInterleavedBufferAttribute) return null;
+  const index = Uint32Array.from(geo.index.array);
+  const target = Math.max(3, Math.floor((index.length * share) / 3) * 3);
+  const [out] = MeshoptSimplifier.simplify(index, pos.array, 3, target, error);
+  const g = new THREE.BufferGeometry();
+  for (const [name, a] of Object.entries(geo.attributes)) g.setAttribute(name, a);
+  g.setIndex(new THREE.BufferAttribute(pos.count < 65536 ? Uint16Array.from(out) : out, 1));
+  return g;
+}
+
+// One more level of detail of a skinned model: `geo` drawn like the mesh
+// `src` (a level of the model), next to it.
+export function lodMesh(src, geo, mat, name) {
+  const m = new THREE.SkinnedMesh(geo, mat);
+  m.name = name;
+  m.position.copy(src.position);
+  m.quaternion.copy(src.quaternion);
+  m.scale.copy(src.scale);
+  m.bind(src.skeleton, src.bindMatrix);
+  src.parent.add(m);
+  return m;
 }
 
 // after posing the bones of an ownSpaceSkeleton

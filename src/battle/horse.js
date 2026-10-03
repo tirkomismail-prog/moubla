@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bytesOf, decodeLayers, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, surface, tiled } from './partmat.js';
+import { bytesOf, decodeLayers, lodMesh, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, simplified, surface, tiled } from './partmat.js';
 import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
@@ -101,14 +101,23 @@ function angle(a, b) {
   return Math.atan2(b.z - a.z, -(b.y - a.y));
 }
 
+// The horse with the saddle cloth or caparison, for one level of detail;
+// the farthest (FAR_LEVEL) is the far one simplified further here.
 const variants = new Map();
+const FAR_LEVEL = 3;
+// of the far level's triangles; how far its surface may move (of the size)
+const FAR_SHARE = 0.3;
+const FAR_ERROR = 0.03;
 
 function geometry(piece, level) {
   const key = `${piece}:${level}`;
   let g = variants.get(key);
-  if (!g) {
-    const p = T.pieces[piece] && T.pieces[piece][level];
-    g = p ? mergeGeometries([T.common[level], p]) : T.common[level];
+  if (g === undefined) {
+    if (level === FAR_LEVEL) g = simplified(geometry(piece, FAR_LEVEL - 1), FAR_SHARE, FAR_ERROR);
+    else {
+      const p = T.pieces[piece] && T.pieces[piece][level];
+      g = p ? mergeGeometries([T.common[level], p]) : T.common[level];
+    }
     variants.set(key, g);
   }
   return g;
@@ -174,8 +183,9 @@ const GAITS = {
 };
 const GAIT_KEYS = ['legs', 'duty', 'bob', 'pitch', 'nod'];
 
-// levels of detail: full model up close, then about 3.5k and 1.3k triangles
-const LOD_DIST = [16, 36];
+// levels of detail: full model up close, then about 3.5k and 1.3k
+// triangles, and 400 from 50 m on
+const LOD_DIST = [16, 36, 50];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.1, 0), 1.9);
 const X = new THREE.Vector3(1, 0, 0);
 const Y = new THREE.Vector3(0, 1, 0);
@@ -210,14 +220,18 @@ export class SkinnedHorse {
       if (m) this.lod[+m[1]] = o;
     });
     const mat = horseMat(this.spec);
-    const shared = this.lod[0].skeleton;
     const piece = spec.barding ? 'Barding' : 'Cloth';
+    // the farthest level, made at run time (geometry)
+    const far = geometry(piece, FAR_LEVEL);
+    if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Horse_LOD${FAR_LEVEL}`);
+    const shared = this.lod[0].skeleton;
     this.lod.forEach((o, level) => {
       if (o.skeleton !== shared) o.bind(shared, o.bindMatrix);
       o.geometry = geometry(piece, level);
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
       // shadows: the full model up close, further away the lightest level
+      // (shadowStandIn)
       o.castShadow = level === 0;
       o.receiveShadow = true;
       o.boundingSphere = CULL_SPHERE;
@@ -225,7 +239,7 @@ export class SkinnedHorse {
     // the bones in the horse's own space, out of the scene
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
-    this.shadow = shadowStandIn(this.lod[2], mat, CULL_SPHERE);
+    this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
     this.frameNo = Math.floor(Math.random() * 4);
@@ -256,7 +270,7 @@ export class SkinnedHorse {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    this.shadow.visible = level === 1;
+    this.shadow.visible = level > 0;
   }
 
   // where a stirrup's tread is in the world (side 'l' or 'r')
@@ -277,11 +291,12 @@ export class SkinnedHorse {
     if (dt > 0) this.turn += (clamp(wrapAngle(h.yaw - this.prevYaw) / dt, -3, 3) - this.turn) * Math.min(1, dt * 6);
     this.prevYaw = h.yaw;
     const d2 = battle.camera.position.distanceToSquared(h.pos);
-    const level = d2 < LOD_DIST[0] ** 2 ? 0 : d2 < LOD_DIST[1] ** 2 ? 1 : 2;
+    let level = 0;
+    while (level < this.lod.length - 1 && d2 >= LOD_DIST[level] ** 2) level++;
     this.setLod(level);
     // animation level of detail: distant horses are posed less often
     this.pending += dt;
-    const every = [1, 2, 4][level];
+    const every = [1, 2, 4, 4][level];
     if (dt > 0 && this.frameNo++ % every !== 0) return;
     dt = this.pending;
     this.pending = 0;

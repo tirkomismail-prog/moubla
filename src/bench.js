@@ -33,6 +33,8 @@ const PART_NAMES = {
   groundNoSurface: 'земля без рельєфу шарів (нормалей і висот)',
   groundOneLayer: 'земля одним шаром (без змішування шарів)',
   groundNoShadow: 'земля без тіней на ній',
+  groundNoTextures: 'земля без читання текстур (решта її шейдера та сама)',
+  groundLod: 'земля, текстури читаються з рівнем (textureLod)',
 };
 // hide objects (those shown), give back what shows them again
 const hide = (objects) => {
@@ -124,6 +126,11 @@ const STILL_PARTS = {
   ...Object.fromEntries(Object.entries(PARTS).filter(([name]) => name !== 'baseAgain')),
   groundNoSurface: groundVariant('no-surface', (f) => f.split('if (surface1 > 0.001) {').join('if (false) {')),
   groundOneLayer: groundVariant('one-layer', (f) => f.replace(/vec4 use = [^;]*;/, 'vec4 use = step(wTop, w);')),
+  // (the look-ups: textureGrad(ground<Color|Surface><i>, uv, dx, dy))
+  groundNoTextures: groundVariant('no-textures', (f) => f.replace(/textureGrad\((ground(?:Color|Surface)\d), [^()]*\)/g, 'vec4(0.5)')),
+  groundLod: groundVariant('lod', (f) =>
+    f.replace(/textureGrad\((ground(?:Color|Surface)\d), ([^,()]*), ([^,()]*), ([^,()]*)\)/g, 'textureLod($1, $2, log2(max(length($3), length($4)) * float(textureSize($1, 0).x)))'),
+  ),
   groundNoShadow: (b) => {
     const mesh = b.terrain.mesh;
     mesh.receiveShadow = false;
