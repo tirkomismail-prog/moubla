@@ -183,9 +183,11 @@ const GAITS = {
 };
 const GAIT_KEYS = ['legs', 'duty', 'bob', 'pitch', 'nod'];
 
-// levels of detail: full model up close, then about 3.5k and 1.3k
-// triangles, and 400 from 50 m on
-const LOD_DIST = [16, 36, 50];
+// levels of detail by the size on screen: the full model up close, then
+// about 5k and 2k triangles, and 800 from 40 m on
+const LOD_DIST = [12, 25, 40];
+// posed every frame, every second or every fourth frame
+const POSE_DIST = [16, 36];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.1, 0), 1.9);
 const X = new THREE.Vector3(1, 0, 0);
 const Y = new THREE.Vector3(0, 1, 0);
@@ -230,9 +232,8 @@ export class SkinnedHorse {
       o.geometry = geometry(piece, level);
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
-      // shadows: the full model up close, further away the lightest level
-      // (shadowStandIn)
-      o.castShadow = level === 0;
+      // shadows: cast by a lighter level (shadowStandIn, setLod)
+      o.castShadow = false;
       o.receiveShadow = true;
       o.boundingSphere = CULL_SPHERE;
     });
@@ -270,7 +271,9 @@ export class SkinnedHorse {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    this.shadow.visible = level > 0;
+    // the shadow: the far level up close, the farthest further away
+    this.shadow.geometry = this.lod[Math.min(Math.max(level + 1, 2), this.lod.length - 1)].geometry;
+    this.shadow.visible = true;
   }
 
   // where a stirrup's tread is in the world (side 'l' or 'r')
@@ -296,7 +299,7 @@ export class SkinnedHorse {
     this.setLod(level);
     // animation level of detail: distant horses are posed less often
     this.pending += dt;
-    const every = [1, 2, 4, 4][level];
+    const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;
     if (dt > 0 && this.frameNo++ % every !== 0) return;
     dt = this.pending;
     this.pending = 0;

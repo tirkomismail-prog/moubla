@@ -427,10 +427,11 @@ function helmetFor(look, team) {
 
 const LOCO = ['idle', 'walk', 'run', 'walk_back'];
 const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
-// levels of detail: full model up close, then 30 % and 10 % of the
-// triangles, and 2 % from 40 m on (about 35 pixels tall at 900p); posed
-// every frame, every second or every fourth frame
-const LOD_DIST = [15, 30, 40];
+// levels of detail by the size on screen (at 900p a soldier is about
+// 1400 / distance pixels tall): the full model up close, then 30 % and 10 %
+// of the triangles, and 2 % from 32 m on (under 45 pixels); posed every
+// frame, every second or every fourth frame
+const LOD_DIST = [10, 20, 32];
 const POSE_DIST = [17, 45];
 
 export class SkinnedHuman {
@@ -465,9 +466,8 @@ export class SkinnedHuman {
       o.geometry = outfitGeometry(spec.look || 'cloth', level) || o.geometry;
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
-      // shadows: the full model up close; further away the lightest level
-      // casts them (shadowStandIn)
-      o.castShadow = level === 0;
+      // shadows: cast by a lighter level (shadowStandIn, setLod)
+      o.castShadow = false;
       o.receiveShadow = true;
       // a sphere that holds the body in any pose (arms up, lying dead), in
       // the mesh's own space: soldiers outside the view are not drawn
@@ -510,7 +510,10 @@ export class SkinnedHuman {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    this.shadow.visible = level > 0;
+    // the shadow: the far level (10 %) up close, the farthest further away
+    // (the shadow map has some 20 texels per metre)
+    this.shadow.geometry = this.lod[Math.min(Math.max(level + 1, 2), this.lod.length - 1)].geometry;
+    this.shadow.visible = true;
   }
 
   addHelmet(spec, props) {
