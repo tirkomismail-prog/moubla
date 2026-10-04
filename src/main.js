@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
   shadows: true,
   graphics: 'medium',
   quality: 1,
+  autoRes: true,
   volume: 0.6,
   mapSpeed: 1,
   playerDamage: 0.75,

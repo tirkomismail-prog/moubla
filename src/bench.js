@@ -4,6 +4,7 @@
 // a table and as JSON to send back to the developer.
 import * as THREE from 'three';
 import { mulberry32 } from './core/rng.js';
+import { AutoResolution } from './battle/autores.js';
 
 // the commit the game was built on (tools/build.mjs)
 const BUILD = typeof __BUILD__ !== 'undefined' ? __BUILD__ : 'dev';
@@ -227,7 +228,7 @@ function panel() {
 
 // Measure the running battle for `seconds` of visible frames: frame
 // intervals, CPU time of battle.frame(), draw calls, triangles.
-function measure(game, seconds) {
+function measure(game, seconds, timeGpu = true) {
   return new Promise((resolve) => {
     const battle = game.battle;
     const frames = [];
@@ -239,7 +240,8 @@ function measure(game, seconds) {
     // count every pass of the frame (post-processing renders several times)
     const info = battle.renderer.info;
     info.autoReset = false;
-    const gpu = gpuTimer(battle.renderer);
+    // (not when the automatic resolution times the frames: one timer at a time)
+    const gpu = timeGpu ? gpuTimer(battle.renderer) : null;
     battle.frame = (dt) => {
       info.reset();
       const t0 = performance.now();
@@ -465,6 +467,19 @@ export async function runBenchmark(game) {
       const r = await measure(game, MEASURE);
       results.push({ preset, height: h, ...r });
     }
+    // the medium preset as it is played: the window's own resolution, lowered
+    // by the automatic resolution when the frames take too long
+    if (preset === BREAKDOWN.preset && !partsOnly) {
+      battle.setRenderHeight(null);
+      battle.autoRes = new AutoResolution(battle.renderer);
+      battle.resize();
+      out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, автоматична роздільність…`;
+      await wait(WARMUP * 2000);
+      const r = await measure(game, MEASURE, false);
+      results.push({ preset, height: 'auto', scale: battle.autoRes.scale, ...r });
+      battle.autoRes.dispose();
+      battle.autoRes = null;
+    }
     if (preset === BREAKDOWN.preset) {
       battle.setRenderHeight(BREAKDOWN.height);
       for (const [name, off] of Object.entries(PARTS)) {
@@ -488,7 +503,7 @@ export async function runBenchmark(game) {
   // still: GPU ms of still frames per part left out, and what that saves
   const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, results, breakdown, still };
   const rows = results
-    .map((r) => `<tr><td>${r.preset}</td><td>${r.height}p</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
+    .map((r) => `<tr><td>${r.preset}</td><td>${r.height === 'auto' ? `авто ×${r.scale}` : `${r.height}p`}</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   const breakdownRows = Object.entries(breakdown)
     .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td><b>${r.fps}</b></td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)

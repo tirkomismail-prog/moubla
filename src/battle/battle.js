@@ -14,6 +14,7 @@ import { Effects } from './effects.js';
 import { gfxPreset, Environment, createPost } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
+import { AutoResolution } from './autores.js';
 import { flushBones, SHADOW_LAYER } from './partmat.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
@@ -95,6 +96,8 @@ export class Battle {
   setupRenderer() {
     // anti-aliasing comes from the post-processing chain (FXAA / MSAA target)
     const r = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    // the resolution follows the time the frames take (not in the benchmark)
+    this.autoRes = this.settings.autoRes !== false && !window.__BENCH ? new AutoResolution(r) : null;
     r.setPixelRatio(this.pixelRatio());
     r.setSize(window.innerWidth, window.innerHeight);
     r.shadowMap.enabled = this.gfx.shadows && this.settings.shadows !== false;
@@ -116,9 +119,11 @@ export class Battle {
   }
 
   pixelRatio() {
-    // a fixed internal resolution (benchmark) or the screen's, capped per preset
+    // a fixed internal resolution (benchmark) or the screen's, capped per
+    // preset, times the setting and the automatic resolution's scale
     if (this.renderHeight) return this.renderHeight / window.innerHeight;
-    return Math.min(window.devicePixelRatio || 1, this.gfx.maxPixelRatio || 1) * (this.settings.quality || 1);
+    const scale = this.autoRes ? this.autoRes.scale : 1;
+    return Math.min(window.devicePixelRatio || 1, this.gfx.maxPixelRatio || 1) * (this.settings.quality || 1) * scale;
   }
 
   // Render at `height` pixels whatever the window size (null: back to normal).
@@ -1237,8 +1242,15 @@ export class Battle {
     this.terrain.lod(this.camera, this.sun);
     // the posed skeletons into the bone texture, uploaded once
     flushBones(this.props);
+    // (not at a fixed resolution: the benchmark times the frames itself)
+    const autoRes = this.renderHeight ? null : this.autoRes;
+    if (autoRes) autoRes.begin();
     if (this.post) this.post.render();
     else this.renderer.render(this.scene, this.camera);
+    if (autoRes) {
+      autoRes.end();
+      if (autoRes.update(dt)) this.resize();
+    }
   }
 
   step(dt) {
@@ -1434,6 +1446,7 @@ export class Battle {
       }
     });
     this.props.dispose();
+    if (this.autoRes) this.autoRes.dispose();
     if (this.post) this.post.dispose();
     if (this.env) this.env.dispose();
     this.renderer.dispose();

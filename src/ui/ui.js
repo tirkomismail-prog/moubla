@@ -116,6 +116,7 @@ export class UI {
       row('Графіка битв', select('graphics', [['low', 'Низька (швидко)'], ['medium', 'Середня'], ['high', 'Висока']])),
       row('Тіні в битвах', check('shadows')),
       row('Роздільність у битвах', range('quality', 0.5, 1, 0.25, (v) => `${Math.round(v * 100)}%`)),
+      row('Знижувати роздільність, щоб кадри йшли рівно', check('autoRes')),
       row('Гучність', range('volume', 0, 1, 0.05, (v) => `${Math.round(v * 100)}%`)),
       row('Швидкість часу на мапі', range('mapSpeed', 0.5, 3, 0.25, (v) => `×${v}`)),
     );
