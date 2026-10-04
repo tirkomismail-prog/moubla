@@ -195,6 +195,105 @@ export function lodMesh(src, geo, mat, name) {
   return m;
 }
 
+// The bones of all the skinned models of a battle in one texture (instead
+// of a texture per skeleton, uploaded and bound again for every model drawn:
+// on integrated graphics each such texture costs a stall). Each skeleton
+// writes its rows (its boneMatrices are a view into the pool's), the
+// texture is uploaded once per frame (flushBones) and stays bound; each
+// model's meshes carry where its rows start (the boneBase attribute, one
+// value for the whole draw, see SKINNING).
+class BonePool {
+  constructor() {
+    this.skeletons = [];
+    this.used = 0;
+    this.data = null;
+    this.texture = null;
+  }
+
+  add(skeleton) {
+    const n = skeleton.bones.length;
+    if (!this.data || (this.used + n) * 16 > this.data.length) this.grow((this.used + n) * 2);
+    const base = this.used;
+    this.used += n;
+    this.skeletons.push([skeleton, base]);
+    this.attach(skeleton, base);
+    // (the texture is the pool's: a skeleton let go keeps it)
+    skeleton.dispose = () => {};
+    return base;
+  }
+
+  attach(skeleton, base) {
+    const view = this.data.subarray(base * 16, (base + skeleton.bones.length) * 16);
+    view.set(skeleton.boneMatrices);
+    skeleton.boneMatrices = view;
+    if (skeleton.boneTexture && skeleton.boneTexture !== this.texture) skeleton.boneTexture.dispose();
+    skeleton.boneTexture = this.texture;
+  }
+
+  grow(bones) {
+    // 256 bones a row (4 texels each)
+    const width = 1024;
+    const rows = Math.ceil((bones * 4) / width);
+    const data = new Float32Array(width * rows * 4);
+    if (this.data) data.set(this.data);
+    const old = this.texture;
+    this.data = data;
+    this.texture = new THREE.DataTexture(data, width, rows, THREE.RGBAFormat, THREE.FloatType);
+    this.texture.needsUpdate = true;
+    for (const [skeleton, base] of this.skeletons) this.attach(skeleton, base);
+    if (old) old.dispose();
+  }
+
+  // the posed skeletons' matrices into the texture, one upload
+  flush() {
+    let posed = false;
+    for (const [skeleton] of this.skeletons) {
+      if (!skeleton.posed) continue;
+      skeleton.update();
+      posed = true;
+    }
+    if (posed) this.texture.needsUpdate = true;
+  }
+}
+
+const bonePools = new WeakMap();
+
+// Puts a model's skeleton (an ownSpaceSkeleton) into the bone pool of
+// `owner` (one per battle) and gives each of `meshes` its own geometry
+// (sharing the buffers) with the boneBase attribute.
+export function poolBones(owner, skeleton, meshes) {
+  let pool = bonePools.get(owner);
+  if (!pool) bonePools.set(owner, (pool = new BonePool()));
+  const base = new THREE.InstancedBufferAttribute(new Float32Array([pool.add(skeleton)]), 1);
+  for (const m of meshes) m.geometry = withBoneBase(m.geometry, base);
+  return base;
+}
+
+// a geometry like `geo` (the same buffers) with the boneBase attribute;
+// drawn as one instance (an attribute per instance in a plain draw is not
+// read the same way everywhere)
+export function withBoneBase(geo, base) {
+  const g = new THREE.InstancedBufferGeometry();
+  g.instanceCount = 1;
+  g.setIndex(geo.index);
+  for (const [name, a] of Object.entries(geo.attributes)) if (name !== 'boneBase') g.setAttribute(name, a);
+  g.setAttribute('boneBase', base);
+  g.boundingSphere = geo.boundingSphere;
+  g.boundingBox = geo.boundingBox;
+  return g;
+}
+
+// once per frame, after posing, before drawing
+export function flushBones(owner) {
+  const pool = bonePools.get(owner);
+  if (pool) pool.flush();
+}
+
+// three.js's skinning, with the bones from the pool's rows
+const SKINNING = THREE.ShaderChunk.skinning_pars_vertex
+  .replace('uniform mat4 bindMatrix;', 'attribute float boneBase;\n\tuniform mat4 bindMatrix;')
+  .replace('int j = int( i ) * 4;', 'int j = ( int( i ) + int( boneBase + 0.5 ) ) * 4;');
+
 // after posing the bones of an ownSpaceSkeleton
 export function posed(space, skeleton) {
   space.updateMatrixWorld(true);
@@ -278,6 +377,7 @@ export function partMaterial(o) {
     shader.uniforms.tileColor = { value: tiles ? tiles.color : null };
     shader.uniforms.tileSurface = { value: tiles ? tiles.surface : null };
     shader.vertexShader = shader.vertexShader
+      .replace('#include <skinning_pars_vertex>', SKINNING)
       .replace('#include <common>', `#include <common>${PART_VERTEX(n)}
         uniform vec3 partColor[${n}];
         uniform vec2 partSurface[${n}];
@@ -323,6 +423,7 @@ export function partMaterial(o) {
   depth.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
     shader.vertexShader = shader.vertexShader
+      .replace('#include <skinning_pars_vertex>', SKINNING)
       .replace('#include <common>', `#include <common>${PART_VERTEX(n)}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);

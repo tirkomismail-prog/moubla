@@ -7,7 +7,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, lodMesh, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { bytesOf, decodeLayers, decodeTiles, lodMesh, ownSpaceSkeleton, partMaterial, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
@@ -473,9 +473,11 @@ export class SkinnedHuman {
       // the mesh's own space: soldiers outside the view are not drawn
       o.boundingSphere = CULL_SPHERE;
     });
-    // the bones in the soldier's own space, out of the scene
+    // the bones in the soldier's own space, out of the scene, and in the
+    // battle's bone texture
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
+    poolBones(props, shared, this.lod);
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
@@ -510,10 +512,11 @@ export class SkinnedHuman {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    // the shadow: the far level (10 %) up close, the farthest further away
-    // (the shadow map has some 20 texels per metre)
+    // the shadow: the far level (10 %) up close, the farthest in the middle
+    // (the shadow map has some 20 texels per metre); the farthest soldiers
+    // cast none (each would be one more draw)
     this.shadow.geometry = this.lod[Math.min(Math.max(level + 1, 2), this.lod.length - 1)].geometry;
-    this.shadow.visible = true;
+    this.shadow.visible = level < this.lod.length - 1;
   }
 
   addHelmet(spec, props) {

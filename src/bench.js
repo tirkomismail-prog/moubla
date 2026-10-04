@@ -3,6 +3,7 @@
 // and internal resolutions. Reports frame times, draw calls and triangles as
 // a table and as JSON to send back to the developer.
 import * as THREE from 'three';
+import { mulberry32 } from './core/rng.js';
 
 // the commit the game was built on (tools/build.mjs)
 const BUILD = typeof __BUILD__ !== 'undefined' ? __BUILD__ : 'dev';
@@ -11,6 +12,7 @@ const ARMY = {
   enemies: [['nord_veteran', 40], ['nord_archer', 15], ['kag_horse_archer', 25]],
 };
 const PRESETS = ['low', 'medium', 'high'];
+const BATTLE_SEED = 20261004;
 const HEIGHTS = [720, 900, 1080];
 const WARMUP = 4; // seconds before measuring after each change
 const MEASURE = 10; // seconds of measurement per case
@@ -67,11 +69,8 @@ const PARTS = {
   noGround: (b) => {
     const mesh = b.terrain.mesh;
     const mat = mesh.material;
-    mesh.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
-    return () => {
-      mesh.material.dispose();
-      mesh.material = mat;
-    };
+    mesh.material = variantOf(mat, 'plain', () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }));
+    return () => (mesh.material = mat);
   },
   // the sky is the scene's background (baked once) or a dome
   noSky: (b) => {
@@ -102,6 +101,16 @@ const PARTS = {
   baseAgain: () => () => {},
 };
 
+// A material standing in for `mat`, made once and kept (made anew each
+// time, its shader would be compiled anew: the first frames after are slow)
+const variants = new WeakMap();
+function variantOf(mat, key, make) {
+  let m = variants.get(mat);
+  if (!m) variants.set(mat, (m = new Map()));
+  if (!m.has(key)) m.set(key, make());
+  return m.get(key);
+}
+
 // What the ground's cost is made of: its shader changed in a copy of its
 // material (the photographed layers only).
 function groundVariant(key, edit) {
@@ -109,17 +118,16 @@ function groundVariant(key, edit) {
     const mesh = b.terrain.mesh;
     const mat = mesh.material;
     if (!mat.customProgramCacheKey || mat.customProgramCacheKey() !== 'ground') return () => {};
-    const copy = mat.clone();
-    copy.onBeforeCompile = (shader, renderer) => {
-      mat.onBeforeCompile(shader, renderer);
-      shader.fragmentShader = edit(shader.fragmentShader);
-    };
-    copy.customProgramCacheKey = () => `ground-${key}`;
-    mesh.material = copy;
-    return () => {
-      mesh.material = mat;
-      copy.dispose();
-    };
+    mesh.material = variantOf(mat, key, () => {
+      const copy = mat.clone();
+      copy.onBeforeCompile = (shader, renderer) => {
+        mat.onBeforeCompile(shader, renderer);
+        shader.fragmentShader = edit(shader.fragmentShader);
+      };
+      copy.customProgramCacheKey = () => `ground-${key}`;
+      return copy;
+    });
+    return () => (mesh.material = mat);
   };
 }
 const STILL_PARTS = {
@@ -325,7 +333,7 @@ function orbit(battle) {
 // drift, heat and clocks, falls on all parts alike). Exact where the
 // breakdown of the moving battle is not; GPU only.
 // (late: at most so many frames more for the timer results)
-export const STILL = { views: 3, rounds: 2, settle: 3, frames: 16, late: 40 };
+export const STILL = { views: 3, rounds: 2, settle: 6, frames: 16, late: 40 };
 
 // median GPU time (ms) of `n` frames drawn from now on, after `skip` left
 // out (a changed shader is compiled on its first); the results come some
@@ -361,8 +369,12 @@ export async function stillBreakdown(battle, show) {
       viewAt(battle, 0.4 + (v / STILL.views) * Math.PI * 2);
       // (the new view settles first: shadows, levels of detail, sorting)
       await stillGpu(battle, 0, STILL.settle * 4);
-      // everything at the start and again at the end of the view
-      for (const name of [...names, 'base']) {
+      // everything at the start and again at the end of the view; the
+      // parts the other way round every second round (whatever drifts
+      // within a view falls on all alike)
+      const order = names.slice(1);
+      if (r % 2) order.reverse();
+      for (const name of ['base', ...order, 'base']) {
         show(`Нерухомі кадри (${r * STILL.views + v + 1} з ${STILL.rounds * STILL.views}): ${PART_NAMES[name]}…`);
         const restore = STILL_PARTS[name](battle);
         const t = await stillGpu(battle, STILL.frames);
@@ -395,7 +407,15 @@ async function startBattle(game, preset) {
   }
   game.settings.graphics = preset;
   game.settings.battleSize = 200;
-  game.debugBattle('field', { terrain: 'plains', hour: 14, ...ARMY });
+  // the same field, trees and ranks in every run (the battle itself then
+  // goes as fast as the frames come)
+  const random = Math.random;
+  Math.random = mulberry32(BATTLE_SEED);
+  try {
+    game.debugBattle('field', { terrain: 'plains', hour: 14, ...ARMY });
+  } finally {
+    Math.random = random;
+  }
   const b = game.battle;
   b.debugStart();
   b.hud.root.style.display = 'none';

@@ -263,7 +263,7 @@ export class Agent {
     const team = colors ? colors.team : '#777';
     // the realistic horse with medium/high graphics, else the procedural one
     const realistic = this.battle.gfx && this.battle.gfx.standard && horseReady();
-    const rig = realistic ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding }) : buildHorse(it.coat, team, !!it.barding);
+    const rig = realistic ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding }, this.battle.props) : buildHorse(it.coat, team, !!it.barding);
     rig.root.rotation.order = 'YXZ';
     this.battle.scene.add(rig.root);
     return {

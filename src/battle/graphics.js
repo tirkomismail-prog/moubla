@@ -91,11 +91,12 @@ export class Environment {
       // the sun stands still during a battle: the sky is drawn once into a
       // cube map instead of on every pixel of every frame
       this.skyTarget = bakeSky(renderer, sky);
-      // shown by a box drawn after everything else, only where nothing
-      // covers it (the scene's background is drawn first, on every pixel);
+      // shown by a triangle over the screen drawn after everything else,
+      // only where nothing covers it (the scene's background is drawn
+      // first, on every pixel);
       // not with ambient occlusion, whose pass draws the scene's normals
-      // with its own material (the box would cover them)
-      this.sky = preset.ao ? null : skyBox(this.skyTarget.texture);
+      // with its own material (the sky would cover them)
+      this.sky = preset.ao ? null : skyScreen(this.skyTarget.texture);
       fogCol = L.elev < 0.2 ? '#d3a88c' : pal.fog;
     } else {
       fogCol = L.elev < 0.2 ? '#c8a088' : pal.fog;
@@ -158,28 +159,48 @@ function bakeSky(renderer, sky) {
   return target;
 }
 
-// The baked sky (a cube map) on a box around the camera, drawn after the
-// opaque things and only where none of them was drawn: three.js's own
-// background shader, at the far plane (just in front of it, so that it
-// passes the depth test against the cleared depth).
-function skyBox(texture) {
-  const lib = THREE.ShaderLib.backgroundCube;
+// The baked sky (a cube map) drawn after the opaque things and only where
+// none of them was drawn: one triangle over the whole screen just in front
+// of the far plane (so that it passes the depth test against the cleared
+// depth), each pixel looking the sky up in its own direction. (A box around
+// the camera with its depth pushed to the far plane is cut by the near
+// plane behind the camera, and some rasterisers then give those pieces a
+// depth in front of everything.)
+function skyScreen(texture) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
   const mat = new THREE.ShaderMaterial({
-    name: 'SkyBox',
-    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
-    vertexShader: lib.vertexShader.replace('gl_Position.z = gl_Position.w;', 'gl_Position.z = gl_Position.w * 0.99999;'),
-    fragmentShader: lib.fragmentShader,
-    side: THREE.BackSide,
+    name: 'SkyScreen',
+    uniforms: { envMap: { value: texture }, skyMatrix: { value: new THREE.Matrix4() } },
+    vertexShader: `
+      varying vec2 vNdc;
+      void main() {
+        vNdc = position.xy;
+        gl_Position = vec4(position.xy, 0.99999, 1.0);
+      }`,
+    fragmentShader: `
+      uniform samplerCube envMap;
+      uniform mat4 skyMatrix;
+      varying vec2 vNdc;
+      void main() {
+        vec4 p = skyMatrix * vec4(vNdc, 1.0, 1.0);
+        gl_FragColor = vec4(textureCube(envMap, normalize(p.xyz / p.w)).rgb, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
     depthWrite: false,
     fog: false,
   });
-  mat.uniforms.envMap.value = texture;
-  // (the renderer picks the shader's cube map path by the material's envMap)
-  Object.defineProperty(mat, 'envMap', { get: () => mat.uniforms.envMap.value });
-  const box = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
-  box.frustumCulled = false;
-  box.onBeforeRender = (renderer, scene, camera) => box.matrixWorld.copyPosition(camera.matrixWorld);
-  return box;
+  const sky = new THREE.Mesh(geo, mat);
+  sky.frustumCulled = false;
+  // a point of the screen to its direction in the world: the projection
+  // undone, then the camera's turn
+  const turn = new THREE.Matrix4();
+  sky.onBeforeRender = (renderer, scene, camera) => {
+    turn.extractRotation(camera.matrixWorld);
+    mat.uniforms.skyMatrix.value.multiplyMatrices(turn, camera.projectionMatrixInverse);
+  };
+  return sky;
 }
 
 // Sky dome: zenith/horizon gradient, optional ground colour below the

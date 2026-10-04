@@ -14,7 +14,7 @@ import { Effects } from './effects.js';
 import { gfxPreset, Environment, createPost } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
-import { SHADOW_LAYER } from './partmat.js';
+import { flushBones, SHADOW_LAYER } from './partmat.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
 import { autoResolve } from '../world/autoresolve.js';
 import { h } from '../ui/dom.js';
@@ -1235,6 +1235,8 @@ export class Battle {
     this.camera.updateMatrixWorld();
     this.props.sync(this.camera);
     this.terrain.lod(this.camera, this.sun);
+    // the posed skeletons into the bone texture, uploaded once
+    flushBones(this.props);
     if (this.post) this.post.render();
     else this.renderer.render(this.scene, this.camera);
   }

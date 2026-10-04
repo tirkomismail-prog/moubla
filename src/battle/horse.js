@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bytesOf, decodeLayers, lodMesh, ownSpaceSkeleton, partMaterial, posed, shadowStandIn, simplified, surface, tiled } from './partmat.js';
+import { bytesOf, decodeLayers, lodMesh, ownSpaceSkeleton, partMaterial, poolBones, posed, shadowStandIn, simplified, surface, tiled } from './partmat.js';
 import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
@@ -201,8 +201,8 @@ const _v = new THREE.Vector3();
 const _t = new THREE.Vector3();
 
 export class SkinnedHorse {
-  // spec: {coat, team, barding}
-  constructor(spec) {
+  // spec: {coat, team, barding}; owner: whose bone texture (poolBones)
+  constructor(spec, owner) {
     this.skinned = true;
     this.spec = { ...spec, marks: Math.random() < 0.55 };
     this.root = new THREE.Group();
@@ -237,9 +237,11 @@ export class SkinnedHorse {
       o.receiveShadow = true;
       o.boundingSphere = CULL_SPHERE;
     });
-    // the bones in the horse's own space, out of the scene
+    // the bones in the horse's own space, out of the scene, and in the
+    // battle's bone texture
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
+    if (owner) poolBones(owner, shared, this.lod);
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
@@ -271,9 +273,10 @@ export class SkinnedHorse {
     if (level === this.lodLevel) return;
     this.lodLevel = level;
     this.lod.forEach((o, i) => (o.visible = i === level));
-    // the shadow: the far level up close, the farthest further away
+    // the shadow: the far level up close, the farthest in the middle, none
+    // far away
     this.shadow.geometry = this.lod[Math.min(Math.max(level + 1, 2), this.lod.length - 1)].geometry;
-    this.shadow.visible = true;
+    this.shadow.visible = level < this.lod.length - 1;
   }
 
   // where a stirrup's tread is in the world (side 'l' or 'r')
