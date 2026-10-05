@@ -62,22 +62,31 @@ export async function decodeTiles({ size, layers, repeat }) {
 export const surface = (color, roughness, metalness = 0) => ({ color, roughness, metalness });
 export const tiled = (tile, color, roughness = 1, metalness = 0) => ({ color, roughness, metalness, tile });
 
-const PART_VERTEX = (n) => `
+// Each model's own look is a row of a palette texture (PalettePool): per
+// part four texels, (colour, roughness), (metalness, texture layer, kind,
+// normal map layer), (tile, tile repeats per metre, hidden), (mark colour).
+// The row comes with the model's meshes (boneBase.y, see poolBones), so one
+// material draws all the models of a kind in a battle.
+const PALETTE_TEXELS = 4;
+const PART_VERTEX = `
   attribute float _part;
-  uniform float partHidden[${n}];
-  uniform vec3 partTex[${n}];
-  uniform vec2 partTile[${n}];
+  attribute vec4 boneBase;
+  uniform highp sampler2D partPalette;
   varying vec3 vPartTex;
   varying vec2 vPartTile;
   varying vec2 vPartUv;`;
 const PART_BEGIN = `
   int part = int(_part + 0.5);
-  vPartTex = partTex[part];
-  vPartTile = partTile[part];
+  int partRow = int(boneBase.y + 0.5);
+  vec4 pal0 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS}, partRow), 0);
+  vec4 pal1 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 1, partRow), 0);
+  vec4 pal2 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 2, partRow), 0);
+  vPartTex = pal1.yzw;
+  vPartTile = pal2.xy;
   vPartUv = uv;`;
 // moves the vertices of a hidden part out of the view: its triangles vanish
 const HIDE_VERTEX = `
-  if (partHidden[part] > 0.5) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);`;
+  if (pal2.z > 0.5) gl_Position = vec4(0.0, 0.0, -2.0, 1.0);`;
 // texture layer (x < 0: none), kind (y: 1 see-through card, 2 the alpha
 // marks where the colour is markColor instead of the part's) and normal map
 // layer (z < 0: none) of a part. Cards are cut out where the texture's alpha
@@ -260,11 +269,12 @@ const bonePools = new WeakMap();
 
 // Puts a model's skeleton (an ownSpaceSkeleton) into the bone pool of
 // `owner` (one per battle) and gives each of `meshes` its own geometry
-// (sharing the buffers) with the boneBase attribute.
-export function poolBones(owner, skeleton, meshes) {
+// (sharing the buffers) with the boneBase attribute: the first bone, the
+// model's palette row (partLook), how dirty it is (0..1).
+export function poolBones(owner, skeleton, meshes, row = 0, dirt = 0) {
   let pool = bonePools.get(owner);
   if (!pool) bonePools.set(owner, (pool = new BonePool()));
-  const base = new THREE.InstancedBufferAttribute(new Float32Array([pool.add(skeleton)]), 1);
+  const base = new THREE.InstancedBufferAttribute(new Float32Array([pool.add(skeleton), row, dirt, 0]), 4);
   for (const m of meshes) m.geometry = withBoneBase(m.geometry, base);
   return base;
 }
@@ -290,9 +300,7 @@ export function flushBones(owner) {
 }
 
 // three.js's skinning, with the bones from the pool's rows
-const SKINNING = THREE.ShaderChunk.skinning_pars_vertex
-  .replace('uniform mat4 bindMatrix;', 'attribute float boneBase;\n\tuniform mat4 bindMatrix;')
-  .replace('int j = int( i ) * 4;', 'int j = ( int( i ) + int( boneBase + 0.5 ) ) * 4;');
+const SKINNING = THREE.ShaderChunk.skinning_pars_vertex.replace('int j = int( i ) * 4;', 'int j = ( int( i ) + int( boneBase.x + 0.5 ) ) * 4;');
 
 // after posing the bones of an ownSpaceSkeleton
 export function posed(space, skeleton) {
@@ -323,79 +331,118 @@ export function shadowStandIn(lod, mat, sphere) {
   return s;
 }
 
-const materials = new Map();
+// A palette texture: a row per model, PALETTE_TEXELS texels per part
+// (see PART_VERTEX); grows as models are added.
+class PalettePool {
+  constructor(parts) {
+    this.width = parts * PALETTE_TEXELS;
+    this.rows = 0;
+    this.data = null;
+    this.uniform = { value: null };
+  }
 
-// One material per look, shared by all models that look alike.
-//   key       identifies the look
-//   program   name of the shader program (one per model: the number of parts differs)
-//   parts     part names in the order of their numbers
-//   palette   {part: surface() or tiled()}
-//   layerOf   part -> name of its texture layer
-//   layers    colour layers (decodeLayers), normals: normal map layers (by
-//             the same names), tiles: tileable materials (decodeTiles)
-//   cards     parts made of see-through cards; marked: parts whose texture
-//             alpha selects markColor (a horse's white markings)
-//   hidden    per part 1 = not drawn
-export function partMaterial(o) {
-  let m = materials.get(o.key);
-  if (m) return m;
+  add(row) {
+    const size = this.width * 4;
+    if (!this.data || (this.rows + 1) * size > this.data.length) this.grow(Math.max(16, this.rows * 2));
+    this.data.set(row, this.rows * size);
+    this.uniform.value.needsUpdate = true;
+    return this.rows++;
+  }
+
+  grow(rows) {
+    const data = new Float32Array(this.width * rows * 4);
+    if (this.data) data.set(this.data);
+    const old = this.uniform.value;
+    this.data = data;
+    this.uniform.value = new THREE.DataTexture(data, this.width, rows, THREE.RGBAFormat, THREE.FloatType);
+    this.uniform.value.needsUpdate = true;
+    if (old) old.dispose();
+  }
+}
+
+// per owner (a battle) and program: the palette and the materials
+const kinds = new WeakMap();
+
+// The material of one kind of model (o.program: 'soldier', 'horse') in a
+// battle (`owner`), and the palette row of one model's look in it.
+//   o (the kind)  program, parts (part names in the order of their numbers),
+//                 layers (colour layers, decodeLayers), normals (normal map
+//                 layers by the same names), tiles (tileable materials,
+//                 decodeTiles), mud (colour of the dirt, linear)
+//   look          palette {part: surface() or tiled()}, layerOf (part ->
+//                 name of its texture layer), cards (parts made of see-through
+//                 cards), marked (parts whose texture alpha selects the mark
+//                 colour, a horse's white markings), markColor, hidden (per
+//                 part 1 = not drawn)
+// Returns {material, row}: the row goes to poolBones.
+export function partLook(owner, o, look) {
+  let byProgram = kinds.get(owner);
+  if (!byProgram) kinds.set(owner, (byProgram = new Map()));
+  let kind = byProgram.get(o.program);
+  if (!kind) byProgram.set(o.program, (kind = makeKind(o)));
   const { parts, layers, normals, tiles } = o;
-  const n = parts.length;
-  const colors = new Float32Array(n * 3);
-  const surfaces = new Float32Array(n * 2);
-  const tex = new Float32Array(n * 3);
-  const tile = new Float32Array(n * 2).fill(-1);
+  const row = new Float32Array(parts.length * PALETTE_TEXELS * 4);
   const c = new THREE.Color();
+  const mark = new THREE.Color(look.markColor || '#ffffff');
   parts.forEach((name, i) => {
-    const s = o.palette[name] || surface('#888888', 0.9);
-    c.set(s.color).toArray(colors, i * 3);
-    surfaces[i * 2] = s.roughness;
-    surfaces[i * 2 + 1] = s.metalness;
-    const layer = o.layerOf(name);
-    tex[i * 3] = layers && layer in layers.index ? layers.index[layer] : -1;
-    tex[i * 3 + 1] = o.cards && o.cards.has(name) ? 1 : o.marked && o.marked.has(name) ? 2 : 0;
-    tex[i * 3 + 2] = normals && layer in normals.index ? normals.index[layer] : -1;
-    if (tiles && s.tile in tiles.index) {
-      tile[i * 2] = tiles.index[s.tile];
-      tile[i * 2 + 1] = tiles.repeat[s.tile];
-    }
+    const s = look.palette[name] || surface('#888888', 0.9);
+    const k = i * PALETTE_TEXELS * 4;
+    c.set(s.color);
+    row.set([c.r, c.g, c.b, s.roughness], k);
+    const layer = look.layerOf(name);
+    row.set([
+      s.metalness,
+      layers && layer in layers.index ? layers.index[layer] : -1,
+      look.cards && look.cards.has(name) ? 1 : look.marked && look.marked.has(name) ? 2 : 0,
+      normals && layer in normals.index ? normals.index[layer] : -1,
+    ], k + 4);
+    const tiled = tiles && s.tile in tiles.index;
+    row.set([tiled ? tiles.index[s.tile] : -1, tiled ? tiles.repeat[s.tile] : -1, look.hidden ? look.hidden[i] : 0, 0], k + 8);
+    row.set([mark.r, mark.g, mark.b, 0], k + 12);
   });
+  return { material: kind.material, row: kind.palette.add(row) };
+}
+
+function makeKind(o) {
+  const { parts, layers, normals, tiles } = o;
+  const palette = new PalettePool(parts.length);
   const shared = {
-    partHidden: { value: new Float32Array(o.hidden || n) },
-    partTex: { value: tex },
+    partPalette: palette.uniform,
     partLayers: { value: layers ? layers.texture : null },
     layerSize: { value: layers ? layers.size : 1 },
-    partTile: { value: tile },
   };
-  m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
+  const m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
-    shader.uniforms.partColor = { value: colors };
-    shader.uniforms.partSurface = { value: surfaces };
-    shader.uniforms.markColor = { value: new THREE.Color(o.markColor || '#ffffff') };
     shader.uniforms.partNormals = { value: normals ? normals.texture : null };
     shader.uniforms.tileColor = { value: tiles ? tiles.color : null };
     shader.uniforms.tileSurface = { value: tiles ? tiles.surface : null };
+    shader.uniforms.mudColor = { value: new THREE.Color(o.mud || '#4a3b2a') };
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', SKINNING)
-      .replace('#include <common>', `#include <common>${PART_VERTEX(n)}
-        uniform vec3 partColor[${n}];
-        uniform vec2 partSurface[${n}];
+      .replace('#include <common>', `#include <common>${PART_VERTEX}
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;`)
+        varying vec2 vPartSurface;
+        varying vec3 vMarkColor;
+        varying vec2 vDirt;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
-        vPartColor = partColor[part];
-        vPartSurface = partSurface[part];`)
+        vPartColor = pal0.rgb;
+        vPartSurface = vec2(pal0.a, pal1.x);
+        vMarkColor = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 3, partRow), 0).rgb;
+        // (the height in the bind pose: the feet at 0)
+        vDirt = vec2(boneBase.z, position.y);`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${PART_FRAGMENT}${TILE_FRAGMENT}
         uniform highp sampler2DArray partNormals;
-        uniform vec3 markColor;
+        uniform vec3 mudColor;
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;`)
+        varying vec2 vPartSurface;
+        varying vec3 vMarkColor;
+        varying vec2 vDirt;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec4 partTex = partTexel();
-        vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, markColor, partTex.a) : vPartColor;
+        vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, vMarkColor, partTex.a) : vPartColor;
         diffuseColor.rgb *= partTint * partTex.rgb;
         diffuseColor.a = 1.0;
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
@@ -403,10 +450,15 @@ export function partMaterial(o) {
           vec3 tileUv = vec3(vPartUv * vPartTile.y, vPartTile.x);
           diffuseColor.rgb *= texture(tileColor, tileUv).rgb;
           tileSurf = texture(tileSurface, tileUv).rgb;
-        }`)
+        }
+        // mud and dust from the ground: most above the boots, less up to the
+        // knees, as dirty as the model
+        float mud = vDirt.x * (1.0 - smoothstep(0.1, 0.8, vDirt.y));
+        diffuseColor.rgb = mix(diffuseColor.rgb, mudColor, mud);`)
       .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
-          : clamp(tileSurf.z * vPartSurface.x, 0.04, 1.0);`)
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPartSurface.y;')
+          : clamp(tileSurf.z * vPartSurface.x, 0.04, 1.0);
+        roughnessFactor = mix(roughnessFactor, 0.95, mud);`)
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(vPartSurface.y, 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (vPartTex.z > -0.5) {
           vec3 partN = texture(partNormals, vec3(vPartUv, vPartTex.z)).xyz * 2.0 - 1.0;
@@ -414,25 +466,29 @@ export function partMaterial(o) {
         } else if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);
           normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
-        }`);
+        }`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
-  const program = `${o.program}:${n}`;
-  m.customProgramCacheKey = () => program;
+  m.customProgramCacheKey = () => `${o.program}:${parts.length}`;
   // shadows: hidden parts cast none, cards only where they are not see-through
   const depth = new THREE.MeshDepthMaterial();
   depth.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', SKINNING)
-      .replace('#include <common>', `#include <common>${PART_VERTEX(n)}`)
+      .replace('#include <common>', `#include <common>${PART_VERTEX}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${PART_FRAGMENT}`)
       .replace('#include <alphatest_fragment>', '#include <alphatest_fragment>\n  partTexel();');
   };
-  depth.customProgramCacheKey = () => `${program}-depth`;
+  depth.customProgramCacheKey = () => `${o.program}:${parts.length}-depth`;
   m.userData.depth = depth;
-  materials.set(o.key, m);
-  return m;
+  return { material: m, palette };
 }
+
+// Metal reflects a third less of the surroundings: the sky dome's glow
+// otherwise lights armour in the shade like chrome.
+export const DULL_METAL = `
+  reflectedLight.indirectSpecular *= mix(1.0, 0.65, metalnessFactor);`;

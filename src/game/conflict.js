@@ -402,6 +402,7 @@ export function startSiegeAssault(game, s) {
       { name: `Гарнізон ${s.name}`, units: [...garrisonUnits, ...unitsOf(defenders)], hero: null },
     ],
     factionColors: [allyColor(s.faction), factionInfo(s.faction).color],
+    enemyFaction: s.faction,
     fortName: s.name,
   };
   for (const d of defenders) d.held = true;

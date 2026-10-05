@@ -7,7 +7,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, lodMesh, ownSpaceSkeleton, partMaterial, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { bytesOf, decodeLayers, decodeTiles, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { JERKIN, UNDYED } from '../data/dyes.js';
 import { loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
@@ -249,13 +250,31 @@ function fingerPose(bones, s, hand, amount) {
 const HAIR_MEAN = 0.8;
 const SKIN_REF = new THREE.Color('#e8c3a0');
 
+// Cloth of a colour (of the dyed cloth seen in daylight, src/data/dyes.js)
+// as the tint of a tile whose mean albedo is `mean` (linear, per channel):
+// faded by `fade` towards undyed wool, made lighter or darker by `shade`.
+const WOOL_MEAN = [0.78, 0.74, 0.68];
+const QUILT_MEAN = [0.5, 0.5, 0.5];
+// (the colours in dyes.js are of the cloth / 0.75)
+const UNDYED_SRGB = new THREE.Color(UNDYED).convertLinearToSRGB();
+function clothColor(hex, fade = 0, shade = 1, mean = WOOL_MEAN) {
+  // (faded as the eye sees it, in sRGB: in linear light a little of the
+  // undyed white makes a dark cloth much lighter)
+  const c = new THREE.Color(hex).convertLinearToSRGB().lerp(UNDYED_SRGB, fade).convertSRGBToLinear();
+  return c.setRGB((c.r * shade * 0.75) / mean[0], (c.g * shade * 0.75) / mean[1], (c.b * shade * 0.75) / mean[2]);
+}
+
 function palette(spec) {
   const look = spec.look || 'cloth';
-  const team = tiled('wool', spec.team);
-  const mail = tiled('mail', '#ffffff', 1.2, 0.75);
-  const plate = tiled('plate', '#ffffff', 1, 0.9);
-  // a gambeson dyed a little towards the team colour
-  const dyed = new THREE.Color('#ffffff').lerp(new THREE.Color(spec.team), 0.3);
+  const sign = clothColor(spec.sign || spec.team, spec.fade, spec.shade);
+  const team = tiled('wool', sign);
+  // metal without chrome: rough, a little dark (the mail's average with the
+  // dirt between the rings, which are smaller than a pixel from 2–3 m)
+  const mail = tiled('mail', '#dadada', 2.15, 0.75);
+  const plate = tiled('plate', '#ffffff', 1.4, 0.9);
+  // a gambeson dyed well towards the side's colour (a pale one is not told
+  // apart at a distance)
+  const dyed = new THREE.Color(1, 1, 1).lerp(clothColor(spec.sign || spec.team, spec.fade, spec.shade, QUILT_MEAN), 0.85);
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
@@ -265,10 +284,11 @@ function palette(spec) {
     Gambeson: tiled('quilted', dyed),
     Hauberk: mail,
     Surcoat: team,
-    Jerkin: tiled('leather', '#ffffff'),
-    Cuirass: look === 'plate' ? plate : tiled('lamellar', '#ffffff', 0.8, 0.85),
+    Jerkin: tiled('leather', JERKIN[spec.faction] || JERKIN.default),
+    // a brigandine: plates riveted inside cloth of the side's colour
+    Cuirass: look === 'plate' ? plate : look === 'brigandine' ? team : tiled('lamellar', '#e1e1e1', 1, 0.85),
     Plates: plate,
-    Hose: look === 'plate' || look === 'mail' ? mail : tiled('wool', spec.pants),
+    Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
     Belt: tiled('leather', '#8a7a6a'),
     Hair: surface(hair, 0.7),
@@ -287,6 +307,7 @@ const OUTFITS = {
   leather: ['Tunic', 'Jerkin', 'Belt-Jerkin', 'Hose', 'Boots'],
   mail: ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose', 'Boots'],
   lamellar: ['Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
+  brigandine: ['Hauberk', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
   plate: ['Hauberk', 'Cuirass', 'Plates', 'Belt-Cuirass', 'Hose', 'Boots'],
 };
 
@@ -317,18 +338,14 @@ function outfitGeometry(look, level) {
 // parts made of see-through cards
 const CARDS = new Set(['Hair', 'Beard', 'Moustache', 'Brows', 'Lashes']);
 
-function soldierMat(spec, hidden) {
+// The soldiers' material in a battle (`owner`) and this soldier's palette row.
+function soldierLook(owner, spec, hidden) {
   const t = state.t;
   const layers = t.layers;
   const stubble = spec.stubble && layers && 'skin_stubble' in layers.index;
-  return partMaterial({
-    key: `soldier|${spec.look}|${spec.team}|${spec.pants}|${spec.skin}|${spec.hair}|${stubble}|${hidden.join('')}`,
-    program: 'soldier',
-    parts: t.parts,
+  return partLook(owner, { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud }, {
     palette: palette(spec),
     layerOf: (name) => (name === 'Body' && stubble ? 'skin_stubble' : t.partLayers[name]),
-    layers,
-    tiles: t.tiles,
     cards: CARDS,
     hidden,
   });
@@ -390,7 +407,8 @@ export function itemMaterial() {
         if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, tileUv);
           normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
-        }`);
+        }`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
   itemMat.customProgramCacheKey = () => 'tiled-item';
   return itemMat;
@@ -454,7 +472,7 @@ export class SkinnedHuman {
     if (spec.beard !== 'full') hide.add('Beard');
     if (!spec.beard) hide.add('Moustache');
     if (this.helmet) hide.add('Hair');
-    const mat = soldierMat(spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
+    const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
     // the farthest level, made at run time (outfitGeometry)
     const far = outfitGeometry(spec.look || 'cloth', FAR_LEVEL);
     if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Soldier_LOD${FAR_LEVEL}`);
@@ -477,7 +495,7 @@ export class SkinnedHuman {
     // battle's bone texture
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
-    poolBones(props, shared, this.lod);
+    poolBones(props, shared, this.lod, row, spec.dirt || 0);
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
@@ -520,7 +538,8 @@ export class SkinnedHuman {
   }
 
   addHelmet(spec, props) {
-    const fitted = helmetFor(spec.helmet, spec.team);
+    // (a hood is of the wearer's own cloth)
+    const fitted = helmetFor(spec.helmet, spec.helmet === 'hood' && spec.hood ? spec.hood : spec.team);
     if (fitted) {
       const m = props.add(fitted, itemMaterial());
       this.bones.head.add(m);

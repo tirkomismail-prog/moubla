@@ -8,6 +8,11 @@ import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
+import { sideCloth } from '../data/dyes.js';
+
+// colour of the mud and dust on legs and hooves, by the ground fought on
+const MUD = { steppe: '#8a7457', desert: '#a08a68', arena: '#a08a68', snow: '#5b5650', forest: '#3e3226', taiga: '#3e3226', hills: '#56473a' };
+export const mudOf = (terrain) => MUD[terrain] || '#4b3d2c';
 
 const Q = (arm, hint) => armQuat(arm, hint);
 const HALF_PI = Math.PI / 2;
@@ -199,16 +204,30 @@ export class Agent {
     // visuals
     const colors = opts.colors || { team: '#888888', team2: '#dddddd' };
     const r1 = Math.random;
+    // clothes: the side's dyed field colour on the big garment (or each
+    // man's own among bandits), the rest from the side's pool, each man's
+    // cloth a little faded and lighter or darker
+    const cloth = colors.cloth || sideCloth('bandits');
+    const troop = this.troopId ? TROOPS[this.troopId] : null;
     const spec = {
       look: this.armorItem ? this.armorItem.look : 'cloth',
       helmet: this.helmItem ? this.helmItem.look : null,
       team: colors.team,
       team2: colors.team2,
+      faction: troop ? troop.faction : 'player',
+      sign: cloth.sign || pick(cloth.pool),
+      fade: r1() * 0.25,
+      shade: 0.94 + r1() * 0.12,
+      // a hood: one of the first colours of the pool
+      hood: cloth.pool[Math.floor(r1() * Math.min(3, cloth.pool.length))],
+      // mud and dust from the ground on the legs: footmen more than riders
+      dirt: (0.25 + r1() * 0.45) * (this.horse ? 0.4 : 1) * (this.tier >= 5 ? 0.7 : 1),
+      mud: mudOf(battle.terrain && battle.terrain.type),
       skin: pickSkin(r1),
       hair: pickHair(r1),
       beard: r1() < 0.45 ? (r1() < 0.6 ? 'full' : 'moustache') : null,
       stubble: r1() < 0.5,
-      pants: ['#4a3a2a', '#3a3a44', '#5a4a3a', '#2e3a2a'][Math.floor(r1() * 4)],
+      pants: pick(cloth.pool),
       // a chosen face (skin, hair, beard, stubble) instead of a random one
       ...opts.appearance,
     };
@@ -260,10 +279,13 @@ export class Agent {
 
   makeHorse(itemId, colors) {
     const it = ITEMS[itemId];
-    const team = colors ? colors.team : '#777';
+    // (the cloth of the side's field colour)
+    const team = colors ? (colors.cloth && colors.cloth.sign) || colors.team : '#777';
     // the realistic horse with medium/high graphics, else the procedural one
     const realistic = this.battle.gfx && this.battle.gfx.standard && horseReady();
-    const rig = realistic ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding }, this.battle.props) : buildHorse(it.coat, team, !!it.barding);
+    const rig = realistic
+      ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding, dirt: 0.35 + Math.random() * 0.45, mud: mudOf(this.battle.terrain && this.battle.terrain.type) }, this.battle.props)
+      : buildHorse(it.coat, team, !!it.barding);
     rig.root.rotation.order = 'YXZ';
     this.battle.scene.add(rig.root);
     return {

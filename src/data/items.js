@@ -55,7 +55,7 @@ export const ITEMS = {
   mail_shirt: { type: 'armor', slot: 'armor', name: 'Кольчужна сорочка', armor: 26, look: 'mail', price: 620 },
   lamellar: { type: 'armor', slot: 'armor', name: 'Ламелярний обладунок', armor: 30, look: 'lamellar', price: 900 },
   hauberk: { type: 'armor', slot: 'armor', name: 'Кольчужний хауберк', armor: 33, look: 'mail', price: 1150 },
-  brigandine: { type: 'armor', slot: 'armor', name: 'Бригантина', armor: 39, look: 'plate', price: 1900 },
+  brigandine: { type: 'armor', slot: 'armor', name: 'Бригантина', armor: 39, look: 'brigandine', price: 1900 },
   plate: { type: 'armor', slot: 'armor', name: 'Латний обладунок', armor: 47, look: 'plate', price: 3600 },
 
   // --- helmets -------------------------------------------------------------

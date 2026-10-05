@@ -445,6 +445,8 @@ function armGeo(sleeve, skin, glove) {
 const HUMAN_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1, 0), 1.3);
 
 export function buildHuman(spec) {
+  // (the simple body has no brigandine: plates)
+  if (spec.look === 'brigandine') spec = { ...spec, look: 'plate' };
   const show = !spec.driverOnly;
   const parts = [];
   const key = [];

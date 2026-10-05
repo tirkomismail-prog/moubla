@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bytesOf, decodeLayers, lodMesh, ownSpaceSkeleton, partMaterial, poolBones, posed, shadowStandIn, simplified, surface, tiled } from './partmat.js';
+import { bytesOf, decodeLayers, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, surface, tiled } from './partmat.js';
 import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
@@ -151,18 +151,13 @@ function palette(spec) {
   };
 }
 
-function horseMat(spec) {
+// The horses' material in a battle (`owner`) and this horse's palette row.
+function horseLook(owner, spec) {
   const white = spec.marks ? '#f2eee6' : null;
   const coat = new THREE.Color(spec.coat).multiplyScalar(1 / COAT_MEAN);
-  return partMaterial({
-    key: `horse|${spec.coat}|${spec.team}|${spec.marks}`,
-    program: 'horse',
-    parts: T.parts,
+  return partLook(owner, { program: 'horse', parts: T.parts, layers: T.layers, normals: T.normals, tiles: T.tiles, mud: spec.mud }, {
     palette: palette(spec),
     layerOf: (name) => T.partLayers[name],
-    layers: T.layers,
-    normals: T.normals,
-    tiles: T.tiles,
     cards: CARDS,
     marked: MARKED,
     markColor: white ? new THREE.Color(white).multiplyScalar(1 / 0.8) : coat,
@@ -201,7 +196,8 @@ const _v = new THREE.Vector3();
 const _t = new THREE.Vector3();
 
 export class SkinnedHorse {
-  // spec: {coat, team, barding}; owner: whose bone texture (poolBones)
+  // spec: {coat, team, barding, dirt, mud}; owner: the battle's (whose
+  // material, palette and bone texture: partLook, poolBones)
   constructor(spec, owner) {
     this.skinned = true;
     this.spec = { ...spec, marks: Math.random() < 0.55 };
@@ -221,7 +217,7 @@ export class SkinnedHorse {
       const m = o.isSkinnedMesh && /_LOD(\d)$/.exec(o.name);
       if (m) this.lod[+m[1]] = o;
     });
-    const mat = horseMat(this.spec);
+    const { material: mat, row } = horseLook(owner, this.spec);
     const piece = spec.barding ? 'Barding' : 'Cloth';
     // the farthest level, made at run time (geometry)
     const far = geometry(piece, FAR_LEVEL);
@@ -241,7 +237,7 @@ export class SkinnedHorse {
     // battle's bone texture
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
-    if (owner) poolBones(owner, shared, this.lod);
+    poolBones(owner, shared, this.lod, row, spec.dirt || 0);
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);

@@ -14,6 +14,7 @@ import { Effects } from './effects.js';
 import { gfxPreset, Environment, createPost } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
+import { sideCloth } from '../data/dyes.js';
 import { AutoResolution } from './autores.js';
 import { flushBones, SHADOW_LAYER } from './partmat.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
@@ -329,9 +330,31 @@ export class Battle {
     }
   }
 
+  // the factions of the player's side and of the enemy (for the colours of
+  // their clothes): the enemy's from the battle or its men
+  sideFactions() {
+    if (this.factions) return this.factions;
+    const cfg = this.config;
+    let enemy = cfg.enemyFaction;
+    if (!enemy) {
+      const count = {};
+      for (const u of (cfg.sides && cfg.sides[1] && cfg.sides[1].units) || []) {
+        const f = TROOPS[u.troopId] && TROOPS[u.troopId].faction;
+        if (f) count[f] = (count[f] || 0) + (u.count || 1);
+      }
+      enemy = Object.keys(count).sort((a, b) => count[b] - count[a])[0] || 'bandits';
+    }
+    this.factions = ['player', cfg.kind === 'arena' ? 'bandits' : enemy];
+    return this.factions;
+  }
+
+  // team: the colour of its banners and shields (team, team2) and its cloth
+  // (sideCloth: the dyed field colour and the pool of the rest)
   colorsFor(team) {
     const c = toHex((this.config.factionColors || [])[team] || (team === 0 ? '#3f6fb5' : '#a8322a'));
-    return { team: c, team2: toHex(lighten(c, 1.6)) };
+    const [player, enemy] = this.sideFactions();
+    const cloth = team === 0 ? sideCloth(player, enemy) : sideCloth(enemy, player);
+    return { team: c, team2: toHex(lighten(c, 1.6)), cloth };
   }
 
   spawnInitial() {
@@ -354,7 +377,7 @@ export class Battle {
         x: b0.x + fx * 5,
         z: b0.z + fz * 5,
         yaw: b0.yaw,
-        colors: { team: this.colorsFor(0).team, team2: '#f5d76e' },
+        colors: { ...this.colorsFor(0), team2: '#f5d76e' },
         noHorse: cfg.kind === 'siege',
         name: hero.name,
       });
@@ -377,7 +400,7 @@ export class Battle {
         x: b0.x + Math.cos(b0.yaw) * side * (2 + i),
         z: b0.z - Math.sin(b0.yaw) * side * (2 + i),
         yaw: b0.yaw,
-        colors: { team: this.colorsFor(0).team, team2: '#f5d76e' },
+        colors: { ...this.colorsFor(0), team2: '#f5d76e' },
         noHorse: cfg.kind === 'siege',
         group,
         name: c.name,
