@@ -100,7 +100,9 @@ function prepare(gltf) {
     const [name, speed] = clip.name.split('|');
     clips[name] = { clip, speed: Number(speed) || 0, dur: clip.duration, offset: 0 };
   }
-  const t = { scene, clips, fit, hands: {}, limbs: {} };
+  // standing: idle, idle2, ... (the same, done differently: one each soldier)
+  const idles = Object.keys(clips).filter((k) => /^idle\d*$/.test(k)).sort();
+  const t = { scene, clips, idles, fit, hands: {}, limbs: {} };
   // the parts in the order of their numbers (_part) and their texture layers
   t.parts = fit.parts || ['Body', 'Shirt', 'Skirt', 'Hose', 'Boots', 'Belt', 'Hair', 'Beard', 'Eyes'];
   t.partLayers = fit.part_layers || {};
@@ -503,8 +505,11 @@ export class SkinnedHuman {
     this.pending = 0;
     this.mixer = new THREE.AnimationMixer(this.space);
     this.actions = {};
+    // his own way of standing, a little quicker or slower
+    const idle = t.clips[spec.idle] ? spec.idle : t.idles[Math.floor(Math.random() * t.idles.length)];
+    this.idleRate = 0.9 + Math.random() * 0.2;
     for (const k of LOCO) {
-      const c = t.clips[k];
+      const c = t.clips[k === 'idle' ? idle : k];
       if (!c) continue;
       const a = this.mixer.clipAction(c.clip);
       a.play();
@@ -512,7 +517,7 @@ export class SkinnedHuman {
       this.actions[k] = { action: a, clip: c, weight: k === 'idle' ? 1 : 0 };
     }
     this.phase = Math.random();
-    this.idleTime = Math.random() * (t.clips.idle ? t.clips.idle.dur : 1);
+    this.idleTime = Math.random() * (this.actions.idle ? this.actions.idle.clip.dur : 1);
     this.hipYaw = 0;
     // grips: where a held item sits in each hand
     this.grip = {};
@@ -677,7 +682,7 @@ export class SkinnedHuman {
     else freq = (sp / cyc(t.clips.walk)) * (1 - wRun) + (sp / cyc(t.clips.run)) * wRun;
     freq = clamp(freq, 0.35, 2.4);
     this.phase = (this.phase + dt * freq) % 1;
-    this.idleTime += dt;
+    this.idleTime += dt * this.idleRate;
     for (const [name, a] of Object.entries(acts)) {
       a.weight += (target[name] - a.weight) * k;
       a.action.setEffectiveWeight(a.weight);

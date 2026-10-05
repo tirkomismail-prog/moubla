@@ -44,7 +44,7 @@ def parse_args():
     p.add_argument('--out', default='assets/characters/soldier.glb')
     p.add_argument('--cache', default=os.path.join(os.path.expanduser('~'), '.cache', 'makehuman-assets'),
                    help='folder for the downloaded MakeHuman asset packs')
-    p.add_argument('--bvh', default='', help='folder with CMU BVH files (optional, adds mocap clips)')
+    p.add_argument('--bvh', default='', help='folder with CMU BVH files (optional, adds mocap clips: these and ACCAD\'s)')
     p.add_argument('--lod1', type=float, default=0.3, help='decimation ratio of the middle-distance model')
     p.add_argument('--lod2', type=float, default=0.1, help='decimation ratio of the far model')
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
@@ -457,7 +457,7 @@ def build():
         print(f'{name:24s} {tri_count(obj):6d} tris')
 
     if ARGS.bvh:
-        mocap.add_clips(rig, ARGS.bvh)
+        mocap.add_clips(rig, ARGS.bvh, mocap.fetch_accad(ARGS.cache))
 
     # textures: the game finds each part's layer by name
     tex_dir = os.path.join(os.path.dirname(os.path.abspath(ARGS.out)), 'textures')

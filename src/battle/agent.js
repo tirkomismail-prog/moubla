@@ -16,6 +16,8 @@ export const mudOf = (terrain) => MUD[terrain] || '#4b3d2c';
 
 const Q = (arm, hint) => armQuat(arm, hint);
 const HALF_PI = Math.PI / 2;
+// how far a soldier turns his head to his foe from
+const LOOK_DIST = 40;
 // a rider's hip joints above the seat of a (realistic) saddle
 const SEAT_PELVIS = 0.1;
 
@@ -103,6 +105,7 @@ export class Agent {
     this.yaw = opts.yaw || 0;
     this.faceYaw = this.yaw;
     this.aimYaw = this.yaw;
+    this.lookYaw = 0;
     this.aimPitch = 0;
     this.move = { x: 0, z: 0, walk: false };
     this.ride = { throttle: 0, turn: 0 };
@@ -832,7 +835,17 @@ export class Agent {
     const ranged = this.isRanged();
     r.torso.rotation.y = twistBase + pose.twist;
     r.torso.rotation.x = pose.pitch - this.aimPitch * (ranged ? 0.75 : 0.3);
-    r.neck.rotation.x = -this.aimPitch * 0.35;
+    // the head turns to the foe he means to fight (it is already the way
+    // the body turns while fighting), not further than over a shoulder
+    let look = 0;
+    const foe = !this.isPlayer && this.ai.target;
+    if (foe && foe.alive && foe.pos.distanceToSquared(this.pos) < LOOK_DIST * LOOK_DIST) {
+      const facing = (this.horse ? this.horse.yaw : this.yaw) + r.torso.rotation.y;
+      look = clamp(wrapAngle(Math.atan2(foe.pos.x - this.pos.x, foe.pos.z - this.pos.z) - facing), -1.1, 1.1);
+    }
+    this.lookYaw += (look - this.lookYaw) * Math.min(1, dt * 3);
+    r.neck.rotation.order = 'YXZ';
+    r.neck.rotation.set(-this.aimPitch * 0.35, this.lookYaw, 0);
     r.armR.quaternion.copy(pose.q);
     r.wristR.rotation.x = pose.wrist;
 

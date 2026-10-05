@@ -1,14 +1,25 @@
 """Motion capture clips for the soldier.
 
-CMU Graphics Lab motion capture database (mocap.cs.cmu.edu, free for research
-and commercial use), in the MotionBuilder-friendly BVH conversion by Bruce
-Hahne. Each clip is retargeted onto the MakeHuman game_engine rig by copying
-world-space bone rotations (relative to each skeleton's rest pose), then
-trimmed to a seamless cycle and made to play in place: the game moves the
-character itself and scales the playback speed to the walking speed.
+Walking and running: the CMU Graphics Lab motion capture database
+(mocap.cs.cmu.edu, free for research and commercial use), in the
+MotionBuilder-friendly BVH conversion by Bruce Hahne. Standing: ACCAD Open
+Motion Data (Advanced Computing Center for the Arts and Design, The Ohio State
+University, CC BY 3.0, https://accad.osu.edu/research/motion-lab/mocap-system-and-data),
+two men standing at ease, shifting their weight and looking around.
+
+Each clip is retargeted onto the MakeHuman game_engine rig by copying
+world-space bone rotations relative to each skeleton's rest pose (for ACCAD,
+relative to the actor's own pose standing at ease, so that the soldier stands
+up straight and looks ahead as the actor did), then trimmed to a seamless
+cycle and made to play in place: the game moves the character itself and
+scales the playback speed to the walking speed.
 """
+import hashlib
 import math
 import os
+import re
+import urllib.request
+import zipfile
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -22,16 +33,32 @@ MAP = {
     'thigh_l': 'LeftUpLeg', 'calf_l': 'LeftLeg', 'foot_l': 'LeftFoot', 'ball_l': 'LeftToeBase',
     'thigh_r': 'RightUpLeg', 'calf_r': 'RightLeg', 'foot_r': 'RightFoot', 'ball_r': 'RightToeBase',
 }
+# ACCAD's skeleton is CMU's with another name for the lower back
+MAP_ACCAD = {**MAP, 'spine_01': 'ToSpine'}
 LOOP_BONES = ['pelvis', 'thigh_l', 'calf_l', 'foot_l', 'thigh_r', 'calf_r', 'foot_r', 'upperarm_l', 'upperarm_r']
+# (standing, the head and chest are to loop too)
+STAND_LOOP_BONES = LOOP_BONES + ['spine_03', 'head']
+TORSO = {'pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'head'}
+# degrees the head of a standing clip may look up or down
+MAX_HEAD_PITCH = 15
 
-# name, file, travel direction in the character's frame (None: standing),
-# cycle length range in seconds (None: fixed segment start/length)
+# name, file (accad:take for ACCAD), travel direction in the character's
+# frame (None: standing), cycle length range in seconds. The standing clips
+# idle, idle2, ... are the same thing done differently: each soldier plays one.
 CLIPS = [
-    ('idle', '111/111_28.bvh', None, (1.0, 5.0)),
+    ('idle', 'accad:Male2_A2_Sway', None, (4.0, 9.0)),
+    ('idle2', 'accad:Male1_A2_Sway', None, (4.0, 8.0)),
+    ('idle3', 'accad:Male2_A1_Stand', None, (2.0, 3.6)),
+    ('idle4', 'accad:Male2_A4_LookAround', None, (5.0, 11.0)),
     ('walk', '007/07_01.bvh', 'fwd', (0.8, 1.5)),
     ('run', '009/09_01.bvh', 'fwd', (0.45, 0.95)),
     ('walk_back', '111/111_01.bvh', 'back', (0.8, 1.7)),
 ]
+ACCAD_URL = 'https://accad.osu.edu/sites/accad.osu.edu/files/{}_bvh.zip'
+ACCAD_SHA256 = {
+    'Male1': '1cd26aeac2ee7f20e3c0fe5082e633201bb136a714ae8f684a4f34c4421f4627',
+    'Male2': 'f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1',
+}
 FPS = 30
 
 
@@ -122,20 +149,129 @@ def retarget(rig, src, start, end):
     return out
 
 
-def pose_error(a, b):
+# --- ACCAD -------------------------------------------------------------------
+
+def fetch_accad(cache):
+    """The ACCAD takes (BVH) in `cache`/accad, downloaded once; the folder."""
+    folder = os.path.join(cache, 'accad')
+    os.makedirs(folder, exist_ok=True)
+    for actor, sha in ACCAD_SHA256.items():
+        path = os.path.join(folder, f'{actor}_bvh.zip')
+        if not os.path.exists(path):
+            url = ACCAD_URL.format(actor)
+            print('downloading', url)
+            req = urllib.request.Request(url, headers={'User-Agent': 'moubla-build'})
+            with urllib.request.urlopen(req) as r, open(path + '.part', 'wb') as f:
+                f.write(r.read())
+            os.replace(path + '.part', path)
+        with open(path, 'rb') as f:
+            got = hashlib.sha256(f.read()).hexdigest()
+        if got != sha:
+            raise RuntimeError(f'{path}: sha256 {got}, expected {sha}')
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if name.endswith('.bvh') and not os.path.exists(os.path.join(folder, os.path.basename(name))):
+                    with z.open(name) as src, open(os.path.join(folder, os.path.basename(name)), 'wb') as dst:
+                        dst.write(src.read())
+    return folder
+
+
+def frame_step(path):
+    """Frames of the file per frame of the clip (the takes are at 30 or 120 fps)."""
+    with open(path) as f:
+        frame_time = float(re.search(r'Frame Time:\s*([\d.]+)', f.read(20000)).group(1))
+    return max(1, round(1 / frame_time / FPS))
+
+
+def posed_q(arm, name):
+    return (arm.matrix_world @ arm.pose.bones[name].matrix).to_quaternion()
+
+
+def posed_dir(arm, name):
+    pb = arm.pose.bones[name]
+    return (arm.matrix_world.to_3x3() @ (pb.tail - pb.head)).normalized()
+
+
+def posed_head(arm, name):
+    return arm.matrix_world @ arm.pose.bones[name].head
+
+
+def facing(left_hip, right_hip):
+    """Which way a body faces (horizontal) from where its hips are."""
+    return horizontal(Vector((0, 0, 1)).cross(right_hip - left_hip))
+
+
+def at_ease(path, mp):
+    """An actor standing at ease (the first frame of his A1_Stand take): the
+    reference his other takes are retargeted from."""
+    src, start, _ = import_bvh(path)
+    bpy.context.scene.frame_set(start)
+    names = set(mp.values())
+    ref = {
+        'q': {n: posed_q(src, n) for n in names},
+        'dir': {n: posed_dir(src, n) for n in names},
+        'hips': posed_head(src, 'Hips').copy(),
+        'fwd': facing(posed_head(src, 'LeftUpLeg'), posed_head(src, 'RightUpLeg')),
+        'leg': src.data.bones['LeftUpLeg'].length + src.data.bones['LeftLeg'].length,
+    }
+    act = src.animation_data.action
+    bpy.data.objects.remove(src)
+    bpy.data.actions.remove(act)
+    return ref
+
+
+def retarget_from(rig, src, start, end, step, ref, mp):
+    """Like retarget, relative to the actor at ease (`ref`) instead of his
+    zero pose: his torso at ease is the rig's at rest (upright, looking
+    ahead), his limbs are turned onto the rig's."""
+    b = rig.data.bones
+    tgt = facing(rig.matrix_world @ b['thigh_l'].head_local, rig.matrix_world @ b['thigh_r'].head_local)
+    g = yaw_quat(math.atan2(tgt.y, tgt.x) - math.atan2(ref['fwd'].y, ref['fwd'].x))
+    scale = leg_length(rig, 'thigh_l', 'calf_l') / ref['leg']
+    t_rest = {n: world_rest_q(rig, n) for n in mp}
+    align = {t: Quaternion() if t in TORSO else rest_dir(rig, t).rotation_difference(g @ ref['dir'][s])
+             for t, s in mp.items()}
+    pelvis_rest = (rig.matrix_world @ b['pelvis'].matrix_local).translation
+    out = []
+    for f in range(start, end + 1, step):
+        bpy.context.scene.frame_set(f)
+        world = {}
+        for t, s in mp.items():
+            d = g @ posed_q(src, s) @ ref['q'][s].inverted() @ g.inverted()
+            world[t] = d @ align[t] @ t_rest[t]
+        hips = posed_head(src, 'Hips')
+        out.append((world, pelvis_rest + (g @ (hips - ref['hips'])) * scale))
+    return out
+
+
+def head_pitch(turn):
+    """Degrees a head turned by `turn` (from the rig's rest, which faces -Y)
+    looks down (+) or up (-)."""
+    f = turn @ Vector((0, -1, 0))
+    return math.degrees(math.atan2(-f.z, math.hypot(f.x, f.y)))
+
+
+def pose_error(a, b, bones=LOOP_BONES):
     err = 0.0
-    for n in LOOP_BONES:
+    for n in bones:
         err += 1.0 - abs(a[0][n].dot(b[0][n]))
     return err + abs(a[1].z - b[1].z) * 2
 
 
-def find_cycle(frames, lo, hi):
+def find_cycle(frames, lo, hi, bones=LOOP_BONES, ok=None):
+    """The best loop (error, first, last frame) of `lo`..`hi` seconds, of the
+    frames that are `ok` (all, by default); None if there is none."""
     best = None
     n = len(frames)
     lo_f, hi_f = int(lo * FPS), int(hi * FPS)
+    bad = [0]
+    for i in range(n):
+        bad.append(bad[-1] + (0 if ok is None or ok[i] else 1))
     for a in range(int(0.25 * n), n):
         for b in range(a + lo_f, min(n, a + hi_f + 1)):
-            e = pose_error(frames[a], frames[b])
+            if bad[b + 1] != bad[a]:
+                break
+            e = pose_error(frames[a], frames[b], bones)
             if best is None or e < best[0]:
                 best = (e, a, b)
     return best
@@ -225,16 +361,43 @@ def key_clip(rig, name, frames):
     return act
 
 
-def add_clips(rig, bvh_dir):
+def add_clips(rig, bvh_dir, accad_dir=None, only=None):
+    """The clips (CLIPS; those named in `only`) as actions of `rig`, from the
+    CMU files in `bvh_dir` and the ACCAD takes in `accad_dir` (fetch_accad)."""
     bpy.context.scene.render.fps = FPS
+    refs = {}
     for name, rel, travel, rng in CLIPS:
-        path = os.path.join(bvh_dir, rel)
-        if not os.path.exists(path):
-            print('mocap: missing', path)
+        if only and name not in only:
             continue
-        src, start, end = import_bvh(path)
-        frames = retarget(rig, src, start, end)
-        err, a, b = find_cycle(frames, *rng)
+        if rel.startswith('accad:'):
+            take = rel.split(':', 1)[1]
+            path = os.path.join(accad_dir or '', take + '.bvh')
+            if not accad_dir or not os.path.exists(path):
+                print('mocap: missing', path)
+                continue
+            actor = take.split('_')[0]
+            if actor not in refs:
+                refs[actor] = at_ease(os.path.join(accad_dir, f'{actor}_A1_Stand.bvh'), MAP_ACCAD)
+            src, start, end = import_bvh(path)
+            frames = retarget_from(rig, src, start, end, frame_step(path), refs[actor], MAP_ACCAD)
+        else:
+            path = os.path.join(bvh_dir or '', rel)
+            if not bvh_dir or not os.path.exists(path):
+                print('mocap: missing', path)
+                continue
+            src, start, end = import_bvh(path)
+            frames = retarget(rig, src, start, end)
+        if travel:
+            found = find_cycle(frames, *rng)
+        else:
+            # standing in the ranks: looking ahead, not up or down
+            head_rest = world_rest_q(rig, 'head')
+            ok = [abs(head_pitch(w['head'] @ head_rest.inverted())) < MAX_HEAD_PITCH for w, _ in frames]
+            found = find_cycle(frames, *rng, bones=STAND_LOOP_BONES, ok=ok)
+        if not found:
+            print('mocap: no loop in', path)
+            continue
+        err, a, b = found
         rest = rig.data.bones['pelvis'].head_local
         cyc, speed = make_cycle(frames, a, b, travel, rest, world_rest_q(rig, 'pelvis'))
         act = key_clip(rig, f'{name}|{speed:.3f}', cyc)
