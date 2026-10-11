@@ -21,8 +21,8 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
   (https://polyhaven.com/a/curly_teddy_natural).
 - **Motion capture, standing** (idle, idle2, idle3, idle4): ACCAD Open Motion Data, Advanced Computing
   Center for the Arts and Design, The Ohio State University
-  (https://accad.osu.edu/research/motion-lab/mocap-system-and-data), takes Male1_A2_Sway, Male2_A1_Stand,
-  Male2_A2_Sway, Male2_A4_LookAround, licensed under **CC BY 3.0**
+  (https://accad.osu.edu/research/motion-lab/mocap-system-and-data), takes Male1_A1_Stand, Male1_A2_Sway,
+  Male2_A1_Stand, Male2_A2_Sway, licensed under **CC BY 3.0**
   (https://creativecommons.org/licenses/by/3.0/); retargeted and looped (changed) by `tools/characters/mocap.py`.
 - **Motion capture** (walk, run, walking backwards): CMU Graphics Lab Motion Capture Database
   (http://mocap.cs.cmu.edu), BVH conversion by Bruce Hahne. "The data used in this project was obtained

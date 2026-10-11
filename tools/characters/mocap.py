@@ -39,8 +39,11 @@ LOOP_BONES = ['pelvis', 'thigh_l', 'calf_l', 'foot_l', 'thigh_r', 'calf_r', 'foo
 # (standing, the head and chest are to loop too)
 STAND_LOOP_BONES = LOOP_BONES + ['spine_03', 'head']
 TORSO = {'pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'head'}
-# degrees the head of a standing clip may look up or down
+# degrees the head of a standing clip may look up or down, and to the side
+# (the game turns the head to a foe itself), and the hips may turn
 MAX_HEAD_PITCH = 15
+MAX_HEAD_YAW = 60
+MAX_HIPS_YAW = 20
 
 # name, file (accad:take for ACCAD), travel direction in the character's
 # frame (None: standing), cycle length range in seconds. The standing clips
@@ -49,7 +52,7 @@ CLIPS = [
     ('idle', 'accad:Male2_A2_Sway', None, (4.0, 9.0)),
     ('idle2', 'accad:Male1_A2_Sway', None, (4.0, 8.0)),
     ('idle3', 'accad:Male2_A1_Stand', None, (2.0, 3.6)),
-    ('idle4', 'accad:Male2_A4_LookAround', None, (5.0, 11.0)),
+    ('idle4', 'accad:Male1_A1_Stand', None, (2.0, 4.0)),
     ('walk', '007/07_01.bvh', 'fwd', (0.8, 1.5)),
     ('run', '009/09_01.bvh', 'fwd', (0.45, 0.95)),
     ('walk_back', '111/111_01.bvh', 'back', (0.8, 1.7)),
@@ -244,11 +247,18 @@ def retarget_from(rig, src, start, end, step, ref, mp):
     return out
 
 
-def head_pitch(turn):
-    """Degrees a head turned by `turn` (from the rig's rest, which faces -Y)
-    looks down (+) or up (-)."""
+def heading(turn):
+    """Degrees a bone turned by `turn` from the rig's rest (which faces -Y)
+    looks down (+) or up (-), and to its left (+) or right (-)."""
     f = turn @ Vector((0, -1, 0))
-    return math.degrees(math.atan2(-f.z, math.hypot(f.x, f.y)))
+    return math.degrees(math.atan2(-f.z, math.hypot(f.x, f.y))), math.degrees(math.atan2(f.x, -f.y))
+
+
+def calm(world, head_rest, hips_rest):
+    """Standing in the ranks: looking ahead (not up or down, not behind him)."""
+    pitch, yaw = heading(world['head'] @ head_rest.inverted())
+    _, hips = heading(world['pelvis'] @ hips_rest.inverted())
+    return abs(pitch) < MAX_HEAD_PITCH and abs(yaw) < MAX_HEAD_YAW and abs(hips) < MAX_HIPS_YAW
 
 
 def pose_error(a, b, bones=LOOP_BONES):
@@ -390,9 +400,8 @@ def add_clips(rig, bvh_dir, accad_dir=None, only=None):
         if travel:
             found = find_cycle(frames, *rng)
         else:
-            # standing in the ranks: looking ahead, not up or down
-            head_rest = world_rest_q(rig, 'head')
-            ok = [abs(head_pitch(w['head'] @ head_rest.inverted())) < MAX_HEAD_PITCH for w, _ in frames]
+            head_rest, hips_rest = world_rest_q(rig, 'head'), world_rest_q(rig, 'pelvis')
+            ok = [calm(w, head_rest, hips_rest) for w, _ in frames]
             found = find_cycle(frames, *rng, bones=STAND_LOOP_BONES, ok=ok)
         if not found:
             print('mocap: no loop in', path)
