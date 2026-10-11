@@ -1,7 +1,8 @@
-// Realistic soldiers: a skinned MakeHuman body with motion-captured walking,
-// running and idling (CMU mocap), whose arms, torso and head follow the
-// procedural pose rig of an Agent (weapons, blocks, aiming). Built by
-// tools/characters/build_soldier.py and packed into dist/characters.js.
+// Realistic soldiers: a skinned MakeHuman body with motion-captured walking
+// and running (CMU mocap) and standing (the Open Motion Project by ACCAD,
+// CC BY 3.0; see assets/characters/CREDITS.md), whose arms, torso and head
+// follow the procedural pose rig of an Agent (weapons, blocks, aiming).
+// Built by tools/characters/build_soldier.py and packed into dist/characters.js.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -528,6 +529,11 @@ export class SkinnedHuman {
     }
     this.phase = Math.random();
     this.idleTime = Math.random() * (this.actions.idle ? this.actions.idle.clip.dur : 1);
+    // the bones pose() turns relatively, each with its value from the clips
+    this.turned = [];
+    for (const name of ['pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'head']) {
+      this.turned.push(this.bones[name], this.bones[name].quaternion.clone());
+    }
     this.hipYaw = 0;
     // grips: where a held item sits in each hand
     this.grip = {};
@@ -617,9 +623,7 @@ export class SkinnedHuman {
     this.pending += dt;
     const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;
     if (dt > 0 && this.frameNo++ % every !== 0) return;
-    // paused: the pose stays. (Posed again, the mixer would not set the bones
-    // whose values have not changed, and the turns below would be added to
-    // the last frame's again and again.)
+    // paused: the pose stays (nothing moves)
     if (dt === 0 && this.posedOnce) return;
     this.posedOnce = true;
     dt = this.pending;
@@ -642,7 +646,13 @@ export class SkinnedHuman {
   pose(agent, dt) {
     const r = agent.rig;
     const b = this.bones;
+    // The bones turned below on top of the clips are put back as the clips
+    // left them first: the mixer only sets a bone whose clip value changed,
+    // and the turns would otherwise add up.
+    const turned = this.turned;
+    for (let i = 0; i < turned.length; i += 2) turned[i].quaternion.copy(turned[i + 1]);
     this.locomotion(agent, dt);
+    for (let i = 0; i < turned.length; i += 2) turned[i + 1].copy(turned[i].quaternion);
     b.pelvis.updateWorldMatrix(true, false);
     const rootQ = r.root.getWorldQuaternion(U.rootQ);
 

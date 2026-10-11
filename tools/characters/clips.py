@@ -6,8 +6,9 @@ Runs inside Blender's Python, like build_soldier.py:
 
 Makes the same body and skeleton as build_soldier.py, retargets the clips
 named (mocap.py: ACCAD's are downloaded into --cache, CMU's come from --bvh)
-and writes them into the model (--glb) in place of its clips of the same name;
-the meshes, skins and textures stay as they are.
+and writes them into the model (--glb) in place of its clips of the same name
+(a clip that could not be made is left as it is); the meshes, skins and
+textures stay as they are.
 """
 import argparse
 import json
@@ -177,7 +178,11 @@ def main():
     body, rig = build_soldier.make_human(hs, ts)
     bpy.context.view_layer.update()
     accad = mocap.fetch_accad(args.cache) if any(rel.startswith('accad:') for n, rel, _, _ in mocap.CLIPS if n in names) else None
-    mocap.add_clips(rig, args.bvh, accad, names)
+    made = set(mocap.add_clips(rig, args.bvh, accad, names))
+    if names - made:
+        print('not made (the model keeps its own):', ', '.join(sorted(names - made)))
+    if not made:
+        return
     bpy.ops.object.select_all(action='DESELECT')
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
@@ -187,7 +192,7 @@ def main():
             filepath=out, export_format='GLB', use_selection=True, export_apply=True, export_yup=True,
             export_animations=True, export_animation_mode='ACTIONS', export_force_sampling=True,
             export_skins=True, export_morph=False, export_extras=False)
-        splice(os.path.abspath(args.glb), out, names)
+        splice(os.path.abspath(args.glb), out, made)
 
 
 if __name__ == '__main__':

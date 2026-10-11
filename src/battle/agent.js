@@ -105,6 +105,8 @@ export class Agent {
     this.yaw = opts.yaw || 0;
     this.faceYaw = this.yaw;
     this.aimYaw = this.yaw;
+    // where he looks, relative to his body (or horse), and the neck's turn
+    this.look = 0;
     this.lookYaw = 0;
     this.aimPitch = 0;
     this.move = { x: 0, z: 0, walk: false };
@@ -835,15 +837,17 @@ export class Agent {
     const ranged = this.isRanged();
     r.torso.rotation.y = twistBase + pose.twist;
     r.torso.rotation.x = pose.pitch - this.aimPitch * (ranged ? 0.75 : 0.3);
-    // the head turns to the foe he means to fight (it is already the way
-    // the body turns while fighting), not further than over a shoulder
-    let look = 0;
+    // the head turns to the foe he means to fight (while fighting the torso
+    // already turns that way), not further than over a shoulder. Where he
+    // looks is eased relative to the body, which turns smoothly, not to the
+    // torso, which turns at once to a new aim.
+    let look = r.torso.rotation.y;
     const foe = !this.isPlayer && this.ai.target;
     if (foe && foe.alive && foe.pos.distanceToSquared(this.pos) < LOOK_DIST * LOOK_DIST) {
-      const facing = (this.horse ? this.horse.yaw : this.yaw) + r.torso.rotation.y;
-      look = clamp(wrapAngle(Math.atan2(foe.pos.x - this.pos.x, foe.pos.z - this.pos.z) - facing), -1.1, 1.1);
+      look = wrapAngle(Math.atan2(foe.pos.x - this.pos.x, foe.pos.z - this.pos.z) - (this.horse ? this.horse.yaw : this.yaw));
     }
-    this.lookYaw += (look - this.lookYaw) * Math.min(1, dt * 3);
+    this.look += wrapAngle(look - this.look) * Math.min(1, dt * 3);
+    this.lookYaw = clamp(wrapAngle(this.look - r.torso.rotation.y), -1.1, 1.1);
     r.neck.rotation.order = 'YXZ';
     r.neck.rotation.set(-this.aimPitch * 0.35, this.lookYaw, 0);
     r.armR.quaternion.copy(pose.q);

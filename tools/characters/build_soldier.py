@@ -4,7 +4,10 @@ Runs inside Blender's Python (the `bpy` module from PyPI works headless):
 
     python -m venv .venv && .venv/bin/pip install bpy==5.0.1 pillow
     git clone --depth 1 https://github.com/makehumancommunity/mpfb2 /tmp/mpfb2
-    .venv/bin/python tools/characters/build_soldier.py --mpfb /tmp/mpfb2/src/mpfb --out assets/characters/soldier.glb
+    .venv/bin/python tools/characters/build_soldier.py --mpfb /tmp/mpfb2/src/mpfb --out assets/characters/soldier.glb --bvh <cmu>
+
+(<cmu>: the CMU BVH files in Bruce Hahne's conversion, 007/07_01.bvh and so on;
+without them the model only has the standing clips.)
 
 The body, its skeleton and skin weights and the helper shells used for the
 clothes come from MakeHuman / MPFB; the skin texture, eyes, eyebrows,
@@ -44,7 +47,7 @@ def parse_args():
     p.add_argument('--out', default='assets/characters/soldier.glb')
     p.add_argument('--cache', default=os.path.join(os.path.expanduser('~'), '.cache', 'makehuman-assets'),
                    help='folder for the downloaded MakeHuman asset packs')
-    p.add_argument('--bvh', default='', help='folder with CMU BVH files (optional, adds mocap clips: these and ACCAD\'s)')
+    p.add_argument('--bvh', default='', help='folder with the CMU BVH files (walking and running clips)')
     p.add_argument('--lod1', type=float, default=0.3, help='decimation ratio of the middle-distance model')
     p.add_argument('--lod2', type=float, default=0.1, help='decimation ratio of the far model')
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
@@ -456,8 +459,9 @@ def build():
     for name, obj in parts.items():
         print(f'{name:24s} {tri_count(obj):6d} tris')
 
-    if ARGS.bvh:
-        mocap.add_clips(rig, ARGS.bvh, mocap.fetch_accad(ARGS.cache))
+    # (standing from ACCAD, downloaded; walking and running from the CMU
+    # files in --bvh, left out without them)
+    mocap.add_clips(rig, ARGS.bvh, mocap.fetch_accad(ARGS.cache))
 
     # textures: the game finds each part's layer by name
     tex_dir = os.path.join(os.path.dirname(os.path.abspath(ARGS.out)), 'textures')
@@ -481,7 +485,7 @@ def build():
     bpy.context.view_layer.objects.active = rig
     bpy.ops.export_scene.gltf(
         filepath=os.path.abspath(ARGS.out), export_format='GLB', use_selection=True, export_apply=True,
-        export_yup=True, export_animations=bool(ARGS.bvh), export_animation_mode='ACTIONS',
+        export_yup=True, export_animations=True, export_animation_mode='ACTIONS',
         export_force_sampling=True, export_morph=False, export_skins=True, export_all_influences=False,
         export_vertex_color='ACTIVE', export_normals=True, export_tangents=False, export_texcoords=True,
         export_extras=True, export_attributes=True)

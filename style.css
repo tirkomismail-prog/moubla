@@ -1013,3 +1013,15 @@ input[type='range'],
 input[type='checkbox'] {
   accent-color: var(--gold-2);
 }
+
+/* main menu, «Подяки» */
+.credits p {
+  margin: 0 0 10px;
+}
+.credits a {
+  color: var(--ink-soft);
+  text-decoration-color: var(--gold-2);
+}
+.credits a:hover {
+  color: var(--ink);
+}

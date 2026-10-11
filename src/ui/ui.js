@@ -49,6 +49,7 @@ export class UI {
           btn('Завантажити', () => this.openSaveLoad(false)),
           btn('Налаштування', () => this.openSettings()),
           btn('Як грати', () => this.openHelp()),
+          btn('Подяки', () => this.openCredits()),
         ),
         h('div', { class: 'footer' }, 'Середньовічна пісочниця в дусі Mount & Blade · кінні битви, облоги, торгівля та політика'),
       ),
@@ -168,6 +169,29 @@ export class UI {
       ),
     );
     const win = this.windows.show({ title: 'Як грати', body, footer: [btn('Зрозуміло', () => this.windows.close(win), 'primary')] });
+  }
+
+  // the third-party works in the game and their licences (in full:
+  // assets/*/CREDITS.md)
+  openCredits() {
+    const a = (href, text) => h('a', { href, target: '_blank', rel: 'noopener' }, text || href);
+    const item = (title, ...rest) => h('p', null, h('b', null, title), ' — ', ...rest);
+    const body = h('div', { class: 'credits' },
+      item('Тіла, скелет, шкіра, очі, волосся', 'MakeHuman / MPFB 2 і пакети MakeHuman (зокрема jartur69, Rehman Polanski), ',
+        a('https://creativecommons.org/publicdomain/zero/1.0/', 'CC0'), '.'),
+      item('Стояння воїнів', 'Open Motion Project by ACCAD, The Ohio State University (',
+        a('https://accad.osu.edu/research/motion-lab/mocap-system-and-data', 'accad.osu.edu'), '), ',
+        a('https://creativecommons.org/licenses/by/3.0/', 'CC BY 3.0 Unported'),
+        '; змінено: перенесено на скелет воїна, обрізано й зациклено.'),
+      item('Ходьба й біг', 'CMU Graphics Lab Motion Capture Database (', a('http://mocap.cs.cmu.edu', 'mocap.cs.cmu.edu'),
+        '; база створена за кошти NSF EIA-0196217), BVH — Bruce Hahne.'),
+      item('Кінь', '«Rigged Horse» (', a('https://opengameart.org/content/rigged-horse', 'OpenGameArt'), '): Lyndon Daniels, ChadM, CC0.'),
+      item('Тканини, шкіра, метал, дерево, ґрунти, трава, дерева', a('https://ambientcg.com', 'ambientCG'), ' і ',
+        a('https://polyhaven.com', 'Poly Haven'), ' (Rob Tuytel, Rico Cilliers, Charlotte Baglioni, Dario Barresi, Greg Zaal, Lennart Demes), CC0.'),
+      item('Кольори барвників', 'за вимірами з робіт Peruzzi et al. 2021, Stasińska 2021, Bukhari et al. 2017 (CC BY 4.0).'),
+      item('Програми', 'three.js і meshoptimizer (MIT).'),
+    );
+    const win = this.windows.show({ title: 'Подяки', body, footer: [btn('Закрити', () => this.windows.close(win), 'primary')] });
   }
 
   // ---- save / load ---------------------------------------------------------------

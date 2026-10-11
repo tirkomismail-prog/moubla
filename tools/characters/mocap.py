@@ -2,10 +2,11 @@
 
 Walking and running: the CMU Graphics Lab motion capture database
 (mocap.cs.cmu.edu, free for research and commercial use), in the
-MotionBuilder-friendly BVH conversion by Bruce Hahne. Standing: ACCAD Open
-Motion Data (Advanced Computing Center for the Arts and Design, The Ohio State
-University, CC BY 3.0, https://accad.osu.edu/research/motion-lab/mocap-system-and-data),
-two men standing at ease, shifting their weight and looking around.
+MotionBuilder-friendly BVH conversion by Bruce Hahne. Standing: the Open
+Motion Project by ACCAD (Advanced Computing Center for the Arts and Design,
+The Ohio State University, CC BY 3.0 Unported,
+https://accad.osu.edu/research/motion-lab/mocap-system-and-data), two men
+standing at ease and shifting their weight.
 
 Each clip is retargeted onto the MakeHuman game_engine rig by copying
 world-space bone rotations relative to each skeleton's rest pose (for ACCAD,
@@ -164,18 +165,29 @@ def fetch_accad(cache):
             url = ACCAD_URL.format(actor)
             print('downloading', url)
             req = urllib.request.Request(url, headers={'User-Agent': 'moubla-build'})
-            with urllib.request.urlopen(req) as r, open(path + '.part', 'wb') as f:
-                f.write(r.read())
+            with urllib.request.urlopen(req) as r:
+                data = r.read()
+            got = hashlib.sha256(data).hexdigest()
+            if got != sha:
+                raise RuntimeError(f'{url}: sha256 {got}, expected {sha}')
+            with open(path + '.part', 'wb') as f:
+                f.write(data)
             os.replace(path + '.part', path)
         with open(path, 'rb') as f:
             got = hashlib.sha256(f.read()).hexdigest()
         if got != sha:
-            raise RuntimeError(f'{path}: sha256 {got}, expected {sha}')
+            raise RuntimeError(f'{path}: sha256 {got}, expected {sha} (delete it to download it again)')
+        # the takes, extracted again whenever one is missing or not whole
         with zipfile.ZipFile(path) as z:
-            for name in z.namelist():
-                if name.endswith('.bvh') and not os.path.exists(os.path.join(folder, os.path.basename(name))):
-                    with z.open(name) as src, open(os.path.join(folder, os.path.basename(name)), 'wb') as dst:
-                        dst.write(src.read())
+            for info in z.infolist():
+                if not info.filename.endswith('.bvh'):
+                    continue
+                out = os.path.join(folder, os.path.basename(info.filename))
+                if os.path.exists(out) and os.path.getsize(out) == info.file_size:
+                    continue
+                with z.open(info) as src, open(out + '.part', 'wb') as dst:
+                    dst.write(src.read())
+                os.replace(out + '.part', out)
     return folder
 
 
@@ -217,9 +229,7 @@ def at_ease(path, mp):
         'fwd': facing(posed_head(src, 'LeftUpLeg'), posed_head(src, 'RightUpLeg')),
         'leg': src.data.bones['LeftUpLeg'].length + src.data.bones['LeftLeg'].length,
     }
-    act = src.animation_data.action
-    bpy.data.objects.remove(src)
-    bpy.data.actions.remove(act)
+    drop(src)
     return ref
 
 
@@ -371,11 +381,19 @@ def key_clip(rig, name, frames):
     return act
 
 
+def drop(src):
+    act = src.animation_data.action
+    bpy.data.objects.remove(src)
+    bpy.data.actions.remove(act)
+
+
 def add_clips(rig, bvh_dir, accad_dir=None, only=None):
     """The clips (CLIPS; those named in `only`) as actions of `rig`, from the
-    CMU files in `bvh_dir` and the ACCAD takes in `accad_dir` (fetch_accad)."""
+    CMU files in `bvh_dir` and the ACCAD takes in `accad_dir` (fetch_accad);
+    the names of those made."""
     bpy.context.scene.render.fps = FPS
     refs = {}
+    made = []
     for name, rel, travel, rng in CLIPS:
         if only and name not in only:
             continue
@@ -403,6 +421,7 @@ def add_clips(rig, bvh_dir, accad_dir=None, only=None):
             head_rest, hips_rest = world_rest_q(rig, 'head'), world_rest_q(rig, 'pelvis')
             ok = [calm(w, head_rest, hips_rest) for w, _ in frames]
             found = find_cycle(frames, *rng, bones=STAND_LOOP_BONES, ok=ok)
+        drop(src)
         if not found:
             print('mocap: no loop in', path)
             continue
@@ -410,7 +429,6 @@ def add_clips(rig, bvh_dir, accad_dir=None, only=None):
         rest = rig.data.bones['pelvis'].head_local
         cyc, speed = make_cycle(frames, a, b, travel, rest, world_rest_q(rig, 'pelvis'))
         act = key_clip(rig, f'{name}|{speed:.3f}', cyc)
+        made.append(name)
         print(f'mocap: {name:10s} frames {a}-{b} ({(b - a) / FPS:.2f}s) err {err:.3f} speed {speed:.2f} m/s -> {act.name}')
-        src_action = src.animation_data.action
-        bpy.data.objects.remove(src)
-        bpy.data.actions.remove(src_action)
+    return made

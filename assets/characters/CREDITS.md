@@ -19,11 +19,12 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
   (quilted gambeson), Leather014, Chainmail004, Metal038 (plate), Metal039 (lamellar), and for the
   weapons and shields Wood060, Planks039, PaintedWood003; fur: Curly Teddy Natural from Poly Haven
   (https://polyhaven.com/a/curly_teddy_natural).
-- **Motion capture, standing** (idle, idle2, idle3, idle4): ACCAD Open Motion Data, Advanced Computing
-  Center for the Arts and Design, The Ohio State University
+- **Motion capture, standing** (idle, idle2, idle3, idle4): Open Motion Project by ACCAD (Advanced
+  Computing Center for the Arts and Design), The Ohio State University
   (https://accad.osu.edu/research/motion-lab/mocap-system-and-data), takes Male1_A1_Stand, Male1_A2_Sway,
-  Male2_A1_Stand, Male2_A2_Sway, licensed under **CC BY 3.0**
-  (https://creativecommons.org/licenses/by/3.0/); retargeted and looped (changed) by `tools/characters/mocap.py`.
+  Male2_A1_Stand, Male2_A2_Sway, licensed under **CC BY 3.0 Unported**
+  (https://creativecommons.org/licenses/by/3.0/); changed: retargeted onto the soldier's skeleton, trimmed
+  and looped by `tools/characters/mocap.py`.
 - **Motion capture** (walk, run, walking backwards): CMU Graphics Lab Motion Capture Database
   (http://mocap.cs.cmu.edu), BVH conversion by Bruce Hahne. "The data used in this project was obtained
   from mocap.cs.cmu.edu. The database was created with funding from NSF EIA-0196217." Free for research

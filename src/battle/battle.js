@@ -1039,6 +1039,8 @@ export class Battle {
   }
 
   toggleMount() {
+    // (like the other actions: nothing happens while paused)
+    if (this.paused) return;
     const p = this.player;
     if (p.horse) {
       if (Math.abs(p.horse.speed) > 2.5) {
