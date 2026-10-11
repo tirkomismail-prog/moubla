@@ -81,6 +81,8 @@ export function charactersReady() {
 // ---------------------------------------------------------------------------
 
 
+const FINGER = /^(thumb|index|middle|ring|pinky)_0\d_[lr]$/;
+
 function prepare(gltf) {
   const scene = gltf.scene;
   scene.updateMatrixWorld(true);
@@ -98,6 +100,14 @@ function prepare(gltf) {
   const clips = {};
   for (const clip of gltf.animations) {
     const [name, speed] = clip.name.split('|');
+    // only what moves: the bones' rotations and the pelvis' position (the
+    // export keeps every bone's rest position, rotation and scale too; the
+    // fingers are posed by fingers()), a third of the work of the mixer
+    clip.tracks = clip.tracks.filter((track) => {
+      const [bone, prop] = track.name.split('.');
+      if (bone === 'Root' || FINGER.test(bone)) return false;
+      return prop === 'quaternion' || (prop === 'position' && bone === 'pelvis');
+    });
     clips[name] = { clip, speed: Number(speed) || 0, dur: clip.duration, offset: 0 };
   }
   // standing: idle, idle2, ... (the same, done differently: one each soldier)
@@ -607,6 +617,11 @@ export class SkinnedHuman {
     this.pending += dt;
     const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;
     if (dt > 0 && this.frameNo++ % every !== 0) return;
+    // paused: the pose stays. (Posed again, the mixer would not set the bones
+    // whose values have not changed, and the turns below would be added to
+    // the last frame's again and again.)
+    if (dt === 0 && this.posedOnce) return;
+    this.posedOnce = true;
     dt = this.pending;
     this.pending = 0;
     // Pose in the soldier's own space, where its bones are (see
@@ -685,6 +700,8 @@ export class SkinnedHuman {
     this.idleTime += dt * this.idleRate;
     for (const [name, a] of Object.entries(acts)) {
       a.weight += (target[name] - a.weight) * k;
+      // (a clip with no weight is not even sampled)
+      if (a.weight < 0.002) a.weight = 0;
       a.action.setEffectiveWeight(a.weight);
       const c = a.clip;
       a.action.time = name === 'idle' ? this.idleTime % c.dur : ((this.phase + c.offset) % 1) * c.dur;
