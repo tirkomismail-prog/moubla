@@ -64,6 +64,10 @@
    "paint": [
     "tile_paint.webp",
     "tile_paint_surface.webp"
+   ],
+   "iron": [
+    "tile_iron.webp",
+    "tile_iron_surface.webp"
    ]
   },
   "repeat": {
@@ -76,7 +80,8 @@
    "fur": 5.0,
    "wood": 2.857,
    "planks": 1.429,
-   "paint": 2.0
+   "paint": 2.0,
+   "iron": 1.667
   }
  }
 }

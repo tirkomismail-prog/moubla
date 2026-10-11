@@ -137,7 +137,7 @@ function palette(spec) {
   const light = coat.getHSL({}).l > 0.55;
   // dark manes and tails, except on light horses
   const mane = light ? coat.clone().lerp(new THREE.Color('#f0ece4'), 0.2) : new THREE.Color('#1c1611');
-  const steel = tiled('plate', '#ffffff', 1, 0.9);
+  const steel = tiled('iron', '#ffffff', 1, 0.9);
   return {
     Coat: surface(coat.clone().multiplyScalar(1 / COAT_MEAN), 0.62),
     Mane: surface(mane.multiplyScalar(1 / COAT_MEAN), 0.5),

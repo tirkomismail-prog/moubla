@@ -14,8 +14,8 @@ from mathutils import Vector
 import materials
 
 TILE = {name: float(i) for i, name in enumerate(materials.TILES)}
-STEEL = ('plate', (1.0, 1.0, 1.0), 0.9)
-DARK_STEEL = ('plate', (0.55, 0.57, 0.6), 0.9)
+STEEL = ('iron', (1.0, 1.0, 1.0), 0.9)
+DARK_STEEL = ('iron', (0.55, 0.57, 0.6), 0.9)
 BRASS = ('plate', (1.0, 0.7, 0.28), 0.8)
 MAIL = ('mail', (1.0, 1.0, 1.0), 0.75)
 LEATHER = ('leather', (1.2, 1.05, 0.95), 0.0)

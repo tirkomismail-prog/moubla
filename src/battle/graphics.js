@@ -9,6 +9,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+import { groundMean, groundReady } from './ground.js';
 
 export const GFX_PRESETS = {
   // aa: anti-aliasing (MSAA doubles the frame time on integrated GPUs, FXAA is
@@ -34,10 +35,13 @@ function lighting(hour) {
     return { night: true, elev: 0.75, sunCol: '#a8bcff', sunI: 0.75, hemiI: 0.35, envI: 1.0, exposure: 1.3, dome: ['#101d40', '#2a3960'] };
   }
   if (hour < 7.5 || hour >= 18.5) {
-    return { night: false, elev: 0.09, sunCol: '#ffb77a', sunI: 2.6, hemiI: 0.45, envI: 0.75, exposure: 0.9, dome: ['#4a5f95', '#e6a67c'] };
+    // (low sun: most of the field is in shade and lit by the sky)
+    return { night: false, elev: 0.09, sunCol: '#ffb77a', sunI: 2.6, hemiI: 0.45, envI: 1.2, exposure: 1.03, dome: ['#4a5f95', '#e6a67c'] };
   }
   const noon = 1 - Math.abs(hour - 13) / 6;
-  return { night: false, elev: 0.35 + noon * 0.55, sunCol: '#fff1dc', sunI: 3.0, hemiI: 0.55, envI: 0.8, exposure: 0.85, dome: ['#5b8fd0', '#d4e2ec'] };
+  // (the dome has no glow around the sun by day: a little more of its sky
+  // and exposure than with one keep the sunlit field as bright as it was)
+  return { night: false, elev: 0.35 + noon * 0.55, sunCol: '#fff1dc', sunI: 3.0, hemiI: 0.55, envI: 0.88, exposure: 0.92, dome: ['#5b8fd0', '#d4e2ec'] };
 }
 
 export class Environment {
@@ -111,13 +115,16 @@ export class Environment {
     scene.fog = preset.standard ? new THREE.FogExp2(fogCol, L.night ? 0.009 : 0.0042) : new THREE.Fog(fogCol, 70, far);
 
     // --- image based lighting (makes metal and cloth read properly). It comes
-    // from a simple sky dome with a soft sun glow rather than from the physical
-    // sky shader, whose raw radiance is far too strong to light the scene with.
+    // from a simple sky dome rather than from the physical sky shader, whose
+    // raw radiance is far too strong to light the scene with. By day the
+    // dome has no glow around the sun: the sun is the directional light, and
+    // a glow lit everything a second time from its direction, the shaded
+    // side too, and made metal in the shade shine like chrome.
     if (preset.standard) {
       const pmrem = new THREE.PMREMGenerator(renderer);
       const envScene = new THREE.Scene();
-      const ground = new THREE.Color(L.night ? '#0c1016' : pal.grass).multiplyScalar(0.55);
-      const dome = gradientDome(L.dome[0], L.dome[1], ground, this.sunDir, new THREE.Color(L.sunCol).multiplyScalar(L.night ? 0.2 : 1.6));
+      const ground = L.night ? new THREE.Color('#0c1016') : domeGround(battle.terrain);
+      const dome = gradientDome(L.dome[0], L.dome[1], ground, this.sunDir, L.night ? new THREE.Color(L.sunCol).multiplyScalar(0.2) : null);
       envScene.add(dome);
       const rt = pmrem.fromScene(envScene, 0.04, 0.1, 2000);
       scene.environment = rt.texture;
@@ -201,6 +208,18 @@ function skyScreen(texture) {
     mat.uniforms.skyMatrix.value.multiplyMatrices(turn, camera.projectionMatrixInverse);
   };
   return sky;
+}
+
+// The light from below the horizon in the lighting dome: the colour of the
+// field (the mean of its main ground texture, which a metal plate facing
+// down reflects; the palette's grass turned plate and helmets green), as
+// bright as the palette's grass in the shade.
+function domeGround(terrain) {
+  const lum = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  const c = new THREE.Color(terrain.pal.grass).multiplyScalar(0.55);
+  if (!groundReady()) return c;
+  const m = groundMean(terrain.type);
+  return m.multiplyScalar(lum(c) / Math.max(1e-4, lum(m)));
 }
 
 // Sky dome: zenith/horizon gradient, optional ground colour below the

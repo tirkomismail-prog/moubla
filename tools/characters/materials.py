@@ -9,21 +9,34 @@ import zipfile
 
 # material -> (source, asset, metres covered by one repeat of the texture,
 # mean albedo (linear) the colour is scaled to: light for cloth the game
-# tints, like real steel for the metals)
+# tints, like real steel for the metals). New ones go at the end: the
+# helmets name theirs by the position in this list.
 TILES = {
     'wool': ('ambientcg', 'Fabric062', 0.22, 0.75),
     'quilted': ('ambientcg', 'Fabric008', 0.32, 0.5),
     'leather': ('ambientcg', 'Leather014', 0.45, 0.1),
-    'mail': ('ambientcg', 'Chainmail004', 0.1, 0.35),
+    # (rings and dirt between them, smaller than a pixel from 2-3 m on: the
+    # average of worn mail, darker than polished steel)
+    'mail': ('ambientcg', 'Chainmail004', 0.1, 0.28),
+    # bright steel: the weapons
     'plate': ('ambientcg', 'Metal038', 0.6, 0.5),
     'lamellar': ('ambientcg', 'Metal039', 0.35, 0.4),
     'fur': ('polyhaven', 'curly_teddy_natural', 0.2, 0.3),
     'wood': ('ambientcg', 'Wood060', 0.35, 0.18),
     'planks': ('ambientcg', 'Planks039', 0.7, 0.3),
     'paint': ('ambientcg', 'PaintedWood003', 0.5, 0.6),
+    # worn iron, rough in places: plate armour, helmets, the chanfron (a
+    # little darker than bright steel: the dull skin of worn iron)
+    'iron': ('ambientcg', 'Metal052C', 0.6, 0.42),
 }
 # made grey (the game paints them in the team colours)
 GREY = {'paint'}
+# roughness made rougher by this much (worn metal, not a mirror; mail seen
+# as a whole, not ring by ring)
+ROUGHER = {'mail': 2.15, 'iron': 1.4}
+# and its patches brought this much closer to its mean first (the scan's
+# smooth patches shine out of the shade like flecks of snow)
+EVENER = {'iron': 0.5}
 TILE_SIZE = 512
 
 URLS = {
@@ -63,7 +76,11 @@ def fetch(cache):
 
 
 def scale_albedo(img, mean):
-    """Scale an sRGB image so that its mean linear luminance is `mean`."""
+    """Scale an sRGB image so that its mean linear luminance is `mean`
+    (measured on every pixel in linear light: the mean of a smaller copy
+    made in sRGB comes out too dark for a contrasty texture like mail)."""
+    import numpy as np
+
     def lin(c):
         c /= 255
         return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
@@ -72,11 +89,11 @@ def scale_albedo(img, mean):
         v = min(1.0, max(0.0, v))
         return round(255 * (v * 12.92 if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055))
 
-    small = img.resize((64, 64))
-    px = [small.getpixel((x, y)) for y in range(64) for x in range(64)]
-    lum = sum(0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) for r, g, b in px) / len(px)
+    to_lin = np.array([lin(float(i)) for i in range(256)])
+    rgb = to_lin[np.asarray(img.convert('RGB'))].reshape(-1, 3).mean(0)
+    lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
     k = mean / max(lum, 1e-4)
-    table = [srgb(lin(i) * k) for i in range(256)]
+    table = [srgb(lin(float(i)) * k) for i in range(256)]
     return img.point(table * 3)
 
 
@@ -106,6 +123,11 @@ def write_tiles(cache, out_dir):
         color = scale_albedo(color, mean)
         normal = img('normal', 'RGB')
         rough = img('rough', 'L') or Image.new('L', (size, size), 200)
+        if name in EVENER:
+            m = sum(i * n for i, n in enumerate(rough.histogram())) / (size * size)
+            rough = rough.point(lambda v, m=m, e=EVENER[name]: round(m + (v - m) * e))
+        if name in ROUGHER:
+            rough = rough.point(lambda v, k=ROUGHER[name]: min(255, round(v * k)))
         nx, ny, _ = normal.split()
         surf = Image.merge('RGB', (nx, ny, rough))
         files = []
@@ -116,3 +138,26 @@ def write_tiles(cache, out_dir):
             print('texture', path, os.path.getsize(path), 'bytes')
         out[name] = files
     return out
+
+
+if __name__ == '__main__':
+    # the tiles alone, without building the soldier again: written next to the
+    # model's other textures, and their entry in its layers.json
+    #   python3 tools/characters/materials.py --cache <cache> [--out assets/characters/textures]
+    import argparse
+    import json
+
+    p = argparse.ArgumentParser()
+    p.add_argument('--cache', default=os.path.join(os.path.expanduser('~'), '.cache', 'makehuman-assets'))
+    p.add_argument('--out', default='assets/characters/textures')
+    args = p.parse_args()
+    fetch(args.cache)
+    tiles = write_tiles(args.cache, args.out)
+    manifest = os.path.join(args.out, 'layers.json')
+    with open(manifest, encoding='utf-8') as f:
+        layers = json.load(f)
+    layers['tiles'] = {'size': TILE_SIZE, 'layers': tiles,
+                       'repeat': {name: round(1 / metres, 3) for name, (_, _, metres, _) in TILES.items()}}
+    with open(manifest, 'w', encoding='utf-8') as f:
+        json.dump(layers, f, indent=1)
+    print('wrote', manifest)

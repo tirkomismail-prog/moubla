@@ -37,6 +37,7 @@ export function loadCharacters() {
       t.tiles = tex && tex.tiles ? await decodeTiles(tex.tiles) : null;
       // weapons and shields name their materials by these layers
       if (t.tiles) setTileIndex(t.tiles.index);
+      if (t.tiles) ironHelmets(t.helmets, t.tiles.index);
       // the horse (tools/characters/build_horse.py); the soldiers work without it
       if (assets.horse) {
         try {
@@ -266,8 +267,9 @@ const SKIN_REF = new THREE.Color('#e8c3a0');
 // Cloth of a colour (of the dyed cloth seen in daylight, src/data/dyes.js)
 // as the tint of a tile whose mean albedo is `mean` (linear, per channel):
 // faded by `fade` towards undyed wool, made lighter or darker by `shade`.
-const WOOL_MEAN = [0.78, 0.74, 0.68];
-const QUILT_MEAN = [0.5, 0.5, 0.5];
+// (measured on the tiles of tools/characters/materials.py)
+const WOOL_MEAN = [0.77, 0.729, 0.669];
+const QUILT_MEAN = [0.59, 0.487, 0.38];
 // (the colours in dyes.js are of the cloth / 0.75)
 const UNDYED_SRGB = new THREE.Color(UNDYED).convertLinearToSRGB();
 function clothColor(hex, fade = 0, shade = 1, mean = WOOL_MEAN) {
@@ -281,13 +283,13 @@ function palette(spec) {
   const look = spec.look || 'cloth';
   const sign = clothColor(spec.sign || spec.team, spec.fade, spec.shade);
   const team = tiled('wool', sign);
-  // metal without chrome: rough, a little dark (the mail's average with the
-  // dirt between the rings, which are smaller than a pixel from 2–3 m)
-  const mail = tiled('mail', '#dadada', 2.15, 0.75);
-  const plate = tiled('plate', '#ffffff', 1.4, 0.9);
-  // a gambeson dyed well towards the side's colour (a pale one is not told
-  // apart at a distance)
-  const dyed = new THREE.Color(1, 1, 1).lerp(clothColor(spec.sign || spec.team, spec.fade, spec.shade, QUILT_MEAN), 0.85);
+  // metal without chrome: worn iron and mail as a whole (their roughness and
+  // darkness are in the tiles, so that the helmets have the same)
+  const mail = tiled('mail', '#ffffff', 1, 0.75);
+  const plate = tiled('iron', '#ffffff', 1, 0.9);
+  // a gambeson dyed the side's colour like its other cloth (a pale one is
+  // not told apart at a distance)
+  const dyed = clothColor(spec.sign || spec.team, spec.fade, spec.shade, QUILT_MEAN);
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
@@ -425,6 +427,21 @@ export function itemMaterial() {
   };
   itemMat.customProgramCacheKey = () => 'tiled-item';
   return itemMat;
+}
+
+// Helmets are armour: worn iron, not the weapons' bright steel. (A model
+// made before there was an iron tile names plate for their steel; brass,
+// tinted yellow, stays plate.)
+function ironHelmets(helmets, index) {
+  if (!('iron' in index) || !('plate' in index)) return;
+  for (const g of Object.values(helmets)) {
+    const tile = g.getAttribute('_tile');
+    const tint = g.getAttribute('tint');
+    if (!tile || !tint) continue;
+    for (let i = 0; i < tile.count; i++) {
+      if (tile.getX(i) === index.plate && Math.abs(tint.getX(i) - tint.getZ(i)) < 0.1) tile.setX(i, index.iron);
+    }
+  }
 }
 
 // A helmet of `look` with the parts marked _team painted in `team`.
