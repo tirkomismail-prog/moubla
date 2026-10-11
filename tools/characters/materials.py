@@ -37,6 +37,9 @@ ROUGHER = {'mail': 2.15, 'iron': 1.4}
 # and its patches brought this much closer to its mean first (the scan's
 # smooth patches shine out of the shade like flecks of snow)
 EVENER = {'iron': 0.5}
+# colour with this much of its contrast (the scan's stains look like
+# camouflage on a whole harness in the shade)
+FLATTER = {'iron': 0.55}
 TILE_SIZE = 512
 
 URLS = {
@@ -100,7 +103,7 @@ def scale_albedo(img, mean):
 def write_tiles(cache, out_dir):
     """For each material a colour image and a 'surface' image (normal x, y
     and roughness in red, green, blue). Returns {material: [colour, surface]}."""
-    from PIL import Image, ImageChops
+    from PIL import Image, ImageChops, ImageEnhance
 
     size = TILE_SIZE
     os.makedirs(out_dir, exist_ok=True)
@@ -120,6 +123,8 @@ def write_tiles(cache, out_dir):
             color = ImageChops.multiply(color, Image.merge('RGB', (dark, dark, dark)))
         if name in GREY:
             color = color.convert('L').convert('RGB')
+        if name in FLATTER:
+            color = ImageEnhance.Contrast(color).enhance(FLATTER[name])
         color = scale_albedo(color, mean)
         normal = img('normal', 'RGB')
         rough = img('rough', 'L') or Image.new('L', (size, size), 200)
