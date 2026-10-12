@@ -383,6 +383,10 @@ function palette(spec) {
   // a gambeson dyed the side's colour like its other cloth (a pale one is
   // not told apart at a distance)
   const dyed = clothColor(spec.sign || spec.team, spec.fade, spec.shade, QUILT_MEAN);
+  // the wearer's own cloth (a hood, an under-tunic)
+  const own = tiled('wool', clothColor(spec.hood || spec.sign || spec.team, spec.fade, spec.shade));
+  const armoured = look === 'mail' || look === 'brigandine';
+  const leather = tiled('leather', JERKIN[spec.faction] || JERKIN.default);
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
@@ -392,7 +396,7 @@ function palette(spec) {
     Gambeson: tiled('quilted', dyed),
     Hauberk: mail,
     Surcoat: team,
-    Jerkin: tiled('leather', JERKIN[spec.faction] || JERKIN.default),
+    Jerkin: leather,
     // a brigandine: plates riveted inside cloth of the side's colour
     Cuirass: look === 'plate' ? plate : look === 'brigandine' ? team : tiled('lamellar', '#e1e1e1', 1, 0.85),
     Plates: plate,
@@ -400,7 +404,16 @@ function palette(spec) {
     Jupon: team,
     Coif: mail,
     // a hood of the wearer's own cloth
-    Hood: tiled('wool', clothColor(spec.hood || spec.sign || spec.team, spec.fade, spec.shade)),
+    Hood: own,
+    // the Norse kyrtle (tools/characters/viking.py): the chest and the short
+    // sleeves are a byrnie on the mail looks, the chest a leather vest on the
+    // leather look; the long sleeves the wearer's own on the levy, mail on a
+    // hauberk; the shafts of the boots wool leg wraps unless armoured
+    Vest: armoured ? mail : look === 'leather' ? leather : team,
+    Oversleeves: armoured ? mail : team,
+    Undersleeves: look === 'mail' && spec.coif ? mail : look === 'cloth' ? own : team,
+    Trousers: tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
+    Wraps: armoured ? tiled('leather', '#b0a090') : tiled('wool', clothColor(spec.hood || spec.pants, spec.fade * 0.5, spec.shade)),
     Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
     Shoes: tiled('leather', '#b0a090'),
@@ -442,6 +455,18 @@ const HOOD = { padded: 'Hood-Gambeson' };
 const GLOVED = new Set(['mail', 'lamellar', 'brigandine', 'plate']);
 const SHOD = new Set(['cloth', 'padded']);
 
+// The Norse kit (the Nords): a kyrtle, trousers and soft boots
+// (tools/characters/viking.py), or the gambeson or the hauberk and brigandine
+// over the trousers and boots
+const NORSE = {
+  cloth: ['VikingTunic', 'VikingPants'],
+  leather: ['VikingTunic', 'VikingPants'],
+  mail: ['VikingTunic', 'VikingPants'],
+  padded: ['Gambeson', 'Belt-Gambeson', 'VikingPants'],
+  brigandine: ['Hauberk', 'Cuirass', 'Belt-Cuirass', 'VikingPants'],
+};
+let norseFailed = false;
+
 // The outfit of a soldier: the garments of the armour's look, a cloth hood
 // (instead of the carried helmet) or a mail coif if the armour has one and
 // the helmet leaves room for it, shoes or boots (the riders of the steppe
@@ -452,6 +477,17 @@ const outfitList = new Map();
 function outfitOf(spec) {
   const has = (n) => !!state.t.pieces[n];
   const look = OUTFITS[spec.look] ? spec.look : 'cloth';
+  // (all or nothing: a model without the Norse pieces, or whose pieces do
+  // not join, gives the other outfits)
+  if (spec.kit === 'norse' && NORSE[look] && [...NORSE[look], 'VikingBoots'].every(has) && !norseFailed) {
+    const hood = spec.helmet === 'hood' && HOOD[look] && has(HOOD[look]) ? HOOD[look] : null;
+    const hands = look === 'brigandine' && has('Gloves') ? 'Gloves' : 'Hands';
+    const key = ['norse', look, hood || '', hands].join(':');
+    if (!outfitList.has(key)) outfitList.set(key, [...NORSE[look], ...(hood ? [hood] : []), 'VikingBoots', hands]);
+    if (outfitGeometry(key, 0)) return { key, coif: false, hood: !!hood };
+    console.warn('Norse outfit unusable:', key);
+    norseFailed = true;
+  }
   const hood = spec.helmet === 'hood' && has(HOOD[look] || 'Hood') ? HOOD[look] || 'Hood' : null;
   const coif = !hood && spec.coif && !AVENTAIL.has(spec.helmet) && COIF[look] && has(COIF[look]) ? COIF[look] : null;
   const feet = SHOD.has(look) && spec.faction !== 'kaganate' && has('Shoes') ? 'Shoes' : 'Boots';

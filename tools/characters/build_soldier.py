@@ -41,6 +41,7 @@ import outfits  # noqa: E402
 import conform  # noqa: E402
 import coif  # noqa: E402
 import hood  # noqa: E402
+import viking  # noqa: E402
 
 ARGS = None
 
@@ -230,10 +231,27 @@ def decimate(obj, ratio, name):
     mod = lod.modifiers.new('Decimate', 'DECIMATE')
     mod.ratio = ratio
     mod.use_collapse_triangulate = True
+    # a piece of several parts (a `_sub` face attribute, viking.py) keeps the
+    # lines where they meet (else they turn into teeth); not when simplified
+    # much further (then too little else is left to simplify; seen from far)
+    sub = lod.data.attributes.get('_sub') if ratio >= 0.2 else None
+    if sub is not None:
+        vals = [0] * len(lod.data.polygons)
+        sub.data.foreach_get('value', vals)
+        parts = [set() for _ in lod.data.vertices]
+        for p in lod.data.polygons:
+            for i in p.vertices:
+                parts[i].add(vals[p.index])
+        keep = lod.vertex_groups.new(name='decimate_keep')
+        for v in lod.data.vertices:
+            keep.add([v.index], 0.0 if len(parts[v.index]) > 1 else 1.0, 'REPLACE')
+        mod.vertex_group = 'decimate_keep'
     names = [m.name for m in lod.modifiers]
     lod.modifiers.move(names.index('Decimate'), 0)
     bpy.context.view_layer.objects.active = lod
     bpy.ops.object.modifier_apply(modifier='Decimate')
+    if sub is not None:
+        lod.vertex_groups.remove(lod.vertex_groups['decimate_keep'])
     return lod
 
 
@@ -260,13 +278,18 @@ def store_fit(rig, human, scalp):
 COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
 # (new parts go at the end: the game's palettes are indexed by these)
 PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Coif',
-                  'Hands', 'Gloves', 'Shoes', 'Hood']
+                  'Hands', 'Gloves', 'Shoes', 'Hood', 'Vest', 'Oversleeves', 'Undersleeves', 'Wraps', 'Trousers']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
+
+
+# pieces whose part has another name
+ALIAS = {'VikingPants': 'Trousers'}
 
 
 def part_of(name):
     """'Belt-Tunic_LOD1' -> 'Belt'"""
-    return name.split('_LOD')[0].split('-')[0]
+    part = name.split('_LOD')[0].split('-')[0]
+    return ALIAS.get(part, part)
 
 
 # small parts left out of the far models: {part: first level without it}
@@ -274,7 +297,7 @@ DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
 # dense parts simplified already in the near model (the texture carries the detail)
 NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5,
               'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7, 'Jupon': 0.7,
-              'Gloves': 0.6}
+              'Gloves': 0.6, 'VikingTunic': 0.6, 'VikingPants': 0.8, 'VikingBoots': 0.3}
 
 
 HAND = ('hand_', 'thumb_', 'index_', 'middle_', 'ring_', 'pinky_')
@@ -378,13 +401,24 @@ def fit_cuffs(gloves, human, rig, gap=0.002, top=1.0, blend=(1.1, 1.2)):
 
 def merge_parts(objs, name):
     """Join parts into one mesh with one material. Each vertex keeps the
-    number of its part (_PART) so the game can colour it from a palette."""
+    number of its part (_PART) so the game can colour it from a palette; a
+    piece of several parts (viking.SUBPARTS) has it per face, from its `_sub`
+    face attribute (the export splits the points where parts meet)."""
     for o in objs:
         me = o.data
-        pid = PART_IDS[part_of(o.name)]
-        attr = me.attributes.get('_PART') or me.attributes.new('_PART', 'FLOAT', 'POINT')
-        for i in range(len(me.vertices)):
-            attr.data[i].value = float(pid)
+        sub = me.attributes.get('_sub')
+        if sub is not None:
+            names = viking.SUBPARTS[o.name.split('_LOD')[0]]
+            vals = [0] * len(me.polygons)
+            sub.data.foreach_get('value', vals)
+            me.attributes.remove(sub)
+            attr = me.attributes.new('_PART', 'FLOAT', 'FACE')
+            attr.data.foreach_set('value', [float(PART_IDS[names[v]]) for v in vals])
+        else:
+            pid = PART_IDS[part_of(o.name)]
+            attr = me.attributes.get('_PART') or me.attributes.new('_PART', 'FLOAT', 'POINT')
+            for i in range(len(me.vertices)):
+                attr.data[i].value = float(pid)
         col = me.color_attributes.get('Col')
         if col is None:
             col = me.color_attributes.new('Col', 'FLOAT_COLOR', 'POINT')
@@ -504,7 +538,9 @@ def build():
     # each layer fitted onto the one under it, then the belts round them
     conform.run(pieces, human, rig, helpers, hose=pieces['Hose'], boots=pieces['Boots'])
     pieces.update(outfits.belts(pieces, rig.data.bones['pelvis'].head_local.y))
-    # mail coifs, their mantles over the fitted garments; cloth hoods
+    # the Norse clothes (their parts marked on the pack's own UVs, before
+    # world_uvs); mail coifs, their mantles over the fitted garments; cloth hoods
+    pieces.update(viking.build_all(worn, pieces, human, rig, helpers, ARGS.cache))
     pieces.update(coif.build_all(pieces, human, rig, helpers))
     pieces.update(hood.build_all(pieces, worn.pop('Hood'), human, rig, helpers))
 
@@ -550,9 +586,11 @@ def build():
     for name in ('Hose', 'Boots'):
         pieces[name].hide_render = False
     bake_ao(list(common.values()))
+    # (the Norse trousers darken inside the boot tops)
+    with_ao = {'VikingPants': 'VikingBoots'}
     for name, obj in pieces.items():
         for other in pieces.values():
-            other.hide_render = other is not obj
+            other.hide_render = other is not obj and other is not pieces.get(with_ao.get(name))
         bake_ao([obj])
     for obj in everything.values():
         obj.hide_render = False
@@ -572,6 +610,12 @@ def build():
             if level >= DROP.get(name, 3):
                 continue
             lod = f'{name}_LOD{level}'
+            if name == 'VikingBoots':
+                # (without their cords far away)
+                bare = viking.prune(copy_object(obj, lod + '_bare'))
+                levels[level][name] = decimate(bare, ratio, lod)
+                bpy.data.objects.remove(bare)
+                continue
             levels[level][name] = copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod)
     # the hands, a piece of their own (bare-handed outfits; the others wear gloves)
     for level, objs in levels.items():

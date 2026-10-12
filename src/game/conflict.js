@@ -46,6 +46,7 @@ export function companionSpecs(world) {
         hp: c.st.hp,
         maxHp: c.def.hp,
         equipment: { ...c.def.equipment },
+        kit: c.def.kit || null,
         skills,
         attrs: { str: a, agi: a, int: 6, cha: 6 },
         level: c.def.level,

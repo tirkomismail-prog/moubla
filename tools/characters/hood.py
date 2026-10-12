@@ -30,9 +30,9 @@ VARIANTS = {
 }
 
 
-def fit(obj, layers, rounds=4):
-    """Push the hood off the layers [(BVH tree, gap)], see above. Returns
-    how many points moved."""
+def fit(obj, layers, rounds=4, carry=CARRY):
+    """Push the hood (or another cloth with layers of its own) off the layers
+    [(BVH tree, gap)], see above. Returns how many points moved."""
     moved = set()
     for _ in range(rounds):
         verts = obj.data.vertices
@@ -57,8 +57,8 @@ def fit(obj, layers, rounds=4):
         for i, (n, dirn) in enumerate(need):
             if dirn is None:
                 continue
-            for co, j, d in kd.find_range(verts[i].co, CARRY[1]):
-                k = 1.0 if d <= CARRY[0] else (CARRY[1] - d) / (CARRY[1] - CARRY[0])
+            for co, j, d in kd.find_range(verts[i].co, carry[1]):
+                k = 1.0 if d <= carry[0] else (carry[1] - d) / (carry[1] - carry[0])
                 if n * k > push[j].length:
                     push[j] = dirn * (n * k)
         for v, p in zip(verts, push):

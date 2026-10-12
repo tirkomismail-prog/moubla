@@ -47,10 +47,16 @@ PAIRS = {
     'cloth+hood': [('Hood', 'Tunic'), ('Hood', 'Body')],
     'padded+hood': [('Hood-Gambeson', 'Gambeson'), ('Hood-Gambeson', 'Body')],
     'leather+hood': [('Hood', 'Jerkin')],
+    # the Norse clothes (their own total and limits, NORSE_LIMITS)
+    'norse': [('VikingTunic', 'VikingPants'), ('VikingTunic', 'Body'), ('VikingTunic', 'Hands'), ('VikingBoots', 'VikingPants')],
+    'norse-padded': [('Gambeson', 'VikingPants'), ('Gambeson', 'VikingBoots')],
+    'norse-brigandine': [('Hauberk', 'VikingPants'), ('Hauberk', 'VikingBoots')],
 }
+NORSE = {pair for look, pairs in PAIRS.items() if look.startswith('norse') for pair in pairs}
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
 LIMITS = {'0': (40, 18), '1': (25, 22), '2': (8, 6)}
+NORSE_LIMITS = {'0': (16, 8), '1': (12, 9), '2': (4, 3)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -125,7 +131,8 @@ covered = {}
 for look, pairs in PAIRS.items():
     for outer, inner in pairs:
         key = (outer, inner)
-        if key in covered or outer not in objs:
+        # (a model without one of the two pieces: the pair is not checked)
+        if key in covered or outer not in objs or inner not in SRC:
             continue
         t = tree_of(objs[outer], False)
         co, no = coords(SRC[inner], False)
@@ -252,6 +259,9 @@ for clip, f in POSES:
     trees = {}
     cache = {}
     for (outer, inner), sel in covered.items():
+        # (no Norse troop rides)
+        if clip == 'ride' and (outer, inner) in NORSE:
+            continue
         if outer not in trees:
             trees[outer] = tree_of(objs[outer], True)
         if inner not in cache:
@@ -287,20 +297,26 @@ for clip, f in POSES:
         r['worst_mm'] = round(max(r['worst_mm'], worst * 1000), 1)
     log('pose', clip, f)
 
-# the sum over the pairs of the worst frame, clips and procedural poses
+# the sum over the pairs of the worst frame, clips and procedural poses (the
+# Norse pairs apart)
 total = {'clips': 0, 'procedural': 0}
+norse = {'clips': 0, 'procedural': 0}
 for pair, clips in sorted(results.items()):
     worst = {'clips': 0, 'procedural': 0}
     for clip, r in clips.items():
         group = 'procedural' if clip in PROCEDURAL else 'clips'
         worst[group] = max(worst[group], r['max3'])
-    for g in total:
-        total[g] += worst[g]
+    into = norse if tuple(pair.split('>')) in NORSE else total
+    for g in into:
+        into[g] += worst[g]
     if worst['clips'] or worst['procedural']:
         print(f'{pair:20s} clips {worst["clips"]:4d}  procedural {worst["procedural"]:4d}')
 limit = dict(zip(('clips', 'procedural'), LIMITS.get(LOD, LIMITS['2'])))
+norse_limit = dict(zip(('clips', 'procedural'), NORSE_LIMITS.get(LOD, NORSE_LIMITS['2'])))
 print(f'LOD{LOD}: clips {total["clips"]} (limit {limit["clips"]}), procedural {total["procedural"]} (limit {limit["procedural"]})')
+print(f'LOD{LOD} Norse: clips {norse["clips"]} (limit {norse_limit["clips"]}), procedural {norse["procedural"]} (limit {norse_limit["procedural"]})')
 with open(OUT, 'w') as fh:
-    json.dump({'glb': GLB, 'lod': LOD, 'poses': len(POSES), 'total': total, 'limit': limit, 'results': results}, fh, indent=1)
+    json.dump({'glb': GLB, 'lod': LOD, 'poses': len(POSES), 'total': total, 'limit': limit, 'norse': norse,
+               'norse_limit': norse_limit, 'results': results}, fh, indent=1)
 log('wrote', OUT)
-sys.exit(1 if any(total[g] > limit[g] for g in total) else 0)
+sys.exit(1 if any(total[g] > limit[g] or norse[g] > norse_limit[g] for g in total) else 0)

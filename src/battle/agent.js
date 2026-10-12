@@ -217,6 +217,8 @@ export class Agent {
     const spec = {
       look: this.armorItem ? this.armorItem.look : 'cloth',
       coif: !!(this.armorItem && this.armorItem.coif),
+      // the Nords' own clothes (character.js NORSE)
+      kit: (opts.hero && opts.hero.kit) || (troop ? troop.kit || (troop.faction === 'nordheim' ? 'norse' : null) : null),
       helmet: this.helmItem ? this.helmItem.look : null,
       team: colors.team,
       team2: colors.team2,

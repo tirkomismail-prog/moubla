@@ -28,6 +28,8 @@ export const COMPANIONS = {
     cost: 600,
     skills: { ironflesh: 4, power_strike: 4, athletics: 2 },
     equipment: { w1: 'greataxe', w2: 'throwing_axes', w3: null, shield: 'shield_round', armor: 'mail_shirt', helmet: 'spangen', horse: null },
+    // (dressed as a Nord, character.js NORSE)
+    kit: 'norse',
   },
   aibek: {
     name: 'Айбек Вітер',

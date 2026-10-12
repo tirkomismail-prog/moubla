@@ -460,8 +460,9 @@ export function buildHuman(spec) {
   const hips = new THREE.Group();
   hips.position.y = 0.92;
   root.add(hips);
-  const pants = spec.look === 'plate' ? DARK_STEEL : spec.look === 'mail' ? '#6d6f72' : spec.pants;
-  const boots = spec.look === 'plate' ? STEEL : DARK_LEATHER;
+  // (the Nords wear wool trousers under any armour)
+  const pants = spec.kit === 'norse' ? spec.pants : spec.look === 'plate' ? DARK_STEEL : spec.look === 'mail' ? '#6d6f72' : spec.pants;
+  const boots = spec.look === 'plate' && spec.kit !== 'norse' ? STEEL : DARK_LEATHER;
   const legL = new THREE.Group();
   const legR = new THREE.Group();
   legL.position.set(0.1, 0, 0);

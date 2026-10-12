@@ -21,6 +21,10 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
 - **Hood**: `donitz_monk_robe_hood` by Donitz, MakeHuman asset pack suits02
   (https://static.makehumancommunity.org/assets/assetpacks/suits02.html; two files read out of the pack);
   simplified, made shallower and open for the face, its cape fitted over the garments (`tools/characters/hood.py`).
+- **Norse clothes** (the Nords' tunic, trousers and boots): `rehmanpolanski_viking_tunic`, `_pants` and `_boots`
+  by Rehman Polanski, MakeHuman asset pack suits02 (https://static.makehumancommunity.org/assets/assetpacks/suits02.html;
+  their files read out of the pack); the tunic's mail and sleeves found on its texture (which is not shipped), its
+  belt as islands of its own; simplified, fitted to the body and to each other (`tools/characters/viking.py`).
 - **Cloth, leather and armour textures**: ambientCG (https://ambientcg.com): Fabric062 (wool), Fabric008
   (quilted gambeson), Leather014, Chainmail004, Metal038 (bright steel of the weapons), Metal052C (worn iron of
   the plate armour, helmets and chanfron), Metal039 (lamellar), and for the

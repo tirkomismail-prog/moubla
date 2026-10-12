@@ -29,6 +29,21 @@ MEMBERS = {
             '5f32a69d26f68b9c5dd9076e9b6859c154291759726831def4bc5c7afc315aa7',
         'clothes/donitz_monk_robe_hood/Monks_Hood.obj':
             '989f2632ccce50d4cf99973167ecc10e6f33911a60e8e378d50d8b30d06306fc',
+        'clothes/rehmanpolanski_viking_tunic/rehmanpolanski_viking_tunic.mhclo':
+            '349b5b7b2abc44a7bd0b52ca99bd352e7d3b316cd4be5d539bbd9587462e801c',
+        'clothes/rehmanpolanski_viking_tunic/tunicviking.obj':
+            '78c593d23151c4f9cd63481bd7f5101cae920623404bbf5f3daa01a5f2ea050b',
+        # (only to find the mail on the tunic, see viking.py)
+        'clothes/rehmanpolanski_viking_tunic/TUNIC_Viking.png':
+            '9fcb9e17fad6ec1a36e3a0e0562cac3ca0ea72208da617875eed9bf294d9f870',
+        'clothes/rehmanpolanski_viking_pants/rehmanpolanski_viking_pants.mhclo':
+            '2afe050edefda93d4e47a58b31e6e65a14ac09e0d466d9debcacbe376f956c0f',
+        'clothes/rehmanpolanski_viking_pants/pantsviking.obj':
+            '44644ac6aeec9cb56fbfd77225eaa8b02613b2587cd809fe6f3755bef7e2d709',
+        'clothes/rehmanpolanski_viking_boots/rehmanpolanski_viking_boots.mhclo':
+            'd864ac895a662031026615b5e042fb2160e63f432029576fa6faaf2ad692eb92',
+        'clothes/rehmanpolanski_viking_boots/bootsviking.obj':
+            '9cc5a9cc4160ff2230144490244117eaddc4596152556304ca59d1129e4c196b',
     }),
 }
 
@@ -51,6 +66,9 @@ FITTED = {
 GARMENTS = {
     'Gloves': ('gloves01', 'clothes/toigo_gloves_short/toigo_gloves_short.mhclo'),
     'Hood': ('suits02', 'clothes/donitz_monk_robe_hood/donitz_monk_robe_hood.mhclo'),
+    'VikingTunic': ('suits02', 'clothes/rehmanpolanski_viking_tunic/rehmanpolanski_viking_tunic.mhclo'),
+    'VikingPants': ('suits02', 'clothes/rehmanpolanski_viking_pants/rehmanpolanski_viking_pants.mhclo'),
+    'VikingBoots': ('suits02', 'clothes/rehmanpolanski_viking_boots/rehmanpolanski_viking_boots.mhclo'),
 }
 
 SKINS = {
@@ -124,6 +142,8 @@ class RemoteFile(io.RawIOBase):
             return 0
         req = urllib.request.Request(self.url, headers={'Range': f'bytes={self.pos}-{self.pos + n - 1}'})
         with urllib.request.urlopen(req, timeout=120) as r:
+            if r.status != 206:
+                raise RuntimeError(f'{self.url}: the server does not send parts of the file (HTTP {r.status})')
             data = r.read()
         b[:len(data)] = data
         self.pos += len(data)
