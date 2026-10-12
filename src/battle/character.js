@@ -10,7 +10,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { helmetGeo, setTileIndex } from './models.js';
 import { bytesOf, decodeLayers, decodeTiles, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { JERKIN, UNDYED } from '../data/dyes.js';
-import { loadHorse } from './horse.js';
+import { horseTextures, loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
@@ -33,15 +33,24 @@ export function loadCharacters() {
       // (for the farthest level of detail, made here)
       await simplifierReady();
       const tex = assets.textures;
-      t.layers = tex ? await decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null;
-      t.tiles = tex && tex.tiles ? await decodeTiles(tex.tiles) : null;
+      // (the soldiers' layers, the tiles and the horse's layers together:
+      // the workers compressing them stay busy)
+      const horseTex = assets.horse ? horseTextures(assets) : null;
+      // (and the trees and the ground meanwhile: the main thread is free)
+      const trees = assets.trees ? loadTrees(assets) : null;
+      const ground = assets.ground ? loadGround(assets) : null;
+      for (const job of [horseTex, trees, ground]) if (job) job.catch(() => {});
+      [t.layers, t.tiles] = await Promise.all([
+        tex ? decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null,
+        tex && tex.tiles ? decodeTiles(tex.tiles) : null,
+      ]);
       // weapons and shields name their materials by these layers
       if (t.tiles) setTileIndex(t.tiles.index);
       if (t.tiles) ironHelmets(t.helmets, t.tiles.index);
       // the horse (tools/characters/build_horse.py); the soldiers work without it
       if (assets.horse) {
         try {
-          await loadHorse(assets, t.tiles);
+          await loadHorse(assets, t.tiles, horseTex);
         } catch (e) {
           console.warn('Horse model unusable:', e);
         }
@@ -49,7 +58,7 @@ export function loadCharacters() {
       // the trees (tools/trees/build_trees.py); the procedural ones without them
       if (assets.trees) {
         try {
-          await loadTrees(assets);
+          await trees;
         } catch (e) {
           console.warn('Tree models unusable:', e);
         }
@@ -57,7 +66,7 @@ export function loadCharacters() {
       // the photographed ground (tools/ground/build_ground.py)
       if (assets.ground) {
         try {
-          await loadGround(assets);
+          await ground;
         } catch (e) {
           console.warn('Ground textures unusable:', e);
         }
@@ -587,8 +596,9 @@ export function itemMaterial() {
         vec2 tileUv = vTileUv;
         if (vTile > -0.5) {
           tileUv *= tileRepeat[int(vTile + 0.5)];
-          diffuseColor.rgb = vTint * texture(tileColor, vec3(tileUv, vTile)).rgb;
-          tileSurf = texture(tileSurface, vec3(tileUv, vTile)).rgb;
+          vec4 tileCol = texture(tileColor, vec3(tileUv, vTile));
+          diffuseColor.rgb = vTint * tileCol.rgb;
+          tileSurf = vec3(texture(tileSurface, vec3(tileUv, vTile)).xy, tileCol.a);
         }`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0);')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')

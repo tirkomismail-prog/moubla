@@ -5,6 +5,7 @@
 // hair under a helmet). Also the decoding of the packed textures.
 import * as THREE from 'three';
 import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
+import { bcSupport, encodeLayer, noteTextureMemory } from './bc.js';
 
 export function bytesOf(b64) {
   const bin = atob(b64);
@@ -13,48 +14,130 @@ export function bytesOf(b64) {
   return bytes;
 }
 
-// Texture layers as one array texture. Each layer is a colour image plus,
-// for see-through ones, a separate alpha image. `layers`: {name: [colour,
-// alpha or null]} (base64 WebP).
-export async function decodeLayers(size, layers, colorSpace, channel = 0) {
-  const names = Object.keys(layers);
-  const data = new Uint8Array(size * size * 4 * names.length);
+// The RGBA8 pixels of a WebP image (base64), drawn at size x size; with
+// `alpha` (another image) its grey in the alpha channel. (Masks never go in
+// a WebP's own alpha: the canvas premultiplies it.)
+export async function pixels(size, b64, alpha = null) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const pixels = async (b64) => {
-    const img = await createImageBitmap(new Blob([bytesOf(b64)], { type: 'image/webp' }));
+  const draw = async (b) => {
+    const img = await createImageBitmap(new Blob([bytesOf(b)], { type: 'image/webp' }));
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(img, 0, 0, size, size);
     img.close();
-    return ctx.getImageData(0, 0, size, size).data;
+    return new Uint8Array(ctx.getImageData(0, 0, size, size).data.buffer);
   };
-  for (let i = 0; i < names.length; i++) {
-    const files = layers[names[i]];
-    const off = i * size * size * 4;
-    data.set(await pixels(files[channel]), off);
-    if (channel === 0 && files[1]) {
-      const a = await pixels(files[1]);
-      for (let k = 0; k < size * size; k++) data[off + k * 4 + 3] = a[k * 4];
-    }
+  const data = await draw(b64);
+  if (alpha) {
+    const a = await draw(alpha);
+    for (let k = 0; k < size * size; k++) data[k * 4 + 3] = a[k * 4];
   }
-  const texture = new THREE.DataArrayTexture(data, size, size, names.length);
+  return data;
+}
+
+// Layers as one array texture: block-compressed (bc.js: the mipmaps of
+// each layer, encoded) or as RGBA8 pixels (size x size each). Pixel rows go
+// up the texture (row 0 at v = 0) either way.
+function compressedArray(chains, size, colorSpace) {
+  const mipmaps = chains[0].map((first, level) => {
+    const data = new Uint8Array(first.length * chains.length);
+    chains.forEach((c, i) => data.set(c[level], i * first.length));
+    const s = Math.max(1, size >> level);
+    return { data, width: s, height: s };
+  });
+  const format = colorSpace === THREE.SRGBColorSpace ? THREE.RGBA_S3TC_DXT5_Format : THREE.RED_GREEN_RGTC2_Format;
+  const texture = new THREE.CompressedArrayTexture(mipmaps, size, size, chains.length, format);
+  texture.userData.bytes = mipmaps.reduce((n, m) => n + m.data.length, 0);
+  return finish(texture, colorSpace);
+}
+
+function rawArray(layers, size, colorSpace) {
+  const data = new Uint8Array(size * size * 4 * layers.length);
+  layers.forEach((l, i) => data.set(l, i * size * size * 4));
+  const texture = new THREE.DataArrayTexture(data, size, size, layers.length);
+  texture.generateMipmaps = true;
+  texture.userData.bytes = Math.round((data.length * 4) / 3);
+  return finish(texture, colorSpace);
+}
+
+// (what the layers take in video memory, for the benchmark's report)
+function note(texture) {
+  noteTextureMemory(texture.userData.bytes, texture.image.depth, !!texture.isCompressedArrayTexture);
+  return texture;
+}
+
+function finish(texture, colorSpace) {
   texture.colorSpace = colorSpace;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.generateMipmaps = true;
   texture.anisotropy = 4;
   texture.needsUpdate = true;
-  return { texture, size, index: Object.fromEntries(names.map((n, i) => [n, i])) };
+  return texture;
 }
 
-// Tileable cloth and armour materials: colour and surface (normal x, y and
-// roughness) arrays, and how often each repeats per metre.
-export async function decodeTiles({ size, layers, repeat }) {
-  const color = await decodeLayers(size, layers, THREE.SRGBColorSpace, 0);
-  const surface = await decodeLayers(size, layers, THREE.NoColorSpace, 1);
-  return { color: color.texture, surface: surface.texture, index: color.index, repeat };
+// (a failure is caught where all the layers are awaited, maybe later)
+const quiet = (job) => {
+  job.catch(() => {});
+  return job;
+};
+
+// colour (sRGB) layers as BC3, normal maps as BC5, if the browser can
+const KIND = (colorSpace) => (colorSpace === THREE.SRGBColorSpace ? 'bc3s' : 'bc5');
+
+// Texture layers as one array texture. Each layer is a colour image plus,
+// for see-through ones, a separate alpha image (sRGB colour), or a normal
+// map (NoColorSpace: only its x and y are kept, the shader works out z).
+// `layers`: {name: [image, alpha image or null]} (base64 WebP). Each layer
+// goes to the workers as soon as it is drawn.
+export async function decodeLayers(size, layers, colorSpace, compress = true) {
+  const names = Object.keys(layers);
+  const index = Object.fromEntries(names.map((n, i) => [n, i]));
+  const kind = KIND(colorSpace);
+  const zip = compress && bcSupport()[kind];
+  const out = [];
+  for (const n of names) {
+    const px = await pixels(size, layers[n][0], colorSpace === THREE.SRGBColorSpace ? layers[n][1] : null);
+    out.push(zip ? quiet(encodeLayer(px, size, kind)) : px);
+  }
+  if (!zip) return { texture: note(rawArray(out, size, colorSpace)), size, index };
+  try {
+    return { texture: note(compressedArray(await Promise.all(out), size, colorSpace)), size, index };
+  } catch (e) {
+    // (the workers failed, and the pixels went with them)
+    console.warn('Texture compression failed, layers left uncompressed:', e);
+    return decodeLayers(size, layers, colorSpace, false);
+  }
+}
+
+// Tileable cloth and armour materials: a colour array with the roughness in
+// its alpha (BC3 keeps that alpha well) and a surface array with the normal
+// (x, y), and how often each repeats per metre. The images: colour, and
+// surface (normal x, y, roughness).
+export async function decodeTiles(tiles, compress = true) {
+  const { size, layers, repeat } = tiles;
+  const names = Object.keys(layers);
+  const zipColor = compress && bcSupport().bc3s;
+  const zipSurface = compress && bcSupport().bc5;
+  const colors = [];
+  const surfaces = [];
+  for (const n of names) {
+    const [col, surf] = await Promise.all([pixels(size, layers[n][0]), pixels(size, layers[n][1])]);
+    for (let k = 0; k < size * size; k++) col[k * 4 + 3] = surf[k * 4 + 2];
+    colors.push(zipColor ? quiet(encodeLayer(col, size, 'bc3s')) : col);
+    surfaces.push(zipSurface ? quiet(encodeLayer(surf, size, 'bc5')) : surf);
+  }
+  const index = Object.fromEntries(names.map((n, i) => [n, i]));
+  try {
+    const [c, s] = await Promise.all([Promise.all(colors), Promise.all(surfaces)]);
+    const color = zipColor ? compressedArray(c, size, THREE.SRGBColorSpace) : rawArray(c, size, THREE.SRGBColorSpace);
+    const surface = zipSurface ? compressedArray(s, size, THREE.NoColorSpace) : rawArray(s, size, THREE.NoColorSpace);
+    return { color: note(color), surface: note(surface), index, repeat };
+  } catch (e) {
+    console.warn('Texture compression failed, tiles left uncompressed:', e);
+    return decodeTiles(tiles, false);
+  }
 }
 
 // a part's look: a plain colour, or a tint of a tileable material (see
@@ -110,8 +193,9 @@ const PART_FRAGMENT = `
     return tex;
   }`;
 // Tileable materials: UVs in metres times the repeats per metre (y) of
-// layer x (x < 0: none). The surface texture holds the normal (x, y) and
-// the roughness; there are no tangents, the frame comes from derivatives.
+// layer x (x < 0: none). The colour texture's alpha holds the roughness,
+// the surface texture the normal (x, y); there are no tangents, the frame
+// comes from derivatives.
 export const TILE_FRAGMENT = `
   uniform highp sampler2DArray tileColor;
   uniform highp sampler2DArray tileSurface;
@@ -448,8 +532,9 @@ function makeKind(o) {
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
         if (vPartTile.x > -0.5) {
           vec3 tileUv = vec3(vPartUv * vPartTile.y, vPartTile.x);
-          diffuseColor.rgb *= texture(tileColor, tileUv).rgb;
-          tileSurf = texture(tileSurface, tileUv).rgb;
+          vec4 tileCol = texture(tileColor, tileUv);
+          diffuseColor.rgb *= tileCol.rgb;
+          tileSurf = vec3(texture(tileSurface, tileUv).xy, tileCol.a);
         }
         // mud and dust from the ground: most above the boots, less up to the
         // knees, as dirty as the model
@@ -461,7 +546,8 @@ function makeKind(o) {
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(vPartSurface.y, 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (vPartTex.z > -0.5) {
-          vec3 partN = texture(partNormals, vec3(vPartUv, vPartTex.z)).xyz * 2.0 - 1.0;
+          vec2 partXY = texture(partNormals, vec3(vPartUv, vPartTex.z)).xy * 2.0 - 1.0;
+          vec3 partN = vec3(partXY, sqrt(max(0.0, 1.0 - dot(partXY, partXY))));
           normal = normalize(tileFrame(-vViewPosition, normal, vPartUv) * partN);
         } else if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);

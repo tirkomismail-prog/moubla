@@ -8,7 +8,7 @@
 // come from the lighter model, on a layer only the shadow pass draws.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { bytesOf, decodeLayers, SHADOW_LAYER } from './partmat.js';
+import { bytesOf, pixels, SHADOW_LAYER } from './partmat.js';
 
 // the full trees closer than LOD_DIST[0] metres, the lighter ones up to
 // LOD_DIST[1], the impostors further; a tree changes its level only HYST
@@ -62,8 +62,7 @@ export function treesReady() {
 
 // a colour image (+ its alpha image) as a texture with mipmaps
 async function image(size, files, colorSpace, repeat) {
-  const { texture } = await decodeLayers(size, { image: files }, colorSpace);
-  const t = new THREE.DataTexture(texture.image.data, size, size);
+  const t = new THREE.DataTexture(await pixels(size, files[0], files[1] || null), size, size);
   t.colorSpace = colorSpace;
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.magFilter = THREE.LinearFilter;

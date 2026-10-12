@@ -12,13 +12,24 @@ import { clamp, smoothstep, wrapAngle } from '../core/util.js';
 
 let T = null;
 
-export async function loadHorse(assets, tiles) {
+// The horse's texture layers and normal maps (started early by
+// loadCharacters, to be compressed alongside the soldiers').
+export function horseTextures(assets) {
+  const tex = assets.horseTextures;
+  if (!tex) return Promise.resolve({ layers: null, normals: null });
+  const normals = tex.normals ? Object.fromEntries(Object.entries(tex.normals).map(([k, f]) => [k, [f]])) : null;
+  return Promise.all([
+    decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace),
+    normals ? decodeLayers(tex.size, normals, THREE.NoColorSpace) : null,
+  ]).then(([layers, normals]) => ({ layers, normals }));
+}
+
+export async function loadHorse(assets, tiles, textures = horseTextures(assets)) {
   const gltf = await new Promise((resolve, reject) => new GLTFLoader().parse(bytesOf(assets.horse).buffer, '', resolve, reject));
   const t = prepare(gltf);
-  const tex = assets.horseTextures;
-  t.layers = tex ? await decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null;
-  const normals = tex && tex.normals ? Object.fromEntries(Object.entries(tex.normals).map(([k, f]) => [k, [f]])) : null;
-  t.normals = normals ? await decodeLayers(tex.size, normals, THREE.NoColorSpace) : null;
+  const { layers, normals } = await textures;
+  t.layers = layers;
+  t.normals = normals;
   t.tiles = tiles;
   T = t;
 }

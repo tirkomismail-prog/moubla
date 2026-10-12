@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { mulberry32 } from './core/rng.js';
 import { AutoResolution } from './battle/autores.js';
+import { textureMemory } from './battle/bc.js';
 
 // the commit the game was built on (tools/build.mjs)
 const BUILD = typeof __BUILD__ !== 'undefined' ? __BUILD__ : 'dev';
@@ -458,6 +459,8 @@ export async function runBenchmark(game) {
         window: `${window.innerWidth}x${window.innerHeight}`,
         devicePixelRatio: window.devicePixelRatio,
         cores: navigator.hardwareConcurrency,
+        // the models' texture layers: video memory, how many compressed
+        textures: textureMemory(),
       };
     }
     for (const h of heights) {
