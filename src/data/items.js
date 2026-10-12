@@ -54,9 +54,10 @@ export const ITEMS = {
   gambeson: { type: 'armor', slot: 'armor', name: 'Гамбезон', armor: 19, look: 'padded', price: 260 },
   mail_shirt: { type: 'armor', slot: 'armor', name: 'Кольчужна сорочка', armor: 26, look: 'mail', price: 620 },
   lamellar: { type: 'armor', slot: 'armor', name: 'Ламелярний обладунок', armor: 30, look: 'lamellar', price: 900 },
-  hauberk: { type: 'armor', slot: 'armor', name: 'Кольчужний хауберк', armor: 33, look: 'mail', price: 1150 },
+  // (a hauberk and a knight's harness come with a mail coif)
+  hauberk: { type: 'armor', slot: 'armor', name: 'Кольчужний хауберк', armor: 33, look: 'mail', coif: true, price: 1150 },
   brigandine: { type: 'armor', slot: 'armor', name: 'Бригантина', armor: 39, look: 'brigandine', price: 1900 },
-  plate: { type: 'armor', slot: 'armor', name: 'Латний обладунок', armor: 47, look: 'plate', price: 3600 },
+  plate: { type: 'armor', slot: 'armor', name: 'Латний обладунок', armor: 47, look: 'plate', coif: true, price: 3600 },
 
   // --- helmets -------------------------------------------------------------
   hood: { type: 'helmet', slot: 'helmet', name: 'Каптур', armor: 3, look: 'hood', price: 10 },

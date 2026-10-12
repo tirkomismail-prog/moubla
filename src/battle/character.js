@@ -305,6 +305,7 @@ function palette(spec) {
     Plates: plate,
     // a knight's jupon: padded cloth of the side's colour over the plates
     Jupon: team,
+    Coif: mail,
     Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
     Belt: tiled('leather', '#8a7a6a'),
@@ -328,7 +329,21 @@ const OUTFITS = {
   // a knight of c. 1330-60: mail, plates on the arms and legs, a jupon over
   // the plates of the chest
   plate: ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Hose', 'Boots'],
+  // with a mail coif, its mantle over the outer garment (tools/characters/coif.py)
+  'mail+coif': ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Coif-Surcoat', 'Hose', 'Boots'],
+  'plate+coif': ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Coif-Jupon', 'Hose', 'Boots'],
 };
+// helmets with their own mail (an aventail): no coif under them
+const AVENTAIL = new Set(['spangen', 'spiked']);
+
+// The outfit of a soldier: the look of the armour, with a mail coif if the
+// armour has one, the helmet leaves room for it and the model has it.
+function outfitOf(spec) {
+  const look = spec.look || 'cloth';
+  const key = `${look}+coif`;
+  if (!spec.coif || AVENTAIL.has(spec.helmet) || !OUTFITS[key]) return look;
+  return OUTFITS[key].every((n) => state.t.pieces[n]) ? key : look;
+}
 
 // The head and hands with the garments of `look`, for one level of detail;
 // the farthest (FAR_LEVEL) is the far one simplified further here.
@@ -501,21 +516,24 @@ export class SkinnedHuman {
       if (m) this.lod[+m[1]] = o;
     });
     this.addHelmet(spec, props);
-    // beards: none, a moustache or a full beard; helmets hide the hair
+    const outfit = outfitOf(spec);
+    // beards: none, a moustache or a full beard; helmets hide the hair, a
+    // coif the hair and the beard
     const hide = new Set();
     if (spec.beard !== 'full') hide.add('Beard');
     if (!spec.beard) hide.add('Moustache');
     if (this.helmet) hide.add('Hair');
+    if (outfit.endsWith('+coif')) hide.add('Hair').add('Beard');
     const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
     // the farthest level, made at run time (outfitGeometry)
-    const far = outfitGeometry(spec.look || 'cloth', FAR_LEVEL);
+    const far = outfitGeometry(outfit, FAR_LEVEL);
     if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Soldier_LOD${FAR_LEVEL}`);
     // the levels of detail share one skeleton: one bone update and one bone
     // texture per soldier
     const shared = this.lod[0].skeleton;
     this.lod.forEach((o, level) => {
       if (o.skeleton !== shared) o.bind(shared, o.bindMatrix);
-      o.geometry = outfitGeometry(spec.look || 'cloth', level) || o.geometry;
+      o.geometry = outfitGeometry(outfit, level) || o.geometry;
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
       // shadows: cast by a lighter level (shadowStandIn, setLod)

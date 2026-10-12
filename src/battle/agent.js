@@ -216,6 +216,7 @@ export class Agent {
     const troop = this.troopId ? TROOPS[this.troopId] : null;
     const spec = {
       look: this.armorItem ? this.armorItem.look : 'cloth',
+      coif: !!(this.armorItem && this.armorItem.coif),
       helmet: this.helmItem ? this.helmItem.look : null,
       team: colors.team,
       team2: colors.team2,

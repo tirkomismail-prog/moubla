@@ -38,6 +38,7 @@ import mhassets  # noqa: E402
 import mocap  # noqa: E402
 import outfits  # noqa: E402
 import conform  # noqa: E402
+import coif  # noqa: E402
 
 ARGS = None
 
@@ -255,7 +256,7 @@ def store_fit(rig, human, scalp):
 # the head and hands (in every soldier) and the garments (by outfit)
 COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
 # (new parts go at the end: the game's palettes are indexed by these)
-PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon']
+PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Coif']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
 
 
@@ -392,6 +393,8 @@ def build():
     # each layer fitted onto the one under it, then the belts round them
     conform.run(pieces, human, rig, helpers, hose=pieces['Hose'], boots=pieces['Boots'])
     pieces.update(outfits.belts(pieces, rig.data.bones['pelvis'].head_local.y))
+    # mail coifs, their mantles over the fitted garments
+    pieces.update(coif.build_all(pieces, human, rig, helpers))
 
     # the visible skin: head, neck and hands (everything under the clothes is
     # removed; the basic tight clothes are what every outfit covers at least)

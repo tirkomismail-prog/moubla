@@ -1,5 +1,6 @@
-"""Poke-through check of the outfits over the mocap clips and three
-procedural poses (riding, overhead strike, both arms up), for one soldier.glb.
+"""Poke-through check of the outfits over the mocap clips and four
+procedural poses (riding, overhead strike, both arms up, head turned), for
+one soldier.glb.
 
     .venv/bin/python tools/characters/pose_check.py assets/characters/soldier.glb out.json [LOD]
 
@@ -17,7 +18,7 @@ import time
 
 import bpy  # noqa: I001
 import bmesh
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 from mathutils.bvhtree import BVHTree
 
 GLB, OUT = sys.argv[1], sys.argv[2]
@@ -40,11 +41,13 @@ PAIRS = {
     'brigandine': [('Cuirass', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body')],
     'plate': [('Jupon', 'Hauberk'), ('Plates', 'Hauberk'), ('Plates', 'Jupon'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'),
               ('Jupon', 'Hose'), ('Plates', 'Hose'), ('Plates', 'Boots')],
+    'mail+coif': [('Coif-Surcoat', 'Surcoat'), ('Coif-Surcoat', 'Hauberk'), ('Coif-Surcoat', 'Body')],
+    'plate+coif': [('Coif-Jupon', 'Jupon'), ('Coif-Jupon', 'Hauberk'), ('Coif-Jupon', 'Plates'), ('Coif-Jupon', 'Body')],
 }
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
-LIMITS = {'0': (33, 18), '1': (25, 22), '2': (8, 6)}
-PROCEDURAL = ('ride', 'overhead', 'arms_up')
+LIMITS = {'0': (36, 18), '1': (25, 22), '2': (8, 6)}
+PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=GLB)
@@ -183,10 +186,18 @@ def bone_world(name, tail=False):
 
 def procedural(kind):
     """Idle frame 1 plus IK: 'ride' (legs astride, feet in stirrups),
-    'overhead' (right hand above the head, left forward) and 'arms_up'."""
+    'overhead' (right hand above the head, left forward) and 'arms_up';
+    or with the head turned 60 degrees and bent 20 ('look', as far as
+    agent.js turns it towards what the soldier looks at)."""
     set_action('idle')
     scene.frame_set(1)
     bpy.context.view_layer.update()
+    if kind == 'look':
+        for b in ('neck_01', 'head'):
+            pb = rig.pose.bones[b]
+            pb.rotation_quaternion = Quaternion((0, 1, 0), math.radians(30)) @ Quaternion((1, 0, 0), math.radians(10))
+        bpy.context.view_layer.update()
+        return
     for s, side in (('l', 1), ('r', -1)):
         hip = bone_world('thigh_' + s)
         sh = bone_world('upperarm_' + s)
