@@ -254,7 +254,8 @@ def store_fit(rig, human, scalp):
 
 # the head and hands (in every soldier) and the garments (by outfit)
 COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
-PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates']
+# (new parts go at the end: the game's palettes are indexed by these)
+PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
 
 
@@ -267,7 +268,7 @@ def part_of(name):
 DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
 # dense parts simplified already in the near model (the texture carries the detail)
 NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5,
-              'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7}
+              'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7, 'Jupon': 0.7}
 
 
 def merge_parts(objs, name):

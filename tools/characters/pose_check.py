@@ -38,12 +38,12 @@ PAIRS = {
     'mail': [('Surcoat', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'), ('Surcoat', 'Hose'), ('Surcoat', 'Body')],
     'lamellar': [('Cuirass', 'Tunic'), ('Tunic', 'Hose'), ('Tunic', 'Body'), ('Cuirass', 'Body')],
     'brigandine': [('Cuirass', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body')],
-    'plate': [('Cuirass', 'Hauberk'), ('Plates', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'),
-              ('Plates', 'Hose'), ('Plates', 'Boots')],
+    'plate': [('Jupon', 'Hauberk'), ('Plates', 'Hauberk'), ('Plates', 'Jupon'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'),
+              ('Jupon', 'Hose'), ('Plates', 'Hose'), ('Plates', 'Boots')],
 }
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
-LIMITS = {'0': (30, 18), '1': (25, 22), '2': (8, 6)}
+LIMITS = {'0': (33, 18), '1': (25, 22), '2': (8, 6)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)

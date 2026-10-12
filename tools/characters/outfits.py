@@ -255,6 +255,7 @@ SKIRTS = {
     'Hauberk': (0.018, 0.26),
     'Surcoat': (0.030, 0.38),
     'Cuirass': (0.032, 0.22),
+    'Jupon': (0.030, 0.26),
 }
 
 
@@ -299,6 +300,14 @@ def build_all(human, rig, helpers):
     t = torso(human, 'Cuirass_top', False, 'round', L['belt_top'] - 0.03, 0.05, smooth=4)
     out['Cuirass'] = join([t, skirt(human, 'Cuirass_skirt', knee + 0.2, *SKIRTS['Cuirass'])], 'Cuirass')
 
+    # jupon (knights, c. 1330-60, like the Black Prince's): a padded coat
+    # of the side's colour over the mail and the plates of the chest, stiff
+    # (it shows the breastplate under it, not the belly), sleeveless, to
+    # mid-thigh with the mail showing below it, slit for riding
+    t = torso(human, 'Jupon_top', False, 'round', below, 0.032, smooth=4)
+    s = skirt(human, 'Jupon_skirt', knee + 0.12, *SKIRTS['Jupon'], pleats=(8, 0.005))
+    out['Jupon'] = join([t, s], 'Jupon')
+
     out['Plates'] = plates(human)
 
     for name, obj in out.items():
@@ -311,7 +320,7 @@ def belts(out, axis_y):
     """A belt round each garment that has one, fitted to it (after
     conform.py has fitted the garments): {'Belt-<garment>': object}."""
     made = {}
-    for name in ('Tunic', 'Gambeson', 'Surcoat', 'Jerkin', 'Cuirass'):
+    for name in ('Tunic', 'Gambeson', 'Surcoat', 'Jerkin', 'Cuirass', 'Jupon'):
         belt = G.make_belt([out[name]], G.L['belt_top'], axis_y)
         belt.name = belt.data.name = 'Belt-' + name
         H['set_material'](belt, 'belt-' + name.lower())

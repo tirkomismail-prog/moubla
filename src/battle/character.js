@@ -303,6 +303,8 @@ function palette(spec) {
     // a brigandine: plates riveted inside cloth of the side's colour
     Cuirass: look === 'plate' ? plate : look === 'brigandine' ? team : tiled('lamellar', '#e1e1e1', 1, 0.85),
     Plates: plate,
+    // a knight's jupon: padded cloth of the side's colour over the plates
+    Jupon: team,
     Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
     Belt: tiled('leather', '#8a7a6a'),
@@ -323,7 +325,9 @@ const OUTFITS = {
   mail: ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose', 'Boots'],
   lamellar: ['Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
   brigandine: ['Hauberk', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
-  plate: ['Hauberk', 'Cuirass', 'Plates', 'Belt-Cuirass', 'Hose', 'Boots'],
+  // a knight of c. 1330-60: mail, plates on the arms and legs, a jupon over
+  // the plates of the chest
+  plate: ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Hose', 'Boots'],
 };
 
 // The head and hands with the garments of `look`, for one level of detail;

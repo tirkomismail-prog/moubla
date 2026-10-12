@@ -37,12 +37,16 @@ BUDGET = {
     'Jerkin': (('Tunic',), 0.006, None, None, 0.005),
     'Surcoat': (('Hauberk',), 0.006, None, None, 0.004),
     'Cuirass': (('Tunic', 'Hauberk'), 0.008, None, None, 0.004),
-    'Plates': (('Hauberk', 'Hose', 'Boots'), 0.007, None, None, 0.005),
+    # (the plates of the chest under it, then its padding)
+    'Jupon': (('Hauberk',), 0.014, None, None, 0.006),
+    'Plates': (('Hauberk', 'Hose', 'Boots', 'Jupon'), 0.007, None, None, 0.005),
 }
 # how far the hose is pulled in under the skirts
 HOSE_SHRINK = 0.009
 # weights copied from the inner layer below this height (belt line)
-WEIGHTS_FROM = {'Surcoat': 'Hauberk', 'Cuirass': 'Tunic', 'Jerkin': 'Tunic'}
+# (the jupon is slit like the hauberk under it, so that each half of its
+# skirt follows the same thigh as the mail under it)
+WEIGHTS_FROM = {'Surcoat': 'Hauberk', 'Cuirass': 'Tunic', 'Jerkin': 'Tunic', 'Jupon': 'Hauberk'}
 
 
 def tree_of(objs):
@@ -171,14 +175,15 @@ def copy_weights(obj, src, below):
 
 
 def plates_over(plates):
-    """For the Plates (inner layers Hauberk, Hose, Boots): which of them each
-    plate lies on, by the bone it follows."""
+    """For the Plates (inner layers Hauberk, Hose, Boots, Jupon): which of
+    them each plate lies on, by the bone it follows (the arms' over the mail
+    sleeves and the jupon's shoulders, the legs' over the hose and boots)."""
     names = {g.index: g.name for g in plates.vertex_groups}
     verts = plates.data.vertices
 
     def pick(v):
         leg = any(names.get(g.group, '').startswith(('calf', 'thigh')) for g in verts[v.index].groups)
-        return [1, 2] if leg else [0]
+        return [1, 2] if leg else [0, 3]
     return pick
 
 
@@ -192,13 +197,13 @@ def run(out, human, rig, helpers, hose=None, boots=None):
     if boots is not None:
         layers['Boots'] = boots
     stats = {}
-    for name in ('Tunic', 'Gambeson', 'Hauberk', 'Jerkin', 'Surcoat', 'Cuirass', 'Plates'):
+    for name in ('Tunic', 'Gambeson', 'Hauberk', 'Jerkin', 'Surcoat', 'Cuirass', 'Jupon', 'Plates'):
         inner, torso, sh, wr, mn = BUDGET[name]
         inner_objs = [body] if inner == 'body' else [layers[n] for n in inner]
         # arm plates over the mail sleeves, leg plates over the hose and boots
         pick = plates_over(out[name]) if name == 'Plates' else None
         before, after = conform(out[name], inner_objs, torso, sh, wr, mn,
-                                smooth_iters=40 if name in ('Cuirass', 'Plates') else 12, pick=pick)
+                                smooth_iters=40 if name in ('Cuirass', 'Jupon', 'Plates') else 12, pick=pick)
         stats[name] = (sorted(before)[len(before) // 2], sorted(after)[len(after) // 2])
         print(f'conform {name:9s} median gap {stats[name][0] * 1000:5.1f} -> {stats[name][1] * 1000:5.1f} mm')
         if name == 'Tunic':
