@@ -399,6 +399,8 @@ function palette(spec) {
     // a knight's jupon: padded cloth of the side's colour over the plates
     Jupon: team,
     Coif: mail,
+    // a hood of the wearer's own cloth
+    Hood: tiled('wool', clothColor(spec.hood || spec.sign || spec.team, spec.fade, spec.shade)),
     Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
     Shoes: tiled('leather', '#b0a090'),
@@ -432,26 +434,32 @@ const OUTFITS = {
 const COIF = { mail: 'Coif-Surcoat', plate: 'Coif-Jupon' };
 // helmets with their own mail (an aventail): no coif under them
 const AVENTAIL = new Set(['spangen', 'spiked']);
+// a cloth hood, its cape over the outer garment (tools/characters/hood.py):
+// the gambeson's standing collar has one of its own
+const HOOD = { padded: 'Hood-Gambeson' };
 // armour worn with gloves (mail mittens, gauntlets, leather), and the
 // clothes worn with low shoes (the rest with boots)
 const GLOVED = new Set(['mail', 'lamellar', 'brigandine', 'plate']);
 const SHOD = new Set(['cloth', 'padded']);
 
-// The outfit of a soldier: the garments of the armour's look, a mail coif if
-// the armour has one and the helmet leaves room for it, shoes or boots (the
-// riders of the steppe keep their boots) and bare or gloved hands. Pieces a
-// model does not have are left out (an older model has the hands in the
-// body and no shoes).
+// The outfit of a soldier: the garments of the armour's look, a cloth hood
+// (instead of the carried helmet) or a mail coif if the armour has one and
+// the helmet leaves room for it, shoes or boots (the riders of the steppe
+// keep their boots) and bare or gloved hands. Pieces a model does not have
+// are left out (an older model has the hands in the body, no shoes, no
+// hood: the hood is then a carried helmet).
 const outfitList = new Map();
 function outfitOf(spec) {
   const has = (n) => !!state.t.pieces[n];
   const look = OUTFITS[spec.look] ? spec.look : 'cloth';
-  const coif = spec.coif && !AVENTAIL.has(spec.helmet) && COIF[look] && has(COIF[look]) ? COIF[look] : null;
+  const hood = spec.helmet === 'hood' && has(HOOD[look] || 'Hood') ? HOOD[look] || 'Hood' : null;
+  const coif = !hood && spec.coif && !AVENTAIL.has(spec.helmet) && COIF[look] && has(COIF[look]) ? COIF[look] : null;
   const feet = SHOD.has(look) && spec.faction !== 'kaganate' && has('Shoes') ? 'Shoes' : 'Boots';
   const hands = GLOVED.has(look) && has('Gloves') ? 'Gloves' : 'Hands';
-  const key = [look, coif || '', feet, hands].join(':');
-  if (!outfitList.has(key)) outfitList.set(key, [...OUTFITS[look], ...(coif ? [coif] : []), feet, hands]);
-  return { key, coif: !!coif };
+  const head = hood || coif;
+  const key = [look, head || '', feet, hands].join(':');
+  if (!outfitList.has(key)) outfitList.set(key, [...OUTFITS[look], ...(head ? [head] : []), feet, hands]);
+  return { key, coif: !!coif, hood: !!hood };
 }
 
 // The head with the pieces of an outfit (outfitOf), for one level of detail;
@@ -624,14 +632,15 @@ export class SkinnedHuman {
       const m = o.isSkinnedMesh && /_LOD(\d)$/.exec(o.name);
       if (m) this.lod[+m[1]] = o;
     });
-    this.addHelmet(spec, props);
     const outfit = outfitOf(spec);
-    // beards: none, a moustache or a full beard; helmets hide the hair, a
-    // coif the hair and the beard
+    // (a cloth hood is a part of the outfit, other helmets are carried)
+    if (!outfit.hood) this.addHelmet(spec, props);
+    // beards: none, a moustache or a full beard; helmets and hoods hide the
+    // hair, a coif the hair and the beard
     const hide = new Set();
     if (spec.beard !== 'full') hide.add('Beard');
     if (!spec.beard) hide.add('Moustache');
-    if (this.helmet) hide.add('Hair');
+    if (this.helmet || outfit.hood) hide.add('Hair');
     if (outfit.coif) hide.add('Hair').add('Beard');
     const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
     // the farthest level, made at run time (outfitGeometry)

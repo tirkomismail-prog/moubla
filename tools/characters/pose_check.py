@@ -44,6 +44,9 @@ PAIRS = {
               ('Jupon', 'Hose'), ('Plates', 'Hose'), ('Plates', 'Boots'), ('Plates', 'Gloves')],
     'mail+coif': [('Coif-Surcoat', 'Surcoat'), ('Coif-Surcoat', 'Hauberk'), ('Coif-Surcoat', 'Body')],
     'plate+coif': [('Coif-Jupon', 'Jupon'), ('Coif-Jupon', 'Hauberk'), ('Coif-Jupon', 'Plates'), ('Coif-Jupon', 'Body')],
+    'cloth+hood': [('Hood', 'Tunic'), ('Hood', 'Body')],
+    'padded+hood': [('Hood-Gambeson', 'Gambeson'), ('Hood-Gambeson', 'Body')],
+    'leather+hood': [('Hood', 'Jerkin')],
 }
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)

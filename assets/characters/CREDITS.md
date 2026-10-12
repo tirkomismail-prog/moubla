@@ -18,6 +18,9 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
 - **Gloves**: `toigo_gloves_short` by MargaretToigo, MakeHuman asset pack gloves01
   (http://www.makehumancommunity.org/node/1852); refitted to the soldier, the cuffs pulled in under the
   sleeves and skinned like the wrist (`tools/characters/build_soldier.py`).
+- **Hood**: `donitz_monk_robe_hood` by Donitz, MakeHuman asset pack suits02
+  (https://static.makehumancommunity.org/assets/assetpacks/suits02.html; two files read out of the pack);
+  simplified, made shallower and open for the face, its cape fitted over the garments (`tools/characters/hood.py`).
 - **Cloth, leather and armour textures**: ambientCG (https://ambientcg.com): Fabric062 (wool), Fabric008
   (quilted gambeson), Leather014, Chainmail004, Metal038 (bright steel of the weapons), Metal052C (worn iron of
   the plate armour, helmets and chanfron), Metal039 (lamellar), and for the

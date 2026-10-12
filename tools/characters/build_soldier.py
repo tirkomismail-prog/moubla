@@ -40,6 +40,7 @@ import mocap  # noqa: E402
 import outfits  # noqa: E402
 import conform  # noqa: E402
 import coif  # noqa: E402
+import hood  # noqa: E402
 
 ARGS = None
 
@@ -259,7 +260,7 @@ def store_fit(rig, human, scalp):
 COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
 # (new parts go at the end: the game's palettes are indexed by these)
 PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Coif',
-                  'Hands', 'Gloves', 'Shoes']
+                  'Hands', 'Gloves', 'Shoes', 'Hood']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
 
 
@@ -488,7 +489,7 @@ def build():
     helpers = {
         'extract': extract, 'offset': offset, 'smooth_verts': smooth_verts, 'set_material': set_material,
         'shade_smooth': shade_smooth, 'bone_index': bone_index, 'dominant_bone': dominant_bone,
-        'group_weight': group_weight, 'copy_object': copy_object,
+        'group_weight': group_weight, 'copy_object': copy_object, 'decimate': decimate,
     }
     basic = garments.build_all(human, rig, helpers)
     scalp = basic.pop('Scalp')
@@ -503,8 +504,9 @@ def build():
     # each layer fitted onto the one under it, then the belts round them
     conform.run(pieces, human, rig, helpers, hose=pieces['Hose'], boots=pieces['Boots'])
     pieces.update(outfits.belts(pieces, rig.data.bones['pelvis'].head_local.y))
-    # mail coifs, their mantles over the fitted garments
+    # mail coifs, their mantles over the fitted garments; cloth hoods
     pieces.update(coif.build_all(pieces, human, rig, helpers))
+    pieces.update(hood.build_all(pieces, worn.pop('Hood'), human, rig, helpers))
 
     # the visible skin: head, neck and hands (everything under the clothes is
     # removed; the basic tight clothes are what every outfit covers at least)

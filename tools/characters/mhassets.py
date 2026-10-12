@@ -1,10 +1,12 @@
 """MakeHuman community assets used by the soldier: skin, eyes, eyebrows,
-eyelashes, hair, beards and gloves (CC0, see assets/characters/CREDITS.md).
+eyelashes, hair, beards, gloves and a hood (CC0, see assets/characters/CREDITS.md).
 
 The asset packs are downloaded once into a cache folder, fitted to the body
 with MPFB (which also transfers the skin weights) and their textures are
 packed into the texture layers the game samples (see `LAYERS`).
 """
+import hashlib
+import io
 import os
 import urllib.request
 import zipfile
@@ -17,6 +19,17 @@ PACKS = {
     'skins02': 'skins02_cc0.zip',
     'bodyparts05': 'bodyparts05_cc0.zip',
     'gloves01': 'gloves01_cc0.zip',
+}
+
+# single files of big packs, read out of the zip on the server (HTTP Range
+# requests) instead of downloading all of it: pack -> (zip, {file: sha256})
+MEMBERS = {
+    'suits02': ('suits02_cc0.zip', {
+        'clothes/donitz_monk_robe_hood/donitz_monk_robe_hood.mhclo':
+            '5f32a69d26f68b9c5dd9076e9b6859c154291759726831def4bc5c7afc315aa7',
+        'clothes/donitz_monk_robe_hood/Monks_Hood.obj':
+            '989f2632ccce50d4cf99973167ecc10e6f33911a60e8e378d50d8b30d06306fc',
+    }),
 }
 
 SYSTEM = 'makehuman_system_assets'
@@ -37,6 +50,7 @@ FITTED = {
 # tiles, so their textures are not used): part name -> (pack, mhclo file)
 GARMENTS = {
     'Gloves': ('gloves01', 'clothes/toigo_gloves_short/toigo_gloves_short.mhclo'),
+    'Hood': ('suits02', 'clothes/donitz_monk_robe_hood/donitz_monk_robe_hood.mhclo'),
 }
 
 SKINS = {
@@ -65,7 +79,8 @@ CARDS = {'Hair', 'Beard', 'Moustache', 'Brows', 'Lashes'}
 
 
 def fetch(cache):
-    """Download and unpack the asset packs that are not in `cache` yet."""
+    """Download and unpack the asset packs (and files of packs, MEMBERS) that
+    are not in `cache` yet."""
     os.makedirs(cache, exist_ok=True)
     for pack, name in PACKS.items():
         folder = os.path.join(cache, pack)
@@ -78,6 +93,61 @@ def fetch(cache):
             urllib.request.urlretrieve(url, path)
         with zipfile.ZipFile(path) as z:
             z.extractall(folder)
+    fetch_members(cache)
+
+
+class RemoteFile(io.RawIOBase):
+    """A file on a web server, read in pieces as it is asked for (HTTP Range)."""
+
+    def __init__(self, url):
+        self.url = url
+        self.pos = 0
+        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD'), timeout=60) as r:
+            self.size = int(r.headers['Content-Length'])
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        self.pos = offset if whence == 0 else self.pos + offset if whence == 1 else self.size + offset
+        return self.pos
+
+    def readinto(self, b):
+        n = min(len(b), self.size - self.pos)
+        if n <= 0:
+            return 0
+        req = urllib.request.Request(self.url, headers={'Range': f'bytes={self.pos}-{self.pos + n - 1}'})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read()
+        b[:len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def fetch_members(cache):
+    """Read the files of MEMBERS that are not in `cache` yet out of their packs
+    (checked against their sha256)."""
+    for pack, (name, files) in MEMBERS.items():
+        missing = {f: h for f, h in files.items() if not os.path.exists(os.path.join(cache, pack, f))}
+        if not missing:
+            continue
+        url = PACK_URL.format(pack=pack, zip=name)
+        print('reading', len(missing), 'files out of', url)
+        with zipfile.ZipFile(io.BufferedReader(RemoteFile(url), buffer_size=1 << 16)) as z:
+            for f, sha in missing.items():
+                data = z.read(f)
+                if hashlib.sha256(data).hexdigest() != sha:
+                    raise RuntimeError(f'{pack}/{f}: not the expected file')
+                path = os.path.join(cache, pack, f)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, 'wb') as out:
+                    out.write(data)
 
 
 def pack_file(cache, pack, rel):
