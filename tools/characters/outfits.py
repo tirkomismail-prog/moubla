@@ -4,7 +4,7 @@ surcoat, leather jerkin, cuirass (lamellar or plate) and plate pieces, plus
 a belt fitted to each outer garment.
 
 They are cut from the MakeHuman helper shells (tights, skirt) like the
-basic clothes in garments.py, then pushed away from the body by the
+hose and boots in garments.py, then pushed away from the body by the
 thickness of the cloth, widened towards the cuffs and hems and given
 folds: pleats in the skirts, bunching at the elbows and wrists, blousing
 above the belt. Plates are rigid: each follows one bone only.
@@ -15,6 +15,23 @@ import bmesh
 from mathutils import Vector
 
 import garments as G
+
+# the garments each outfit wears over the body, as src/battle/character.js
+# OUTFITS and NORSE dress the soldiers (shoes on the clothes that have them):
+# the skin no outfit shows is removed (build_soldier.delete_hidden), and
+# pose_check looks for holes through each outfit
+DRESS = {
+    'cloth': ('Tunic', 'Belt-Tunic', 'Hose', 'Shoes'),
+    'padded': ('Gambeson', 'Belt-Gambeson', 'Hose', 'Shoes'),
+    'leather': ('Tunic', 'Jerkin', 'Belt-Jerkin', 'Hose', 'Boots'),
+    'mail': ('Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose', 'Boots'),
+    'lamellar': ('Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'),
+    'brigandine': ('Hauberk', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'),
+    'plate': ('Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Hose', 'Boots'),
+    'norse': ('VikingTunic', 'VikingPants', 'VikingBoots'),
+    'norse-padded': ('Gambeson', 'Belt-Gambeson', 'VikingPants', 'VikingBoots'),
+    'norse-brigandine': ('Hauberk', 'Cuirass', 'Belt-Cuirass', 'VikingPants', 'VikingBoots'),
+}
 
 TORSO = {'spine_01', 'spine_02', 'spine_03', 'neck_01', 'clavicle_l', 'clavicle_r', 'pelvis'}
 ARMS = {'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r'}

@@ -431,7 +431,9 @@ function palette(spec) {
 }
 
 // The garments of each armour look (see tools/characters/outfits.py); the
-// coif, the feet and the hands are added by outfitOf
+// coif, the feet and the hands are added by outfitOf. (DRESS in outfits.py
+// repeats them with the feet, and NORSE: the model keeps only the skin they
+// show. Change it with them.)
 const OUTFITS = {
   cloth: ['Tunic', 'Belt-Tunic', 'Hose'],
   padded: ['Gambeson', 'Belt-Gambeson', 'Hose'],
@@ -457,7 +459,7 @@ const SHOD = new Set(['cloth', 'padded']);
 
 // The Norse kit (the Nords): a kyrtle, trousers and soft boots
 // (tools/characters/viking.py), or the gambeson or the hauberk and brigandine
-// over the trousers and boots
+// over the trousers and boots (and in DRESS, tools/characters/outfits.py)
 const NORSE = {
   cloth: ['VikingTunic', 'VikingPants'],
   leather: ['VikingTunic', 'VikingPants'],

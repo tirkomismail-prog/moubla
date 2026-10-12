@@ -18,6 +18,7 @@ three levels of detail are generated here; each level is exported as one mesh wh
 part (_PART attribute), and the textures as layers next to the model.
 """
 import argparse
+import heapq
 import importlib
 import json
 import math
@@ -30,6 +31,7 @@ import bmesh
 import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import garments  # noqa: E402
@@ -204,26 +206,86 @@ def world_bvh(objs):
     return tree
 
 
-def delete_covered(body, covers, max_dist=0.06, keep=None):
-    """Remove body faces hidden under clothes: a vertex is covered when a ray
-    along its normal hits a garment within `max_dist`."""
-    tree = world_bvh(covers)
+# under a garment: its nearest point within REACH, OPEN_EDGE or more from
+# its open edges, the skin at most POKE out through it
+REACH = 0.05
+OPEN_EDGE = 0.03
+POKE = 0.01
+# skin kept round the bare skin, along the body (hems and collars shift as
+# the body moves)
+SKIN_MARGIN = 0.04
+
+
+def garment_tree(obj):
+    """BVH tree of a garment and the faces near its open edges (found on the
+    points welded by position: the seams of its UVs are no edges)."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.transform(obj.matrix_world)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
+    bm.normal_update()
+    rim = [v.co.copy() for v in bm.verts if any(e.is_boundary for e in v.link_edges)]
+    near_rim = set()
+    if rim:
+        kd = KDTree(len(rim))
+        for i, co in enumerate(rim):
+            kd.insert(co, i)
+        kd.balance()
+        near_rim = {f.index for f in bm.faces if any(kd.find(v.co)[2] < OPEN_EDGE for v in f.verts)}
+    tree = BVHTree.FromBMesh(bm)
+    bm.free()
+    return tree, near_rim
+
+
+def delete_hidden(body, pieces, ray=0.1):
+    """Remove the skin that no outfit (outfits.DRESS) shows. A vertex is bare
+    in an outfit when a ray along its normal (from just under the skin) meets
+    none of its garments within `ray` and it does not lie under one of them
+    (POKE, REACH: the folds of the armpits, where the normals turn inwards,
+    and the skin touching the cloth). Kept: the bare skin, and the skin
+    within SKIN_MARGIN of it along the body."""
     bm = bmesh.new()
     bm.from_mesh(body.data)
     bm.normal_update()
-    covered = set()
-    for v in bm.verts:
-        if keep and keep(v):
+    trees = {}
+    bare = set()
+    for names in outfits.DRESS.values():
+        for n in names:
+            if n not in trees:
+                trees[n] = garment_tree(pieces[n])
+        whole = world_bvh([pieces[n] for n in names])
+        for v in bm.verts:
+            if v in bare or whole.ray_cast(v.co - v.normal * 0.001, v.normal, ray)[0] is not None:
+                continue
+            under = False
+            for tree, near_rim in (trees[n] for n in names):
+                loc, fn, i, _ = tree.find_nearest(v.co, REACH)
+                if loc is not None and i not in near_rim and (v.co - loc).dot(fn) < POKE:
+                    under = True
+                    break
+            if not under:
+                bare.add(v)
+    # the margin: shortest paths along the edges from the bare skin
+    dist = {v: 0.0 for v in bare}
+    heap = [(0.0, v.index, v) for v in bare]
+    heapq.heapify(heap)
+    while heap:
+        d, _, v = heapq.heappop(heap)
+        if d > dist[v]:
             continue
-        hit = tree.ray_cast(v.co + v.normal * 0.001, v.normal, max_dist)
-        if hit[0] is not None:
-            covered.add(v)
-    faces = [f for f in bm.faces if all(v in covered for v in f.verts)]
+        for e in v.link_edges:
+            w = e.other_vert(v)
+            dw = d + e.calc_length()
+            if dw < SKIN_MARGIN and dw < dist.get(w, SKIN_MARGIN):
+                dist[w] = dw
+                heapq.heappush(heap, (dw, w.index, w))
+    faces = [f for f in bm.faces if not any(v in dist for v in f.verts)]
     bmesh.ops.delete(bm, geom=faces, context='FACES_ONLY')
     loose = [v for v in bm.verts if not v.link_faces]
     bmesh.ops.delete(bm, geom=loose, context='VERTS')
     bm.to_mesh(body.data)
     bm.free()
+    print(f'skin: {len(bare)} points bare in some outfit, {len(dist)} kept')
 
 
 def decimate(obj, ratio, name):
@@ -544,21 +606,16 @@ def build():
     pieces.update(coif.build_all(pieces, human, rig, helpers))
     pieces.update(hood.build_all(pieces, worn.pop('Hood'), human, rig, helpers))
 
-    # the visible skin: head, neck and hands (everything under the clothes is
-    # removed; the basic tight clothes are what every outfit covers at least)
+    # the visible skin: head, neck and hands, and what an outfit leaves bare
     body = extract(human, ['body'], 'Body')
-    covers = [basic['Shirt'], basic['Skirt'], basic['Belt'], pieces['Hose'], pieces['Boots']]
-    L = garments.L
-    # keep the skin where clothes meet or open up (waist, neck): if they part
-    # in some pose, skin shows instead of a hole
-    delete_covered(body, covers, keep=lambda v: abs(v.co.z - (L['belt_top'] - 0.02)) < 0.07 or v.co.z > L['neck'] - 0.1)
+    delete_hidden(body, pieces)
     set_material(body, 'skin')
     shade_smooth(body)
     # (after the covered skin is gone: it is found under the hose as it was)
     conform.shrink_hose(pieces['Hose'])
     store_fit(rig, human, scalp)
     helmet_objs = helmets.build_all(human, rig, garments.L)
-    for obj in [scalp, human] + list(basic.values()):
+    for obj in (scalp, human):
         bpy.data.objects.remove(obj)
     common = {'Body': body, **fitted}
     for name, obj in pieces.items():

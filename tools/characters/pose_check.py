@@ -10,8 +10,15 @@ within 12 cm) and, per frame, how many of them end up outside the outer
 surface by more than 1 mm / 3 mm (not counted where the outer layer's hit
 is next to its open edge: a hem or a cuff lifting is no poke). The sum over
 the pairs of the worst frame (3 mm), for the clips and for the procedural
-poses, is checked against LIMITS (the Norse pairs apart, NORSE_LIMITS): the
-exit status is 1 when one is over (run it after each build).
+poses, is checked against LIMITS (the Norse pairs apart, NORSE_LIMITS).
+
+Holes: the body's skin is removed where no outfit shows it, so in each
+outfit (outfits.DRESS) the edge of what is left must stay out of sight: the
+points of that edge seen from outside (along a direction within 60 degrees
+of the skin's normal nothing of the body or the outfit is in the way for
+30 cm; the skin through the cloth is counted above instead), the worst
+frame summed over the outfits, against HOLE_LIMITS. The exit status is 1
+when any total is over (run it after each build).
 """
 import json
 import math
@@ -22,6 +29,9 @@ import bpy  # noqa: I001
 import bmesh
 from mathutils import Quaternion, Vector
 from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
+
+import outfits
 
 GLB, OUT = sys.argv[1], sys.argv[2]
 LOD = sys.argv[3] if len(sys.argv) > 3 else '0'
@@ -57,10 +67,17 @@ PAIRS = {
 NORSE = {pair for look, pairs in PAIRS.items() if look.startswith('norse') for pair in pairs}
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
-# (measured with the hems found on welded points, 10 % over; most are the
-# skin kept at the neck and the waist, through the garments with the arms up)
-LIMITS = {'0': (108, 48), '1': (75, 46), '2': (55, 68)}
-NORSE_LIMITS = {'0': (10, 11), '1': (20, 12), '2': (33, 18)}
+# (measured with the hems found on welded points, 10 % over and at least 2;
+# most are where the garments' own layers meet: the coats, the plates and the
+# coif's mantle over the hauberk, the cuffs over the gloves and the hands, the
+# jerkin over the tunic, the hauberk's skirt over the hose and the trousers;
+# far away also the coarse collars and cuffs over the skin kept under them)
+LIMITS = {'0': (82, 14), '1': (42, 15), '2': (42, 18)}
+NORSE_LIMITS = {'0': (11, 2), '1': (15, 4), '2': (35, 5)}
+# the most points of the skin's edge seen through an outfit, summed over the
+# outfits (clips, procedural poses; measured the same way: no skin kept round
+# the bare skin gives 177 and 177 near by)
+HOLE_LIMITS = {'0': (26, 26), '1': (61, 24), '2': (51, 48)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -136,6 +153,46 @@ def edge_faces(o):
 
 
 EDGE = {n: edge_faces(o) for n, o in objs.items() if n != 'Common'}
+
+
+def skin_rim():
+    """The edge of the body's skin (where the hidden skin was removed), one
+    point per welded position; not where the hands were cut off (the hands'
+    piece goes on there)."""
+    me = objs['Common'].data
+    body = MASK['Body']
+    key = [tuple(round(c, 5) for c in v.co) for v in me.vertices]
+    count = {}
+    for p in me.polygons:
+        if not all(body[i] for i in p.vertices):
+            continue
+        n = len(p.vertices)
+        for i in range(n):
+            k = tuple(sorted((key[p.vertices[i]], key[p.vertices[(i + 1) % n]])))
+            count[k] = count.get(k, 0) + 1
+    ring = {c for k, n in count.items() if n == 1 for c in k}
+    hands = objs.get('Hands')
+    kd = None
+    if hands is not None:
+        kd = KDTree(len(hands.data.vertices))
+        for v in hands.data.vertices:
+            kd.insert(v.co, v.index)
+        kd.balance()
+    out, seen = [], set()
+    for i, v in enumerate(me.vertices):
+        if body[i] and key[i] in ring and key[i] not in seen and (kd is None or kd.find(v.co)[2] > 0.003):
+            seen.add(key[i])
+            out.append(i)
+    return out
+
+
+RIM = skin_rim()
+DRESS = {look: names for look, names in outfits.DRESS.items() if all(n in objs for n in names)}
+# directions to look at the skin's edge from (spread evenly over the sphere)
+GOLDEN = math.pi * (3 - math.sqrt(5))
+DIRS = [Vector((math.sqrt(1 - z * z) * math.cos(k * GOLDEN), math.sqrt(1 - z * z) * math.sin(k * GOLDEN), z))
+        for k, z in ((k, 1 - 2 * (k + 0.5) / 96) for k in range(96))]
+log('skin edge points', len(RIM), 'outfits', len(DRESS))
 
 # ---- rest: which inner vertices each outer layer covers
 covered = {}
@@ -259,6 +316,7 @@ for clip, step in CLIPS:
 POSES += [(p, 0) for p in PROCEDURAL]
 
 results = {}
+holes = {}
 for clip, f in POSES:
     clear_pose()
     if clip in PROCEDURAL:
@@ -306,6 +364,35 @@ for clip, f in POSES:
         r['sum1'] += n1
         r['frames'] += 1
         r['worst_mm'] = round(max(r['worst_mm'], worst * 1000), 1)
+    # holes: the skin's edge seen through each outfit
+    if RIM:
+        co, no = cache['Body'] if 'Body' in cache else coords(SRC['Body'], True)
+        body_tree = tree_of(SRC['Body'], True)
+        for look, names in DRESS.items():
+            if clip == 'ride' and look.startswith('norse'):
+                continue
+            tr = []
+            for n in names:
+                if n not in trees:
+                    trees[n] = tree_of(objs[n], True)
+                tr.append(trees[n])
+            seen = 0
+            for i in RIM:
+                p, n = co[i], no[i]
+                # (the cloth right behind it: the skin is through, not bare)
+                if any(t.ray_cast(p, -n, 0.03)[0] is not None for t in tr):
+                    continue
+                for d in DIRS:
+                    if d.dot(n) < 0.5:
+                        continue
+                    q = p + d * 0.002
+                    if body_tree.ray_cast(q, d, 0.3)[0] is None and all(t.ray_cast(q, d, 0.3)[0] is None for t in tr):
+                        seen += 1
+                        break
+            group = 'procedural' if clip in PROCEDURAL else 'clips'
+            h = holes.setdefault(look, {'clips': [0, None], 'procedural': [0, None]})[group]
+            if seen > h[0]:
+                h[:] = [seen, f'{clip}:{f}']
     log('pose', clip, f)
 
 # the sum over the pairs of the worst frame, clips and procedural poses (the
@@ -322,12 +409,21 @@ for pair, clips in sorted(results.items()):
         into[g] += worst[g]
     if worst['clips'] or worst['procedural']:
         print(f'{pair:20s} clips {worst["clips"]:4d}  procedural {worst["procedural"]:4d}')
+hole_total = {'clips': 0, 'procedural': 0}
+for look, h in holes.items():
+    for g in hole_total:
+        hole_total[g] += h[g][0]
+    if h['clips'][0] or h['procedural'][0]:
+        print(f'holes {look:16s} clips {h["clips"][0]:4d} ({h["clips"][1]})  procedural {h["procedural"][0]:4d} ({h["procedural"][1]})')
 limit = dict(zip(('clips', 'procedural'), LIMITS.get(LOD, LIMITS['2'])))
 norse_limit = dict(zip(('clips', 'procedural'), NORSE_LIMITS.get(LOD, NORSE_LIMITS['2'])))
 print(f'LOD{LOD}: clips {total["clips"]} (limit {limit["clips"]}), procedural {total["procedural"]} (limit {limit["procedural"]})')
 print(f'LOD{LOD} Norse: clips {norse["clips"]} (limit {norse_limit["clips"]}), procedural {norse["procedural"]} (limit {norse_limit["procedural"]})')
+hole_limit = dict(zip(('clips', 'procedural'), HOLE_LIMITS.get(LOD, HOLE_LIMITS['2'])))
+print(f'LOD{LOD} holes: clips {hole_total["clips"]} (limit {hole_limit["clips"]}), procedural {hole_total["procedural"]} (limit {hole_limit["procedural"]})')
 with open(OUT, 'w') as fh:
     json.dump({'glb': GLB, 'lod': LOD, 'poses': len(POSES), 'total': total, 'limit': limit, 'norse': norse,
-               'norse_limit': norse_limit, 'results': results}, fh, indent=1)
+               'norse_limit': norse_limit, 'holes': hole_total, 'hole_limit': hole_limit, 'hole_outfits': holes,
+               'results': results}, fh, indent=1)
 log('wrote', OUT)
-sys.exit(1 if any(total[g] > limit[g] or norse[g] > norse_limit[g] for g in total) else 0)
+sys.exit(1 if any(total[g] > limit[g] or norse[g] > norse_limit[g] or hole_total[g] > hole_limit[g] for g in total) else 0)

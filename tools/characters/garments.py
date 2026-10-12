@@ -6,7 +6,6 @@ import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
-UPPER = {'spine_01', 'spine_02', 'spine_03', 'neck_01', 'clavicle_l', 'clavicle_r', 'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r'}
 LEGS = {'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r', 'ball_l', 'ball_r'}
 
 H = None  # helper functions from build_soldier
@@ -185,21 +184,6 @@ def build_all(human, rig, helpers):
     axis_y = rig.data.bones['pelvis'].head_local.y
     # the belt sits at the height of the front of the skirt helper's waist band
     L['belt_top'] = max(v.co.z for v in shell_verts(human, 'helper-skirt') if v.co.y < axis_y - 0.07) + 0.004
-    neck = rig.data.bones['neck_01'].head_local
-
-    def neckline(co):
-        # a round neck opening: low in front, at the base of the neck behind
-        d = math.hypot(co.x, co.y - neck.y)
-        if d > 0.14:
-            return True
-        front = max(0.0, min(1.0, (neck.y - co.y) / 0.08))
-        return co.z < L['neck'] - 0.012 - 0.055 * front
-
-    shirt = split_shell(human, rig, 'helper-tights', 'Shirt',
-                        lambda v, b, co: co.z > L['belt_top'] - 0.1 and b in UPPER | {'pelvis'} and neckline(co))
-    H['offset'](shirt, 0.004)
-    relax_edges(shirt, 4)
-    parts['Shirt'] = shirt
 
     hose = split_shell(human, rig, 'helper-tights', 'Hose', lambda v, b, co: co.z < L['waist'] + 0.02 and (b in LEGS or b == 'pelvis'))
     H['offset'](hose, 0.002)
@@ -214,23 +198,9 @@ def build_all(human, rig, helpers):
     relax_edges(shoes, 4)
     parts['Shoes'] = shoes
 
-    skirt = split_shell(human, rig, 'helper-skirt', 'Skirt', lambda v, b, co: co.z > L['hem'])
-    H['offset'](skirt, 0.018)
-    # the skirt starts under the belt with a level top edge
-    belt_top = L['belt_top']
-    top = belt_top - 0.012
-    for v in skirt.data.vertices:
-        v.co.z = min(v.co.z, top)
-    flare(skirt, top, L['hem'], axis_y, 0.45)
-    slit_top = L['hem'] + 0.68 * (top - L['hem'])
-    slit(skirt, axis_y, slit_top)
-    reweight_skirt(skirt, top, L['hem'], slit_top)
-    parts['Skirt'] = skirt
-    parts['Belt'] = make_belt([shirt, skirt], belt_top, axis_y)
-
     parts['Scalp'] = scalp(human)
 
-    for name, mat in [('Shirt', 'shirt'), ('Hose', 'hose'), ('Boots', 'boots'), ('Shoes', 'shoes'), ('Skirt', 'skirt'), ('Belt', 'belt')]:
+    for name, mat in [('Hose', 'hose'), ('Boots', 'boots'), ('Shoes', 'shoes')]:
         H['set_material'](parts[name], mat)
         H['shade_smooth'](parts[name])
     return parts
