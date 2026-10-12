@@ -15,6 +15,9 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
 - **Beard and moustache**: `rehmanpolanski_beard_viking` and `rehmanpolanski_moustache_viking` by
   Rehman Polanski, MakeHuman asset pack bodyparts05 (http://www.makehumancommunity.org/node/2614,
   http://www.makehumancommunity.org/node/2615).
+- **Gloves**: `toigo_gloves_short` by MargaretToigo, MakeHuman asset pack gloves01
+  (http://www.makehumancommunity.org/node/1852); refitted to the soldier, the cuffs pulled in under the
+  sleeves and skinned like the wrist (`tools/characters/build_soldier.py`).
 - **Cloth, leather and armour textures**: ambientCG (https://ambientcg.com): Fabric062 (wool), Fabric008
   (quilted gambeson), Leather014, Chainmail004, Metal038 (bright steel of the weapons), Metal052C (worn iron of
   the plate armour, helmets and chanfron), Metal039 (lamellar), and for the

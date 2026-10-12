@@ -1,5 +1,5 @@
 """MakeHuman community assets used by the soldier: skin, eyes, eyebrows,
-eyelashes, hair and beards (CC0, see assets/characters/CREDITS.md).
+eyelashes, hair, beards and gloves (CC0, see assets/characters/CREDITS.md).
 
 The asset packs are downloaded once into a cache folder, fitted to the body
 with MPFB (which also transfers the skin weights) and their textures are
@@ -16,6 +16,7 @@ PACKS = {
     'makehuman_system_assets': 'makehuman_system_assets_cc0.zip',
     'skins02': 'skins02_cc0.zip',
     'bodyparts05': 'bodyparts05_cc0.zip',
+    'gloves01': 'gloves01_cc0.zip',
 }
 
 SYSTEM = 'makehuman_system_assets'
@@ -30,6 +31,12 @@ FITTED = {
               'clothes/rehmanpolanski_beard_viking/BeardViking.png'),
     'Moustache': ('bodyparts05', 'clothes/rehmanpolanski_moustache_viking/rehmanpolanski_moustache_viking.mhclo', 'Clothes',
                   'clothes/rehmanpolanski_moustache_viking/MoustacheViking.png'),
+}
+
+# garments from the packs (pieces of the outfits, coloured by the game's
+# tiles, so their textures are not used): part name -> (pack, mhclo file)
+GARMENTS = {
+    'Gloves': ('gloves01', 'clothes/toigo_gloves_short/toigo_gloves_short.mhclo'),
 }
 
 SKINS = {
@@ -83,6 +90,21 @@ def fit(hs, human, cache):
     out = {}
     for name, (pack, mhclo, kind, _) in FITTED.items():
         obj = hs.add_mhclo_asset(pack_file(cache, pack, mhclo), human, asset_type=kind, subdiv_levels=0, material_type='NONE')
+        obj.name = name
+        obj.data.name = name
+        for m in list(obj.modifiers):
+            if m.type != 'ARMATURE':
+                obj.modifiers.remove(m)
+        out[name] = obj
+    return out
+
+
+def fit_garments(hs, human, cache):
+    """Fit the garments of GARMENTS to the body (skinned to the same rig).
+    Returns {part name: object}."""
+    out = {}
+    for name, (pack, mhclo) in GARMENTS.items():
+        obj = hs.add_mhclo_asset(pack_file(cache, pack, mhclo), human, asset_type='Clothes', subdiv_levels=0, material_type='NONE')
         obj.name = name
         obj.data.name = name
         for m in list(obj.modifiers):

@@ -308,6 +308,10 @@ function palette(spec) {
     Coif: mail,
     Hose: look === 'plate' || look === 'mail' || look === 'brigandine' ? mail : tiled('wool', clothColor(spec.pants, spec.fade * 0.5, spec.shade)),
     Boots: tiled('leather', '#b0a090'),
+    Shoes: tiled('leather', '#b0a090'),
+    Hands: surface(skin, 0.55),
+    // mail mittens, a knight's gauntlets, leather gloves
+    Gloves: look === 'mail' ? mail : look === 'plate' ? plate : tiled('leather', '#6a5444'),
     Belt: tiled('leather', '#8a7a6a'),
     Hair: surface(hair, 0.7),
     Beard: surface(hair, 0.7),
@@ -318,34 +322,46 @@ function palette(spec) {
   };
 }
 
-// The garments of each armour look (see tools/characters/outfits.py)
+// The garments of each armour look (see tools/characters/outfits.py); the
+// coif, the feet and the hands are added by outfitOf
 const OUTFITS = {
-  cloth: ['Tunic', 'Belt-Tunic', 'Hose', 'Boots'],
-  padded: ['Gambeson', 'Belt-Gambeson', 'Hose', 'Boots'],
-  leather: ['Tunic', 'Jerkin', 'Belt-Jerkin', 'Hose', 'Boots'],
-  mail: ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose', 'Boots'],
-  lamellar: ['Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
-  brigandine: ['Hauberk', 'Cuirass', 'Belt-Cuirass', 'Hose', 'Boots'],
+  cloth: ['Tunic', 'Belt-Tunic', 'Hose'],
+  padded: ['Gambeson', 'Belt-Gambeson', 'Hose'],
+  leather: ['Tunic', 'Jerkin', 'Belt-Jerkin', 'Hose'],
+  mail: ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Hose'],
+  lamellar: ['Tunic', 'Cuirass', 'Belt-Cuirass', 'Hose'],
+  brigandine: ['Hauberk', 'Cuirass', 'Belt-Cuirass', 'Hose'],
   // a knight of c. 1330-60: mail, plates on the arms and legs, a jupon over
   // the plates of the chest
-  plate: ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Hose', 'Boots'],
-  // with a mail coif, its mantle over the outer garment (tools/characters/coif.py)
-  'mail+coif': ['Hauberk', 'Surcoat', 'Belt-Surcoat', 'Coif-Surcoat', 'Hose', 'Boots'],
-  'plate+coif': ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Coif-Jupon', 'Hose', 'Boots'],
+  plate: ['Hauberk', 'Plates', 'Jupon', 'Belt-Jupon', 'Hose'],
 };
+// a mail coif, its mantle over the outer garment (tools/characters/coif.py)
+const COIF = { mail: 'Coif-Surcoat', plate: 'Coif-Jupon' };
 // helmets with their own mail (an aventail): no coif under them
 const AVENTAIL = new Set(['spangen', 'spiked']);
+// armour worn with gloves (mail mittens, gauntlets, leather), and the
+// clothes worn with low shoes (the rest with boots)
+const GLOVED = new Set(['mail', 'lamellar', 'brigandine', 'plate']);
+const SHOD = new Set(['cloth', 'padded']);
 
-// The outfit of a soldier: the look of the armour, with a mail coif if the
-// armour has one, the helmet leaves room for it and the model has it.
+// The outfit of a soldier: the garments of the armour's look, a mail coif if
+// the armour has one and the helmet leaves room for it, shoes or boots (the
+// riders of the steppe keep their boots) and bare or gloved hands. Pieces a
+// model does not have are left out (an older model has the hands in the
+// body and no shoes).
+const outfitList = new Map();
 function outfitOf(spec) {
-  const look = spec.look || 'cloth';
-  const key = `${look}+coif`;
-  if (!spec.coif || AVENTAIL.has(spec.helmet) || !OUTFITS[key]) return look;
-  return OUTFITS[key].every((n) => state.t.pieces[n]) ? key : look;
+  const has = (n) => !!state.t.pieces[n];
+  const look = OUTFITS[spec.look] ? spec.look : 'cloth';
+  const coif = spec.coif && !AVENTAIL.has(spec.helmet) && COIF[look] && has(COIF[look]) ? COIF[look] : null;
+  const feet = SHOD.has(look) && spec.faction !== 'kaganate' && has('Shoes') ? 'Shoes' : 'Boots';
+  const hands = GLOVED.has(look) && has('Gloves') ? 'Gloves' : 'Hands';
+  const key = [look, coif || '', feet, hands].join(':');
+  if (!outfitList.has(key)) outfitList.set(key, [...OUTFITS[look], ...(coif ? [coif] : []), feet, hands]);
+  return { key, coif: !!coif };
 }
 
-// The head and hands with the garments of `look`, for one level of detail;
+// The head with the pieces of an outfit (outfitOf), for one level of detail;
 // the farthest (FAR_LEVEL) is the far one simplified further here.
 const outfits = new Map();
 const FAR_LEVEL = 3;
@@ -353,16 +369,16 @@ const FAR_LEVEL = 3;
 const FAR_SHARE = 0.2;
 const FAR_ERROR = 0.04;
 
-function outfitGeometry(look, level) {
+function outfitGeometry(outfit, level) {
   const t = state.t;
-  const key = `${look}:${level}`;
+  const key = `${outfit}:${level}`;
   let geo = outfits.get(key);
   if (geo !== undefined) return geo;
   if (level === FAR_LEVEL) {
-    const far = outfitGeometry(look, FAR_LEVEL - 1);
+    const far = outfitGeometry(outfit, FAR_LEVEL - 1);
     geo = far && simplified(far, FAR_SHARE, FAR_ERROR);
   } else {
-    const names = (OUTFITS[look] || OUTFITS.cloth).filter((n) => t.pieces[n] && t.pieces[n][level]);
+    const names = outfitList.get(outfit).filter((n) => t.pieces[n] && t.pieces[n][level]);
     geo = names.length ? mergeGeometries([t.common[level], ...names.map((n) => t.pieces[n][level])]) : null;
   }
   outfits.set(key, geo);
@@ -379,7 +395,7 @@ function soldierLook(owner, spec, hidden) {
   const stubble = spec.stubble && layers && 'skin_stubble' in layers.index;
   return partLook(owner, { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud }, {
     palette: palette(spec),
-    layerOf: (name) => (name === 'Body' && stubble ? 'skin_stubble' : t.partLayers[name]),
+    layerOf: (name) => ((name === 'Body' || name === 'Hands') && stubble ? 'skin_stubble' : t.partLayers[name]),
     cards: CARDS,
     hidden,
   });
@@ -523,17 +539,17 @@ export class SkinnedHuman {
     if (spec.beard !== 'full') hide.add('Beard');
     if (!spec.beard) hide.add('Moustache');
     if (this.helmet) hide.add('Hair');
-    if (outfit.endsWith('+coif')) hide.add('Hair').add('Beard');
+    if (outfit.coif) hide.add('Hair').add('Beard');
     const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
     // the farthest level, made at run time (outfitGeometry)
-    const far = outfitGeometry(outfit, FAR_LEVEL);
+    const far = outfitGeometry(outfit.key, FAR_LEVEL);
     if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Soldier_LOD${FAR_LEVEL}`);
     // the levels of detail share one skeleton: one bone update and one bone
     // texture per soldier
     const shared = this.lod[0].skeleton;
     this.lod.forEach((o, level) => {
       if (o.skeleton !== shared) o.bind(shared, o.bindMatrix);
-      o.geometry = outfitGeometry(outfit, level) || o.geometry;
+      o.geometry = outfitGeometry(outfit.key, level) || o.geometry;
       o.material = mat;
       o.customDepthMaterial = mat.userData.depth;
       // shadows: cast by a lighter level (shadowStandIn, setLod)

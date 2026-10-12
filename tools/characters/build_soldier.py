@@ -11,7 +11,7 @@ without them the model only has the standing clips.)
 
 The body, its skeleton and skin weights and the helper shells used for the
 clothes come from MakeHuman / MPFB; the skin texture, eyes, eyebrows,
-eyelashes, hair and beards from MakeHuman asset packs and the tileable cloth
+eyelashes, hair, beards and gloves from MakeHuman asset packs and the tileable cloth
 and armour textures from ambientCG (all CC0, downloaded into --cache, see
 mhassets.py and materials.py). The clothes, helmets, ambient occlusion and
 three levels of detail are generated here; each level is exported as one mesh whose vertices name their
@@ -27,6 +27,7 @@ import sys
 import bpy  # noqa: I001  (must come first: it provides the modules below)
 import addon_utils
 import bmesh
+import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
@@ -253,10 +254,12 @@ def store_fit(rig, human, scalp):
     rig['eye_mid'] = to_gltf((le + re) / 2)
 
 
-# the head and hands (in every soldier) and the garments (by outfit)
+# the head (in every soldier) and the garments (by outfit; the bare hands are
+# cut from the body for the outfits without gloves, split_hands)
 COMMON = ['Body', 'Hair', 'Beard', 'Eyes', 'Brows', 'Lashes', 'Moustache']
 # (new parts go at the end: the game's palettes are indexed by these)
-PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Coif']
+PARTS = COMMON + ['Hose', 'Boots', 'Belt', 'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Coif',
+                  'Hands', 'Gloves', 'Shoes']
 PART_IDS = {name: i for i, name in enumerate(PARTS)}
 
 
@@ -269,7 +272,107 @@ def part_of(name):
 DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
 # dense parts simplified already in the near model (the texture carries the detail)
 NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5,
-              'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7, 'Jupon': 0.7}
+              'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7, 'Jupon': 0.7,
+              'Gloves': 0.6}
+
+
+HAND = ('hand_', 'thumb_', 'index_', 'middle_', 'ring_', 'pinky_')
+
+
+def split_hands(body, name):
+    """Cut the hands off a level's body: the faces whose every vertex has
+    some weight on a bone of the hand (or lies past the wrist), as an object
+    of their own, so that gloved outfits leave them out. Run on each level
+    after it is simplified, so that the cut matches. Both halves keep the
+    whole body's normals ('_nrm', see keep_normals): no seam at the wrist."""
+    me = body.data
+    nrm = me.attributes.new('_nrm', 'FLOAT_VECTOR', 'POINT')
+    nrm.data.foreach_set('vector', [c for v in me.vertices for c in v.normal])
+    names = {g.index: g.name for g in body.vertex_groups}
+
+    def in_hand(v):
+        if any(g.weight > 1e-4 and names.get(g.group, '').startswith(HAND) for g in v.groups):
+            return True
+        side = 'l' if v.co.x > 0 else 'r'
+        return any(names.get(g.group) == 'lowerarm_' + side and g.weight > 0.5 for g in v.groups) and \
+            outfits.along(v.co, 'lowerarm_' + side) > 0.93
+    hand = [in_hand(v) for v in me.vertices]
+    hands = copy_object(body, name)
+    for obj, keep in ((hands, True), (body, False)):
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if all(hand[v.index] for v in f.verts) != keep], context='FACES_ONLY')
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+        bm.to_mesh(obj.data)
+        bm.free()
+    return hands
+
+
+def keep_normals(me):
+    """Normals stored before a cut ('_nrm', split_hands) as the mesh's
+    custom normals (after joining: a join loses them); the other vertices
+    keep their own."""
+    a = me.attributes.get('_nrm')
+    if a is None:
+        return
+    keep = np.zeros(len(me.vertices) * 3)
+    a.data.foreach_get('vector', keep)
+    keep = keep.reshape(-1, 3)
+    me.attributes.remove(a)
+    loops = np.zeros(len(me.loops), dtype=np.int32)
+    me.loops.foreach_get('vertex_index', loops)
+    own = np.zeros(len(me.loops) * 3)
+    me.corner_normals.foreach_get('vector', own)
+    own = own.reshape(-1, 3)
+    k = keep[loops]
+    use = np.where((np.linalg.norm(k, axis=1) > 0.5)[:, None], k, own)
+    cn = me.attributes.new('custom_normal', 'FLOAT_VECTOR', 'CORNER')
+    cn.data.foreach_set('vector', use.ravel())
+
+
+def fit_cuffs(gloves, human, rig, gap=0.002, top=1.0, blend=(1.1, 1.2)):
+    """The gloves' cuffs (up the forearm from the wrist, `top` along it)
+    pulled in to at most `gap` over the skin, and the gloves round the wrist
+    skinned like the skin under them (fully up to blend[0] along the
+    forearm, none from blend[1]): they stay inside the sleeves, which follow
+    the skin, when the wrist bends."""
+    body = extract(human, ['body'], 'CuffBody')
+    tree = world_bvh([body])
+    mask = gloves.vertex_groups.new(name='cuff_mask')
+    moved = 0
+    for v in gloves.data.vertices:
+        side = 'l' if v.co.x > 0 else 'r'
+        t = outfits.along(v.co, 'lowerarm_' + side)
+        mask.add([v.index], max(0.0, min(1.0, (blend[1] - t) / (blend[1] - blend[0]))), 'REPLACE')
+        if t >= top:
+            continue
+        loc, n, _, _ = tree.find_nearest(v.co, 0.05)
+        if loc is None:
+            continue
+        s = (v.co - loc).dot(n)
+        if s > gap:
+            v.co = loc + n * gap
+            moved += 1
+    for g in body.vertex_groups:
+        if g.name in rig.data.bones and g.name not in gloves.vertex_groups:
+            gloves.vertex_groups.new(name=g.name)
+    m = gloves.modifiers.new('DT', 'DATA_TRANSFER')
+    m.object = body
+    m.use_vert_data = True
+    m.data_types_verts = {'VGROUP_WEIGHTS'}
+    m.vert_mapping = 'POLYINTERP_NEAREST'
+    m.layers_vgroup_select_src = 'ALL'
+    m.layers_vgroup_select_dst = 'NAME'
+    m.mix_mode = 'REPLACE'
+    m.mix_factor = 1.0
+    m.vertex_group = 'cuff_mask'
+    bpy.context.view_layer.objects.active = gloves
+    while gloves.modifiers[0].name != 'DT':
+        bpy.ops.object.modifier_move_up(modifier='DT')
+    bpy.ops.object.modifier_apply(modifier='DT')
+    gloves.vertex_groups.remove(gloves.vertex_groups['cuff_mask'])
+    bpy.data.objects.remove(body)
+    print('glove cuffs: squeezed', moved, 'points')
 
 
 def merge_parts(objs, name):
@@ -300,6 +403,7 @@ def merge_parts(objs, name):
     merged = bpy.context.view_layer.objects.active
     merged.name = name
     merged.data.name = name
+    keep_normals(merged.data)
     mat = bpy.data.materials.get('soldier') or bpy.data.materials.new('soldier')
     merged.data.materials.clear()
     merged.data.materials.append(mat)
@@ -379,6 +483,7 @@ def build():
 
     mhassets.fetch(ARGS.cache)
     fitted = mhassets.fit(hs, human, ARGS.cache)
+    worn = mhassets.fit_garments(hs, human, ARGS.cache)
 
     helpers = {
         'extract': extract, 'offset': offset, 'smooth_verts': smooth_verts, 'set_material': set_material,
@@ -390,6 +495,11 @@ def build():
     pieces = outfits.build_all(human, rig, helpers)
     pieces['Hose'] = basic.pop('Hose')
     pieces['Boots'] = basic.pop('Boots')
+    pieces['Shoes'] = basic.pop('Shoes')
+    pieces['Gloves'] = worn['Gloves']
+    fit_cuffs(pieces['Gloves'], human, rig)
+    set_material(pieces['Gloves'], 'gloves')
+    shade_smooth(pieces['Gloves'])
     # each layer fitted onto the one under it, then the belts round them
     conform.run(pieces, human, rig, helpers, hose=pieces['Hose'], boots=pieces['Boots'])
     pieces.update(outfits.belts(pieces, rig.data.bones['pelvis'].head_local.y))
@@ -447,8 +557,8 @@ def build():
     for obj in helmet_objs.values():
         obj.hide_render = False
 
-    # levels of detail. The head and hands of each level are one mesh
-    # (Soldier_LOD<n>), each garment another (Piece_<name>_LOD<n>); the game
+    # levels of detail. The head of each level is one mesh (Soldier_LOD<n>),
+    # each garment and the bare hands another (Piece_<name>_LOD<n>); the game
     # joins them into one mesh per outfit, so a soldier is a single draw
     # call. Each vertex remembers which part it belongs to (_PART) for the
     # game's palette. Small parts are copied as they are, some are left out
@@ -461,10 +571,13 @@ def build():
                 continue
             lod = f'{name}_LOD{level}'
             levels[level][name] = copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod)
+    # the hands, a piece of their own (bare-handed outfits; the others wear gloves)
+    for level, objs in levels.items():
+        objs['Hands'] = split_hands(objs['Body'], f'Hands_LOD{level}')
     parts = {}
     for level, objs in levels.items():
         parts[f'Soldier_LOD{level}'] = merge_parts([o for n, o in objs.items() if n in common], f'Soldier_LOD{level}')
-        for name in pieces:
+        for name in list(pieces) + ['Hands']:
             parts[f'Piece_{name}_LOD{level}'] = merge_parts([objs[name]], f'Piece_{name}_LOD{level}')
     for name, obj in parts.items():
         print(f'{name:24s} {tri_count(obj):6d} tris')
@@ -485,7 +598,7 @@ def build():
                       'repeat': {name: round(1 / metres, 3) for name, (_, _, metres, _) in materials.TILES.items()}},
         }, f, indent=1)
     rig['parts'] = PARTS
-    rig['part_layers'] = {part: layer for part, (layer, _) in mhassets.PLACE.items()}
+    rig['part_layers'] = {**{part: layer for part, (layer, _) in mhassets.PLACE.items()}, 'Hands': 'skin'}
 
     os.makedirs(os.path.dirname(os.path.abspath(ARGS.out)), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')

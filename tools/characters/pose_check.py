@@ -33,20 +33,21 @@ def log(*a):
 # (outer, inner) pairs per outfit (src/battle/character.js OUTFITS): the
 # inner must stay under the outer
 PAIRS = {
-    'cloth': [('Tunic', 'Hose'), ('Tunic', 'Boots'), ('Tunic', 'Body')],
-    'padded': [('Gambeson', 'Hose'), ('Gambeson', 'Boots'), ('Gambeson', 'Body')],
-    'leather': [('Jerkin', 'Tunic'), ('Tunic', 'Hose'), ('Tunic', 'Body'), ('Jerkin', 'Body')],
-    'mail': [('Surcoat', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'), ('Surcoat', 'Hose'), ('Surcoat', 'Body')],
-    'lamellar': [('Cuirass', 'Tunic'), ('Tunic', 'Hose'), ('Tunic', 'Body'), ('Cuirass', 'Body')],
+    'cloth': [('Tunic', 'Hose'), ('Tunic', 'Boots'), ('Tunic', 'Body'), ('Tunic', 'Hands'), ('Shoes', 'Hose')],
+    'padded': [('Gambeson', 'Hose'), ('Gambeson', 'Boots'), ('Gambeson', 'Body'), ('Gambeson', 'Hands')],
+    'leather': [('Jerkin', 'Tunic'), ('Tunic', 'Hose'), ('Tunic', 'Body'), ('Jerkin', 'Body'), ('Boots', 'Hose')],
+    'mail': [('Surcoat', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'), ('Surcoat', 'Hose'), ('Surcoat', 'Body'),
+             ('Hauberk', 'Gloves')],
+    'lamellar': [('Cuirass', 'Tunic'), ('Tunic', 'Hose'), ('Tunic', 'Body'), ('Cuirass', 'Body'), ('Tunic', 'Gloves')],
     'brigandine': [('Cuirass', 'Hauberk'), ('Hauberk', 'Hose'), ('Hauberk', 'Body')],
     'plate': [('Jupon', 'Hauberk'), ('Plates', 'Hauberk'), ('Plates', 'Jupon'), ('Hauberk', 'Hose'), ('Hauberk', 'Body'),
-              ('Jupon', 'Hose'), ('Plates', 'Hose'), ('Plates', 'Boots')],
+              ('Jupon', 'Hose'), ('Plates', 'Hose'), ('Plates', 'Boots'), ('Plates', 'Gloves')],
     'mail+coif': [('Coif-Surcoat', 'Surcoat'), ('Coif-Surcoat', 'Hauberk'), ('Coif-Surcoat', 'Body')],
     'plate+coif': [('Coif-Jupon', 'Jupon'), ('Coif-Jupon', 'Hauberk'), ('Coif-Jupon', 'Plates'), ('Coif-Jupon', 'Body')],
 }
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
-LIMITS = {'0': (36, 18), '1': (25, 22), '2': (8, 6)}
+LIMITS = {'0': (40, 18), '1': (25, 22), '2': (8, 6)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)

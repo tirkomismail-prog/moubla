@@ -177,7 +177,7 @@ export class UI {
     const a = (href, text) => h('a', { href, target: '_blank', rel: 'noopener' }, text || href);
     const item = (title, ...rest) => h('p', null, h('b', null, title), ' — ', ...rest);
     const body = h('div', { class: 'credits' },
-      item('Тіла, скелет, шкіра, очі, волосся', 'MakeHuman / MPFB 2 і пакети MakeHuman (зокрема jartur69, Rehman Polanski), ',
+      item('Тіла, скелет, шкіра, очі, волосся, рукавиці', 'MakeHuman / MPFB 2 і пакети MakeHuman (зокрема jartur69, Rehman Polanski, MargaretToigo), ',
         a('https://creativecommons.org/publicdomain/zero/1.0/', 'CC0'), '.'),
       item('Стояння воїнів', 'Open Motion Project by ACCAD, The Ohio State University (',
         a('https://accad.osu.edu/research/motion-lab/mocap-system-and-data', 'accad.osu.edu'), '), ',

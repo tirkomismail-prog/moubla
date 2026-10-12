@@ -208,6 +208,11 @@ def build_all(human, rig, helpers):
     boots = split_shell(human, rig, 'helper-tights', 'Boots', lambda v, b, co: co.z < L['boot'] and b in LEGS)
     H['offset'](boots, 0.009)
     parts['Boots'] = boots
+    # low shoes (turnshoes, to just over the ankle)
+    shoes = split_shell(human, rig, 'helper-tights', 'Shoes', lambda v, b, co: co.z < L['ankle'] + 0.05 and b in LEGS)
+    H['offset'](shoes, 0.009)
+    relax_edges(shoes, 4)
+    parts['Shoes'] = shoes
 
     skirt = split_shell(human, rig, 'helper-skirt', 'Skirt', lambda v, b, co: co.z > L['hem'])
     H['offset'](skirt, 0.018)
@@ -225,7 +230,7 @@ def build_all(human, rig, helpers):
 
     parts['Scalp'] = scalp(human)
 
-    for name, mat in [('Shirt', 'shirt'), ('Hose', 'hose'), ('Boots', 'boots'), ('Skirt', 'skirt'), ('Belt', 'belt')]:
+    for name, mat in [('Shirt', 'shirt'), ('Hose', 'hose'), ('Boots', 'boots'), ('Shoes', 'shoes'), ('Skirt', 'skirt'), ('Belt', 'belt')]:
         H['set_material'](parts[name], mat)
         H['shade_smooth'](parts[name])
     return parts
