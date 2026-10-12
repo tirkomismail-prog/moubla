@@ -37,6 +37,7 @@ import materials  # noqa: E402
 import mhassets  # noqa: E402
 import mocap  # noqa: E402
 import outfits  # noqa: E402
+import conform  # noqa: E402
 
 ARGS = None
 
@@ -387,6 +388,9 @@ def build():
     pieces = outfits.build_all(human, rig, helpers)
     pieces['Hose'] = basic.pop('Hose')
     pieces['Boots'] = basic.pop('Boots')
+    # each layer fitted onto the one under it, then the belts round them
+    conform.run(pieces, human, rig, helpers, hose=pieces['Hose'], boots=pieces['Boots'])
+    pieces.update(outfits.belts(pieces, rig.data.bones['pelvis'].head_local.y))
 
     # the visible skin: head, neck and hands (everything under the clothes is
     # removed; the basic tight clothes are what every outfit covers at least)
@@ -398,6 +402,8 @@ def build():
     delete_covered(body, covers, keep=lambda v: abs(v.co.z - (L['belt_top'] - 0.02)) < 0.07 or v.co.z > L['neck'] - 0.1)
     set_material(body, 'skin')
     shade_smooth(body)
+    # (after the covered skin is gone: it is found under the hose as it was)
+    conform.shrink_hose(pieces['Hose'])
     store_fit(rig, human, scalp)
     helmet_objs = helmets.build_all(human, rig, garments.L)
     for obj in [scalp, human] + list(basic.values()):

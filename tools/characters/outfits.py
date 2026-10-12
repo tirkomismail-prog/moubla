@@ -247,6 +247,17 @@ def plates(human):
     return join(out, 'Plates')
 
 
+# skirts: (offset over the helper shell, flare at the hem); hang free over
+# the layer under them, which conform.py keeps them clear of
+SKIRTS = {
+    'Tunic': (0.016, 0.36),
+    'Gambeson': (0.028, 0.18),
+    'Hauberk': (0.018, 0.26),
+    'Surcoat': (0.030, 0.38),
+    'Cuirass': (0.032, 0.22),
+}
+
+
 def build_all(human, rig, helpers):
     """Returns {piece name: object}. A piece is one part of the model; belts
     are named 'Belt-<garment they go round>' (glTF loaders drop ':' from names)."""
@@ -255,7 +266,6 @@ def build_all(human, rig, helpers):
     L = G.L
     knee = L['knee']
     below = L['belt_top'] - 0.1  # torso shells reach under the belt and the skirt
-    axis_y = rig.data.bones['pelvis'].head_local.y
     out = {}
 
     def arms(obj, amp):
@@ -263,40 +273,48 @@ def build_all(human, rig, helpers):
         sleeve_folds(obj, amp)
 
     # tunic: knee length, long sleeves, riding slits
+    # (blousing over the belt comes after the fit, conform.py)
     t = torso(human, 'Tunic_top', True, 'round', below, 0.012, (0.01, 0.02))
     arms(t, 0.006)
-    blouse(t, 0.012)
-    out['Tunic'] = join([t, skirt(human, 'Tunic_skirt', L['hem'], 0.024, 0.45, pleats=(12, 0.011))], 'Tunic')
+    out['Tunic'] = join([t, skirt(human, 'Tunic_skirt', L['hem'], *SKIRTS['Tunic'], pleats=(12, 0.011))], 'Tunic')
 
     # gambeson: thick quilted coat to mid-thigh, standing collar
     t = torso(human, 'Gambeson_top', True, 'high', below, 0.024, (0.02, 0.024))
     arms(t, 0.004)
-    out['Gambeson'] = join([t, skirt(human, 'Gambeson_skirt', knee + 0.17, 0.034, 0.22, pleats=(8, 0.006), slits=False)], 'Gambeson')
+    out['Gambeson'] = join([t, skirt(human, 'Gambeson_skirt', knee + 0.17, *SKIRTS['Gambeson'], pleats=(8, 0.006), slits=False)], 'Gambeson')
 
     # mail hauberk: knee length, long sleeves, hangs straight and heavy
     t = torso(human, 'Hauberk_top', True, 'round', below, 0.011, (0.009, 0.012))
     arms(t, 0.004)
-    out['Hauberk'] = join([t, skirt(human, 'Hauberk_skirt', L['hem'] - 0.01, 0.021, 0.3, pleats=(10, 0.005))], 'Hauberk')
+    out['Hauberk'] = join([t, skirt(human, 'Hauberk_skirt', L['hem'] - 0.01, *SKIRTS['Hauberk'], pleats=(10, 0.005))], 'Hauberk')
 
     # surcoat over the hauberk: sleeveless, to mid-calf
     t = torso(human, 'Surcoat_top', False, 'low', below, 0.03)
-    out['Surcoat'] = join([t, skirt(human, 'Surcoat_skirt', knee - 0.2, 0.058, 0.6, pleats=(12, 0.011))], 'Surcoat')
+    out['Surcoat'] = join([t, skirt(human, 'Surcoat_skirt', knee - 0.2, *SKIRTS['Surcoat'], pleats=(12, 0.011))], 'Surcoat')
 
     # leather jerkin over the tunic: sleeveless, to the hips
     out['Jerkin'] = torso(human, 'Jerkin', False, 'low', L['belt_top'] - 0.14, 0.03)
 
     # cuirass (lamellar or plate) with short tassets over the tunic or hauberk
     t = torso(human, 'Cuirass_top', False, 'round', L['belt_top'] - 0.03, 0.05, smooth=4)
-    out['Cuirass'] = join([t, skirt(human, 'Cuirass_skirt', knee + 0.2, 0.05, 0.25)], 'Cuirass')
+    out['Cuirass'] = join([t, skirt(human, 'Cuirass_skirt', knee + 0.2, *SKIRTS['Cuirass'])], 'Cuirass')
 
     out['Plates'] = plates(human)
-
-    for name in ('Tunic', 'Gambeson', 'Surcoat', 'Jerkin', 'Cuirass'):
-        belt = G.make_belt([out[name]], L['belt_top'], axis_y)
-        belt.name = belt.data.name = 'Belt-' + name
-        out['Belt-' + name] = belt
 
     for name, obj in out.items():
         H['set_material'](obj, name.split(':')[0].lower())
         H['shade_smooth'](obj)
     return out
+
+
+def belts(out, axis_y):
+    """A belt round each garment that has one, fitted to it (after
+    conform.py has fitted the garments): {'Belt-<garment>': object}."""
+    made = {}
+    for name in ('Tunic', 'Gambeson', 'Surcoat', 'Jerkin', 'Cuirass'):
+        belt = G.make_belt([out[name]], G.L['belt_top'], axis_y)
+        belt.name = belt.data.name = 'Belt-' + name
+        H['set_material'](belt, 'belt-' + name.lower())
+        H['shade_smooth'](belt)
+        made['Belt-' + name] = belt
+    return made
