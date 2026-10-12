@@ -138,7 +138,11 @@ function prepare(gltf) {
     t.limbs[`arm_${s}`] = limbInfo(bones[`upperarm_${s}`], bones[`lowerarm_${s}`], hand, new THREE.Vector3(1, 0, 0));
     t.limbs[`leg_${s}`] = limbInfo(bones[`thigh_${s}`], bones[`calf_${s}`], bones[`foot_${s}`], new THREE.Vector3(1, 0, 0));
     t.hands[s].fist = fingerPose(bones, s, t.hands[s], 1);
-    t.hands[s].relaxed = fingerPose(bones, s, t.hands[s], 0.35);
+    // a hand at rest: the little finger more curled than the index
+    t.hands[s].relaxed = fingerPose(bones, s, t.hands[s], RELAXED);
+    // round a handle: thin (swords, shield grips) and thicker (axes,
+    // spears, maces, bows; the thickest are held as these)
+    for (const [name, r] of Object.entries(HANDLES)) t.hands[s][name] = wrapPose(bones, s, t.hands[s], r);
   }
   t.shoulder = { l: wpos(bones.upperarm_l), r: wpos(bones.upperarm_r) };
   t.reach = t.limbs.arm_r.a + t.limbs.arm_r.b + bones.middle_01_r.position.length() * 0.9;
@@ -225,20 +229,34 @@ function limbInfo(upper, lower, end, fallback) {
   return { a, b, hinge, lowerDir: u, endDir: end.position.clone().normalize() };
 }
 
-// local rotations of the finger bones for a hand curled by `amount` (1 = fist)
+// the bend of each finger's joints in a fist (radians)
+const FIST = { index: [1.1, 1.3, 0.9], middle: [1.2, 1.35, 0.9], ring: [1.25, 1.35, 0.9], pinky: [1.3, 1.3, 0.9] };
+const THUMB = [0.5, 0.6, 0.5];
+// weapons held by a sword's hilt (the rest by a haft or a bow's grip)
+const HILTS = new Set(['sword', 'sword_long', 'sabre', 'cleaver', 'greatsword']);
+// how much of a fist each finger of a hand at rest is
+const RELAXED = { index: 0.25, middle: 0.35, ring: 0.45, pinky: 0.55, thumb: 0.3 };
+// handle radii (m) the hands close round (models.js: sword grips 16-18 mm,
+// axes, spears, maces and bows 20-24)
+const HANDLES = { hilt: 0.016, haft: 0.02 };
+// from a finger's bone to the skin of its inside
+const FINGER_DEPTH = 0.008;
+
+// local rotations of the finger bones for a hand curled by `amount` (1 =
+// fist; a number, or one per finger and the thumb)
 function fingerPose(bones, s, hand, amount) {
   const out = {};
   const sign = s === 'r' ? 1 : -1;
+  const of = (f) => (typeof amount === 'number' ? amount : amount[f]);
   const handQ = bones[`hand_${s}`].getWorldQuaternion(new THREE.Quaternion());
   const knuckW = hand.knuck.clone().applyQuaternion(handQ);
   const lenW = hand.len.clone().applyQuaternion(handQ);
-  const curls = { index: [1.1, 1.3, 0.9], middle: [1.2, 1.35, 0.9], ring: [1.25, 1.35, 0.9], pinky: [1.3, 1.3, 0.9] };
-  for (const [f, angles] of Object.entries(curls)) {
+  for (const [f, angles] of Object.entries(FIST)) {
     for (let j = 0; j < 3; j++) {
       const b = bones[`${f}_0${j + 1}_${s}`];
       const bw = b.getWorldQuaternion(new THREE.Quaternion());
       const axis = knuckW.clone().applyQuaternion(bw.clone().invert());
-      const rot = new THREE.Quaternion().setFromAxisAngle(axis, sign * angles[j] * amount);
+      const rot = new THREE.Quaternion().setFromAxisAngle(axis, sign * angles[j] * of(f));
       out[b.name] = b.quaternion.clone().multiply(rot);
     }
   }
@@ -247,9 +265,84 @@ function fingerPose(bones, s, hand, amount) {
     const b = bones[`thumb_0${j + 1}_${s}`];
     const bw = b.getWorldQuaternion(new THREE.Quaternion());
     const axis = (j === 0 ? lenW : knuckW).clone().applyQuaternion(bw.clone().invert());
-    const rot = new THREE.Quaternion().setFromAxisAngle(axis, sign * [0.5, 0.6, 0.5][j] * amount);
+    const rot = new THREE.Quaternion().setFromAxisAngle(axis, sign * THUMB[j] * of('thumb'));
     out[b.name] = b.quaternion.clone().multiply(rot);
   }
+  return out;
+}
+
+// Local rotations of the finger bones for a hand round a handle of radius r
+// held at its grip (hand.grip, along the knuckle line): each joint, from the
+// knuckle out, bends until its part of the finger reaches the handle, at most
+// as far as in a fist; the thumb as in a fist, but stopped at the handle too.
+function wrapPose(bones, s, hand, r) {
+  const out = {};
+  const sign = s === 'r' ? 1 : -1;
+  const handBone = bones[`hand_${s}`];
+  handBone.updateWorldMatrix(true, true);
+  const handQ = handBone.getWorldQuaternion(new THREE.Quaternion());
+  const knuckW = hand.knuck.clone().applyQuaternion(handQ);
+  const lenW = hand.len.clone().applyQuaternion(handQ);
+  const centre = handBone.localToWorld(hand.grip.clone());
+  const reach = r + FINGER_DEPTH;
+  const off = new THREE.Vector3();
+  const mid = new THREE.Vector3();
+  const rot = new THREE.Quaternion();
+  // distance of a point from the handle's axis
+  const away = (p) => {
+    off.subVectors(p, centre);
+    return off.addScaledVector(knuckW, -off.dot(knuckW)).length();
+  };
+  const rest = [];
+  const fingers = [...Object.entries(FIST), ['thumb', THUMB]];
+  for (const [f, angles] of fingers) {
+    const chain = [1, 2, 3].map((j) => bones[`${f}_0${j}_${s}`]);
+    // the tip: past the last joint as far as that is from the one before
+    const p2 = chain[1].getWorldPosition(new THREE.Vector3());
+    const tip = chain[2].worldToLocal(chain[2].getWorldPosition(new THREE.Vector3()).multiplyScalar(1.8).addScaledVector(p2, -0.8));
+    for (let j = 0; j < 3; j++) {
+      const b = chain[j];
+      rest.push([b, b.quaternion.clone()]);
+      const q0 = b.quaternion.clone();
+      const axis = (f === 'thumb' && j === 0 ? lenW : knuckW).clone().applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion()).invert());
+      const start = b.getWorldPosition(new THREE.Vector3());
+      const end = new THREE.Vector3();
+      const bend = (a) => {
+        b.quaternion.copy(q0).multiply(rot.setFromAxisAngle(axis, sign * a));
+        b.updateWorldMatrix(false, true);
+      };
+      const touches = (a) => {
+        bend(a);
+        if (j < 2) chain[j + 1].getWorldPosition(end);
+        else chain[2].localToWorld(end.copy(tip));
+        for (let k = 1; k <= 4; k++) if (away(mid.lerpVectors(start, end, k / 4)) < reach) return true;
+        return false;
+      };
+      // the first bend that reaches the handle (in steps, then halved)
+      let lo = 0;
+      let hi = angles[j];
+      if (!touches(0)) {
+        const step = angles[j] / 8;
+        let a = step;
+        while (a <= angles[j] + 1e-6 && !touches(a)) {
+          lo = a;
+          a += step;
+        }
+        hi = Math.min(a, angles[j]);
+        if (a <= angles[j] + 1e-6) {
+          for (let i = 0; i < 8; i++) {
+            const m = (lo + hi) / 2;
+            if (touches(m)) hi = m;
+            else lo = m;
+          }
+        } else lo = angles[j];
+      }
+      bend(lo);
+      out[b.name] = b.quaternion.clone();
+    }
+  }
+  for (const [b, q] of rest) b.quaternion.copy(q);
+  handBone.updateWorldMatrix(false, true);
   return out;
 }
 
@@ -796,19 +889,21 @@ export class SkinnedHuman {
     const wristQ = r.wristR.getWorldQuaternion(A.wristQ);
     const wristP = r.wristR.getWorldPosition(A.wristP);
     this.placeHand('r', wristP, wristQ, rootQ);
-    this.handPose.r = 'fist';
+    // (round the weapon's handle: a sword's hilt or a haft)
+    const handle = HILTS.has(w.model) ? 'hilt' : 'haft';
+    this.handPose.r = handle;
     // left hand
     const sh = agent.activeShield();
     if (w.cls === 'bow') {
       this.placeHand('l', r.handL.getWorldPosition(A.pos), r.handL.getWorldQuaternion(A.q), rootQ);
-      this.handPose.l = 'fist';
+      this.handPose.l = 'haft';
     } else if (sh && agent.shieldMesh) {
       agent.shieldMesh.updateWorldMatrix(true, false);
       const grip = agent.shieldMesh.localToWorld(A.pos.set(0, 0, -0.05));
       // hold the shield's handle: knuckles along the shield's up axis
       const q = agent.shieldMesh.getWorldQuaternion(A.q).multiply(A.q2.setFromAxisAngle(X, -Math.PI / 2));
       this.placeHand('l', grip, q, rootQ);
-      this.handPose.l = 'fist';
+      this.handPose.l = 'hilt';
     } else if (w.lance && agent.horse) {
       // reins in the left hand
       this.placeHand('l', r.handL.getWorldPosition(A.pos), r.handL.getWorldQuaternion(A.q), rootQ);
@@ -817,7 +912,7 @@ export class SkinnedHuman {
       const dir = A.dir.set(0, 0, 1).applyQuaternion(wristQ);
       const along = w.cls === 'spear' ? 0.42 : w.cls === 'crossbow' ? 0.34 : -0.13;
       this.placeHand('l', A.pos.copy(wristP).addScaledVector(dir, along), wristQ, rootQ);
-      this.handPose.l = 'fist';
+      this.handPose.l = handle;
     } else {
       // a free hand hangs by the side when standing and swings with the
       // captured walk when moving
