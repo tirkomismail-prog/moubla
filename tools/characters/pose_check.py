@@ -6,11 +6,12 @@ one soldier.glb.
 
 For each (outer, inner) layer pair of an outfit: the inner vertices that the
 outer layer covers in the rest pose (a ray along the inner normal hits it
-within 12 cm) and, per frame, how many of them end up outside the outer
-surface by more than 1 mm / 3 mm (not counted where the outer layer's hit
-is next to its open edge: a hem or a cuff lifting is no poke). The sum over
-the pairs of the worst frame (3 mm), for the clips and for the procedural
-poses, is checked against LIMITS (the Norse pairs apart, NORSE_LIMITS).
+within 12 cm; one per position) and, per frame, how many of them end up
+outside the outer surface by more than 1 mm / 3 mm (not counted where the
+outer layer's hit is next to its open edge: a hem or a cuff lifting is no
+poke). The sum over the pairs of the worst frame (3 mm), for the clips and
+for the procedural poses, is checked against LIMITS (the Norse pairs apart,
+NORSE_LIMITS).
 
 Holes: the body's skin is removed where no outfit shows it, so in each
 outfit (outfits.DRESS) the edge of what is left must stay out of sight: the
@@ -27,6 +28,7 @@ import time
 
 import bpy  # noqa: I001
 import bmesh
+import numpy as np
 from mathutils import Quaternion, Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.kdtree import KDTree
@@ -67,17 +69,19 @@ PAIRS = {
 NORSE = {pair for look, pairs in PAIRS.items() if look.startswith('norse') for pair in pairs}
 # the most vertices through by 3 mm (summed over the pairs, worst frame) per
 # level of detail: (clips, procedural poses)
-# (measured with the hems found on welded points, 10 % over and at least 2;
-# most are where the garments' own layers meet: the coats, the plates and the
-# coif's mantle over the hauberk, the cuffs over the gloves and the hands, the
-# jerkin over the tunic, the hauberk's skirt over the hose and the trousers;
-# far away also the coarse collars and cuffs over the skin kept under them)
-LIMITS = {'0': (82, 14), '1': (42, 15), '2': (42, 18)}
-NORSE_LIMITS = {'0': (11, 2), '1': (15, 4), '2': (35, 5)}
+# (measured with the hems found on welded points, each point counted once
+# and its normal over all its copies at UV seams, 10 % over and at least 2;
+# most are where the garments' own layers meet: the coats, the plates and
+# the coif's mantle over the hauberk, the cuffs over the gloves and the
+# hands, the jerkin over the tunic, the hauberk's skirt over the hose and the
+# trousers; far away also the coarse collars and cuffs over the skin kept
+# under them)
+LIMITS = {'0': (75, 14), '1': (31, 11), '2': (32, 13)}
+NORSE_LIMITS = {'0': (8, 2), '1': (14, 4), '2': (28, 5)}
 # the most points of the skin's edge seen through an outfit, summed over the
 # outfits (clips, procedural poses; measured the same way: no skin kept round
 # the bare skin gives 177 and 177 near by)
-HOLE_LIMITS = {'0': (26, 26), '1': (61, 24), '2': (51, 48)}
+HOLE_LIMITS = {'0': (28, 26), '1': (61, 28), '2': (52, 44)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -105,15 +109,46 @@ MASK = {'Body': body_mask(objs['Common'])}
 SRC = {**objs, 'Body': objs['Common']}
 
 
+# (each point's copies: the import splits the points where the UVs or the
+# parts change, and a copy's own normal sees only the faces on its side)
+WELD = {}
+
+
+def welded(o):
+    if o.name not in WELD:
+        co = np.empty(len(o.data.vertices) * 3)
+        o.data.vertices.foreach_get('co', co)
+        WELD[o.name] = np.unique(np.round(co.reshape(-1, 3), 5), axis=0, return_inverse=True)[1].ravel()
+    return WELD[o.name]
+
+
 def coords(o, posed):
-    if not posed:
-        return [o.matrix_world @ v.co for v in o.data.vertices], [o.matrix_world.to_3x3() @ v.normal for v in o.data.vertices]
-    dg = bpy.context.evaluated_depsgraph_get()
-    ev = o.evaluated_get(dg)
-    me = ev.to_mesh()
+    """Positions and normals (of the faces round each point, all its copies
+    together) in the rest pose or posed."""
+    if posed:
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = o.evaluated_get(dg)
+        me = ev.to_mesh()
+    else:
+        me = o.data
     co = [o.matrix_world @ v.co for v in me.vertices]
-    no = [(o.matrix_world.to_3x3() @ v.normal).normalized() for v in me.vertices]
-    ev.to_mesh_clear()
+    fn = np.empty(len(me.polygons) * 3)
+    me.polygons.foreach_get('normal', fn)
+    area = np.empty(len(me.polygons))
+    me.polygons.foreach_get('area', area)
+    corner = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get('vertex_index', corner)
+    sides = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get('loop_total', sides)
+    ids = welded(o)
+    acc = np.zeros((ids.max() + 1, 3))
+    np.add.at(acc, ids[corner], np.repeat(fn.reshape(-1, 3) * area[:, None], sides, axis=0))
+    n = acc[ids]
+    n /= np.maximum(np.linalg.norm(n, axis=1), 1e-12)[:, None]
+    rot = o.matrix_world.to_3x3()
+    no = [(rot @ Vector(x)).normalized() for x in n]
+    if posed:
+        ev.to_mesh_clear()
     return co, no
 
 
@@ -206,8 +241,14 @@ for look, pairs in PAIRS.items():
         co, no = coords(SRC[inner], False)
         mask = MASK.get(inner)
         sel = []
+        # (one point per position: the import keeps them split where the UVs
+        # or the parts change, and a seam must not count twice)
+        seen = set()
         for i, (p, n) in enumerate(zip(co, no)):
             if mask is not None and not mask[i]:
+                continue
+            at = tuple(round(c, 5) for c in p)
+            if at in seen:
                 continue
             hit = t.ray_cast(p + n * 0.0005, n, 0.12)
             if hit[0] is None:
@@ -215,6 +256,7 @@ for look, pairs in PAIRS.items():
             loc, fn, idx, d = t.find_nearest(p, 0.12)
             if loc is not None and (p - loc).dot(fn) < 0:
                 sel.append(i)
+                seen.add(at)
         covered[key] = sel
         log('covered', key, len(sel))
 

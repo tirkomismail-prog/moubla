@@ -44,6 +44,7 @@ import conform  # noqa: E402
 import coif  # noqa: E402
 import hood  # noqa: E402
 import viking  # noqa: E402
+import uvs  # noqa: E402
 
 ARGS = None
 
@@ -356,6 +357,11 @@ def part_of(name):
 
 # small parts left out of the far models: {part: first level without it}
 DROP = {'Lashes': 1, 'Eyes': 2, 'Brows': 2}
+# pieces whose UVs run along the body (uvs.py; the coifs and hoods too), and
+# of those the ones with legs
+AXIS_UVS = {'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Jerkin', 'Cuirass', 'Plates', 'Jupon', 'Hose', 'VikingTunic',
+            'VikingPants'}
+LEGGED = {'Hose', 'Plates', 'VikingPants'}
 # dense parts simplified already in the near model (the texture carries the detail)
 NEAR_RATIO = {'Body': 0.6, 'Hair': 0.6, 'Beard': 0.4, 'Moustache': 0.5,
               'Tunic': 0.7, 'Gambeson': 0.7, 'Hauberk': 0.7, 'Surcoat': 0.7, 'Jupon': 0.7,
@@ -512,8 +518,9 @@ def merge_parts(objs, name):
 
 
 def world_uvs(obj):
-    """UVs measured in metres (for tileable textures): a smart projection,
-    scaled so that one UV unit is one metre on the garment."""
+    """UVs measured in metres (for tileable textures): a smart projection
+    (islands apart by a margin: UV / k is an atlas), scaled so that one UV
+    unit is one metre on the garment."""
     me = obj.data
     while me.uv_layers:
         me.uv_layers.remove(me.uv_layers[0])
@@ -523,7 +530,7 @@ def world_uvs(obj):
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=0.0, scale_to_bounds=False)
+    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=uvs.MARGIN, scale_to_bounds=False)
     bpy.ops.object.mode_set(mode='OBJECT')
     uv = me.uv_layers['UVMap']  # (leaving edit mode reallocates the layer)
     area3 = sum(p.area for p in me.polygons)
@@ -618,8 +625,6 @@ def build():
     for obj in (scalp, human):
         bpy.data.objects.remove(obj)
     common = {'Body': body, **fitted}
-    for name, obj in pieces.items():
-        world_uvs(obj)
     for name, obj in common.items():
         mhassets.place_uvs(obj, name)
     for name, ratio in NEAR_RATIO.items():
@@ -628,6 +633,17 @@ def build():
         bpy.data.objects.remove(group[name])
         near.name = near.data.name = name
         group[name] = near
+    # (garments whose tiles have a direction: v along the body and the limbs;
+    # unwrapped as simplified for the near level, the simplification does not
+    # follow the UVs)
+    for name, obj in pieces.items():
+        head = 'coif' if name.startswith('Coif') else 'hood' if name.startswith('Hood') else None
+        if name in AXIS_UVS or head:
+            belt = viking.SUBPARTS[name].index('Belt') if name in viking.SUBPARTS else None
+            n = uvs.axis_uvs(obj, rig, garments.L['belt_top'], legged=name in LEGGED, head=head, belt_part=belt)
+            print(f'{name:16s} UVs along the body: {n} islands')
+        else:
+            world_uvs(obj)
 
     everything = {**common, **pieces}
     for name, obj in everything.items():
