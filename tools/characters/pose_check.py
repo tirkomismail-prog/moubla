@@ -80,7 +80,7 @@ LIMITS = {'0': (75, 14), '1': (31, 11), '2': (32, 13)}
 NORSE_LIMITS = {'0': (8, 2), '1': (14, 4), '2': (28, 5)}
 # the most points of the skin's edge seen through an outfit, summed over the
 # outfits (clips, procedural poses; measured the same way: no skin kept round
-# the bare skin gives 177 and 177 near by)
+# the bare skin gives 177 and 180 near by)
 HOLE_LIMITS = {'0': (28, 26), '1': (61, 28), '2': (52, 44)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 

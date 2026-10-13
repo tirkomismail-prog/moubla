@@ -15,10 +15,13 @@ four gores (as each was cut).
 Blender unwraps the islands with the least distortion (angle based), and
 each island is then turned so that its axis runs up v, at one UV unit to
 the metre, and packed without turning, with margins between the islands:
-UV / k (k: the piece's scale) is an atlas (the hoods' throats fold a few
-faces over each other, about a thousandth of the area).
+UV / k (k: the piece's scale) is an atlas (where the cloth is slit or
+folded an island laps over itself, at most two thousandths of its area:
+the hoods' throats, the slits at the front of the skirts, the gambeson's
+armpits, the knot of the kyrtle's belt).
 """
 import math
+import statistics
 
 import bmesh
 import bpy
@@ -87,21 +90,52 @@ def axes(rig):
     return out
 
 
+def sewn_belt(me, part, belt_part, centre, sectors=12):
+    """The middle of a belt sewn on (the faces whose part is belt_part) as a
+    function of a point: in each of `sectors` equal angles round `centre`,
+    its top edge less half its height (the median over the angles: its
+    hanging end, at the front, does not count)."""
+    top = {}
+    bottom = {}
+
+    def sector(co):
+        d = co - centre
+        return int(math.atan2(d.y, d.x) % (2 * math.pi) * sectors / (2 * math.pi)) % sectors
+    for p in me.polygons:
+        if part[p.index] != belt_part:
+            continue
+        for i in p.vertices:
+            co = me.vertices[i].co
+            k = sector(co)
+            top[k] = max(top.get(k, -math.inf), co.z)
+            bottom[k] = min(bottom.get(k, math.inf), co.z)
+    if not top:
+        return None
+    half = statistics.median(top[k] - bottom[k] for k in top) / 2
+    lowest = min(top.values())
+    return lambda co: top.get(sector(co), lowest) - half
+
+
 def face_segments(obj, rig, belt, legged, head=None, belt_part=None):
     """(region, segment) of each face, by the bones weighing most on its
     corners; the torso's faces wholly below the top of the belt are the skirt
-    (the seam between them hides under the belt), and a belt sewn on (its
-    faces' `_sub` = belt_part, viking.SUBPARTS) goes round the waist apart.
-    (Head wear, head = 'coif' or 'hood': all one segment round the head.)"""
+    (the seam between them hides under the belt). A belt sewn on (its faces'
+    `_sub` = belt_part, viking.SUBPARTS) goes round the waist apart, and the
+    skirt is then the faces whose middle is below the middle of that belt
+    (the outfits' belts are not worn over it; the cloth under it has a row of
+    faces as tall as the belt, and the seam zigzags through them). (Head
+    wear, head = 'coif' or 'hood': all one segment round the head.)"""
     if head:
         return [(head, head)] * len(obj.data.polygons)
-    sub = obj.data.attributes.get('_sub') if belt_part is not None else None
-    part = [0] * len(obj.data.polygons)
+    me = obj.data
+    sub = me.attributes.get('_sub') if belt_part is not None else None
+    part = [0] * len(me.polygons)
+    middle = None
     if sub is not None:
         sub.data.foreach_get('value', part)
+        middle = sewn_belt(me, part, belt_part, rig.data.bones['pelvis'].head_local)
     names = {b.name for b in rig.data.bones}
     group = {g.index: g.name for g in obj.vertex_groups if g.name in names}
-    me = obj.data
     per_vert = []
     for v in me.vertices:
         acc = {}
@@ -119,16 +153,19 @@ def face_segments(obj, rig, belt, legged, head=None, belt_part=None):
         seg = max(acc, key=acc.get) if acc else ('torso', 'torso')
         if sub is not None and part[p.index] == belt_part:
             seg = ('belt', 'belt')
-        elif seg[0] == 'torso' and max(me.vertices[i].co.z for i in p.vertices) < belt:
+        elif seg[0] == 'torso' and (p.center.z < middle(p.center) if middle
+                                    else max(me.vertices[i].co.z for i in p.vertices) < belt):
             seg = ('skirt', 'skirt')
         out.append(seg)
     return out
 
 
 def mark_seams(bm, segs, ax):
-    """Seams where the segments meet, where each is cut open, and between
-    the outside and the inside of cloth with a thickness (a hood, the
-    kyrtle: faces turned towards the axis are its inside)."""
+    """Seams where the regions meet (the torso, the skirt, the belt, each
+    arm, each leg: a limb's segments run on in one island), where each
+    segment is cut open, and between the outside and the inside of cloth
+    with a thickness (a hood, the kyrtle: faces turned towards the axis are
+    its inside)."""
     angle = []
     piece = []
     inside = []
