@@ -383,11 +383,12 @@ function clothColor(hex, fade = 0, shade = 1, mean = WOOL_MEAN) {
 
 // Lamellar (one tile, two finishes, for its light grey plates): worn iron,
 // darker than the helmets, laced with a brown thong; or the Kaganate's
-// leather soaked black with pitch (Carpini), laced in the side's colour
-// (the lacing's rows keep the yellow on a dark chest). A brigandine's rivet
-// heads are tinned iron.
+// leather lacquered dark brown (soaked with pitch, Carpini; not black: the
+// light side must stay lighter than the dark at 40 m, its sleeves and hem
+// alone do not keep it so), laced in the side's colour. A brigandine's
+// rivet heads are tinned iron.
 const LAMELLAR_IRON = '#aaaaaa';
-const LAMELLAR_LACQUER = '#42392f';
+const LAMELLAR_LACQUER = '#6e5a48';
 const THONG = clothColor('#7d5f47');
 const RIVETS = '#d0d0d0';
 

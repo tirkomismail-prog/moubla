@@ -277,8 +277,9 @@ const ARMOR_COLORS = {
   lamellar: '#7f8487',
   plate: '#b4bcc4',
 };
-// (the Kaganate's lamellar is leather lacquered black)
-const LACQUER = '#2e2924';
+// (the Kaganate's lamellar is leather lacquered dark brown, its sleeves
+// the tunic's: the light side stays light)
+const LACQUER = '#6e5a48';
 
 // Body cross-sections are ellipses: depth = radius * DEPTH.
 const DEPTH = 0.62;
@@ -483,7 +484,7 @@ export function buildHuman(spec) {
   mesh(headGeo(spec.skin, spec.hair, !!spec.beard), neck, `head:${spec.skin}:${spec.hair}:${!!spec.beard}`);
   const hg = show ? helmetGeo(spec.helmet, spec.team) : null;
   if (hg) mesh(hg, neck, `helmet:${spec.helmet}:${spec.team}`);
-  const sleeve = armour || spec.team;
+  const sleeve = (armour !== LACQUER && armour) || spec.team;
   const glove = spec.look === 'mail' || spec.look === 'plate' || spec.look === 'lamellar';
   const armR = new THREE.Group();
   armR.position.set(-0.28, 0.53, 0);
