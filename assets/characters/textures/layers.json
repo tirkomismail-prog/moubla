@@ -68,20 +68,37 @@
    "iron": [
     "tile_iron.webp",
     "tile_iron_surface.webp"
+   ],
+   "brigandine": [
+    "tile_brigandine.webp",
+    "tile_brigandine_surface.webp"
+   ],
+   "linen": [
+    "tile_linen.webp",
+    "tile_linen_surface.webp"
    ]
   },
   "repeat": {
    "wool": 4.545,
-   "quilted": 3.125,
+   "quilted": 3.333,
    "leather": 2.222,
    "mail": 10.0,
    "plate": 1.667,
-   "lamellar": 2.857,
+   "lamellar": 2.778,
    "fur": 5.0,
    "wood": 2.857,
    "planks": 1.429,
    "paint": 2.0,
-   "iron": 1.667
+   "iron": 1.667,
+   "brigandine": 3.333,
+   "linen": 5.208
+  },
+  "masks": {
+   "size": 256,
+   "layers": {
+    "lamellar": "tile_lamellar_mask.webp",
+    "brigandine": "tile_brigandine_mask.webp"
+   }
   }
  }
 }

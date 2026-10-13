@@ -1,7 +1,7 @@
 """The garments of the soldiers' outfits (one set per armour look, see
 OUTFITS in src/battle/character.js): tunic, gambeson, mail hauberk,
-surcoat, leather jerkin, cuirass (lamellar or plate) and plate pieces, plus
-a belt fitted to each outer garment.
+surcoat, leather jerkin, cuirass (lamellar or brigandine) and plate
+pieces, plus a belt fitted to each outer garment.
 
 They are cut from the MakeHuman helper shells (tights, skirt) like the
 hose and boots in garments.py, then pushed away from the body by the
@@ -313,7 +313,7 @@ def build_all(human, rig, helpers):
     # leather jerkin over the tunic: sleeveless, to the hips
     out['Jerkin'] = torso(human, 'Jerkin', False, 'low', L['belt_top'] - 0.14, 0.03)
 
-    # cuirass (lamellar or plate) with short tassets over the tunic or hauberk
+    # cuirass (lamellar or brigandine) with short tassets over the tunic or hauberk
     t = torso(human, 'Cuirass_top', False, 'round', L['belt_top'] - 0.03, 0.05, smooth=4)
     out['Cuirass'] = join([t, skirt(human, 'Cuirass_skirt', knee + 0.2, *SKIRTS['Cuirass'])], 'Cuirass')
 

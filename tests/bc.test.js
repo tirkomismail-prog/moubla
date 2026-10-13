@@ -146,6 +146,30 @@ test('BC5 keeps the normal x and y', () => {
   assert.ok(psnr(src, dec, [0, 1]) > 40, `${psnr(src, dec, [0, 1]).toFixed(1)} dB`);
 });
 
+test('BC4 keeps a mask in 8 bytes per block', () => {
+  // a grey mask: hard-edged dots (rivet heads) on nothing
+  const size = 64;
+  const src = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = Math.hypot((x % 16) - 7.5, (y % 16) - 7.5);
+      src[(y * size + x) * 4] = d < 4 ? 255 : d < 5 ? Math.round(255 * (5 - d)) : 0;
+    }
+  }
+  const levels = kit.chain(src, size, 'bc4');
+  assert.deepEqual(
+    levels.map((l) => l.length),
+    [64, 32, 16, 8, 4, 2, 1].map((s) => Math.max(1, Math.ceil(s / 4)) ** 2 * 8),
+  );
+  const dec = new Float32Array(size * size * 4);
+  for (let by = 0, o = 0; by < size; by += 4) {
+    for (let bx = 0; bx < size; bx += 4, o += 8) {
+      channel(levels[0], o).forEach((v, i) => (dec[((by + (i >> 2)) * size + bx + (i & 3)) * 4] = v));
+    }
+  }
+  assert.ok(psnr(src, dec, [0]) > 40, `${psnr(src, dec, [0]).toFixed(1)} dB`);
+});
+
 test('sRGB mipmaps average in linear light', () => {
   // black and white texels: their mean light is half, sRGB 188, not 128
   const src = new Uint8Array(2 * 2 * 4);

@@ -369,9 +369,9 @@ const SKIN_REF = new THREE.Color('#e8c3a0');
 // Cloth of a colour (of the dyed cloth seen in daylight, src/data/dyes.js)
 // as the tint of a tile whose mean albedo is `mean` (linear, per channel):
 // faded by `fade` towards undyed wool, made lighter or darker by `shade`.
-// (measured on the tiles of tools/characters/materials.py)
+// (the wool tile's; every tile dyed so is made to it: WOOL in
+// tools/characters/materials.py)
 const WOOL_MEAN = [0.77, 0.729, 0.669];
-const QUILT_MEAN = [0.59, 0.487, 0.38];
 // (the colours in dyes.js are of the cloth / 0.75)
 const UNDYED_SRGB = new THREE.Color(UNDYED).convertLinearToSRGB();
 function clothColor(hex, fade = 0, shade = 1, mean = WOOL_MEAN) {
@@ -381,17 +381,33 @@ function clothColor(hex, fade = 0, shade = 1, mean = WOOL_MEAN) {
   return c.setRGB((c.r * shade * 0.75) / mean[0], (c.g * shade * 0.75) / mean[1], (c.b * shade * 0.75) / mean[2]);
 }
 
+// Lamellar (one tile, two finishes, for its light grey plates): worn iron,
+// darker than the helmets, laced with a brown thong; or the Kaganate's
+// leather soaked black with pitch (Carpini), laced in the side's colour
+// (the lacing's rows keep the yellow on a dark chest). A brigandine's rivet
+// heads are tinned iron.
+const LAMELLAR_IRON = '#aaaaaa';
+const LAMELLAR_LACQUER = '#42392f';
+const THONG = clothColor('#7d5f47');
+const RIVETS = '#d0d0d0';
+
 function palette(spec) {
   const look = spec.look || 'cloth';
   const sign = clothColor(spec.sign || spec.team, spec.fade, spec.shade);
   const team = tiled('wool', sign);
+  // a shirt and a surcoat of linen
+  const linen = tiled('linen', sign);
   // metal without chrome: worn iron and mail as a whole (their roughness and
   // darkness are in the tiles, so that the helmets have the same)
   const mail = tiled('mail', '#ffffff', 1, 0.75);
   const plate = tiled('iron', '#ffffff', 1, 0.9);
-  // a gambeson dyed the side's colour like its other cloth (a pale one is
+  const lamellar = spec.faction === 'kaganate'
+    ? tiled('lamellar', LAMELLAR_LACQUER, 0.72, 0, { color: sign, metalness: 0 })
+    : tiled('lamellar', LAMELLAR_IRON, 0.9, 0.85, { color: THONG, metalness: 0 });
+  // a gambeson (and a knight's jupon: padded cloth over the plates) quilted
+  // in channels, dyed the side's colour like its other cloth (a pale one is
   // not told apart at a distance)
-  const dyed = clothColor(spec.sign || spec.team, spec.fade, spec.shade, QUILT_MEAN);
+  const quilted = tiled('quilted', sign);
   // the wearer's own cloth (a hood, an under-tunic)
   const own = tiled('wool', clothColor(spec.hood || spec.sign || spec.team, spec.fade, spec.shade));
   const armoured = look === 'mail' || look === 'brigandine';
@@ -401,16 +417,17 @@ function palette(spec) {
   const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
   return {
     Body: surface(skin, 0.55),
-    Tunic: team,
-    Gambeson: tiled('quilted', dyed),
+    // (the cloth look's shirt; the Norse kyrtle's body is wool)
+    Tunic: look === 'cloth' && spec.kit !== 'norse' ? linen : team,
+    Gambeson: quilted,
     Hauberk: mail,
-    Surcoat: team,
+    Surcoat: linen,
     Jerkin: leather,
     // a brigandine: plates riveted inside cloth of the side's colour
-    Cuirass: look === 'plate' ? plate : look === 'brigandine' ? team : tiled('lamellar', '#e1e1e1', 1, 0.85),
+    Cuirass: look === 'plate' ? plate
+      : look === 'brigandine' ? tiled('brigandine', sign, 1, 0, { color: RIVETS, metalness: 0.9 }) : lamellar,
     Plates: plate,
-    // a knight's jupon: padded cloth of the side's colour over the plates
-    Jupon: team,
+    Jupon: quilted,
     Coif: mail,
     // a hood of the wearer's own cloth
     Hood: own,
@@ -605,7 +622,7 @@ export function itemMaterial() {
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, tileUv);
-          normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
+          normal = normalize(frame * tileNormal(tileSurf.xy));
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };

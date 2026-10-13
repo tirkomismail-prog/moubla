@@ -25,11 +25,11 @@ All third-party assets below are **CC0 1.0** (public domain) unless noted; the b
   by Rehman Polanski, MakeHuman asset pack suits02 (https://static.makehumancommunity.org/assets/assetpacks/suits02.html;
   their files read out of the pack); the tunic's mail and sleeves found on its texture (which is not shipped), its
   belt as islands of its own; simplified, fitted to the body and to each other (`tools/characters/viking.py`).
-- **Cloth, leather and armour textures**: ambientCG (https://ambientcg.com): Fabric062 (wool), Fabric008
-  (quilted gambeson), Leather014, Chainmail004, Metal038 (bright steel of the weapons), Metal052C (worn iron of
-  the plate armour, helmets and chanfron), Metal039 (lamellar), and for the
-  weapons and shields Wood060, Planks039, PaintedWood003; fur: Curly Teddy Natural from Poly Haven
-  (https://polyhaven.com/a/curly_teddy_natural).
+- **Cloth, leather and armour textures**: ambientCG (https://ambientcg.com): Fabric062 (wool), Leather006 (its
+  lightness only), Chainmail004, Metal038 (bright steel of the weapons), Metal052C (worn iron of the plate armour,
+  helmets and chanfron), and for the weapons and shields Wood060, Planks039, PaintedWood003; fur: Curly Teddy
+  Natural from Poly Haven (https://polyhaven.com/a/curly_teddy_natural). The gambeson's quilting, the lamellar,
+  the brigandine's rivets and the linen are drawn by `tools/characters/proctiles.py` (our own, CC0).
 - **Motion capture, standing** (idle, idle2, idle3, idle4): Open Motion Project by ACCAD (Advanced
   Computing Center for the Arts and Design), The Ohio State University
   (https://accad.osu.edu/research/motion-lab/mocap-system-and-data), takes Male1_A1_Stand, Male1_A2_Sway,

@@ -1,7 +1,8 @@
 // Block compression of the texture layers when the game loads (stage 4.0):
 // colour as BC3 (DXT5: the colour in 4x4 blocks of two 16-bit colours and
 // their mixes, the alpha as eight levels), normal maps as BC5 (RGTC2: x and
-// y, the shader works out z). Four to eight times less video memory than
+// y, the shader works out z), masks as BC4 (RGTC1: one channel, as one of
+// BC5's). Four to eight times less video memory than
 // the decoded RGBA8 layers, and less of it to read per frame. The mipmaps
 // are made here (a compressed texture cannot make its own): colour averaged
 // in linear light, as the GPU does for an sRGB texture.
@@ -12,7 +13,8 @@
 
 // The encoder: everything inside one function, so that a worker can be made
 // from its source. chain(rgba, size, kind) -> the encoded mipmaps, largest
-// first; kind: 'bc3s' (sRGB colour + alpha), 'bc3' (linear) or 'bc5'.
+// first; kind: 'bc3s' (sRGB colour + alpha), 'bc3' (linear), 'bc5' (red and
+// green) or 'bc4' (red).
 export function bcKit() {
   const toLinear = new Float32Array(256);
   for (let i = 0; i < 256; i++) {
@@ -27,7 +29,8 @@ export function bcKit() {
   }
 
   // the next mipmap of a square RGBA8 image: each 2x2 averaged (the colour
-  // in linear light if srgb; the alpha always as it is)
+  // in linear light if srgb; the alpha always as it is, halves rounded to
+  // even: rounded up, a mask would grow a little at every level)
   function mip(src, size, srgb) {
     const s = Math.max(1, size >> 1);
     const out = new Uint8Array(s * s * 4);
@@ -47,7 +50,8 @@ export function bcKit() {
             const l = (toLinear[src[a + k]] + toLinear[src[b + k]] + toLinear[src[c + k]] + toLinear[src[d + k]]) / 4;
             out[o + k] = toSrgb[Math.round(l * SRGB_STEPS)];
           } else {
-            out[o + k] = (src[a + k] + src[b + k] + src[c + k] + src[d + k] + 2) >> 2;
+            const t = src[a + k] + src[b + k] + src[c + k] + src[d + k];
+            out[o + k] = (t + 1 + ((t >> 2) & 1)) >> 2;
           }
         }
       }
@@ -255,22 +259,24 @@ export function bcKit() {
     out[o + 7] = (bits >>> 24) & 255;
   }
 
-  // one level: 16 bytes per 4x4 block, rows of blocks from the first row of
-  // the image
+  // one level: 16 bytes per 4x4 block (8 in BC4), rows of blocks from the
+  // first row of the image
   function level(src, size, kind) {
     const n = Math.max(1, Math.ceil(size / 4));
-    const out = new Uint8Array(n * n * 16);
+    const bytes = kind === 'bc4' ? 8 : 16;
+    const out = new Uint8Array(n * n * bytes);
     let o = 0;
     for (let by = 0; by < size; by += 4) {
-      for (let bx = 0; bx < size; bx += 4) {
-        if (kind === 'bc5') {
+      for (let bx = 0; bx < size; bx += 4, o += bytes) {
+        if (kind === 'bc4') {
+          channelBlock(src, size, bx, by, 0, out, o);
+        } else if (kind === 'bc5') {
           channelBlock(src, size, bx, by, 0, out, o);
           channelBlock(src, size, bx, by, 1, out, o + 8);
         } else {
           channelBlock(src, size, bx, by, 3, out, o);
           colorBlock(src, size, bx, by, out, o + 8);
         }
-        o += 16;
       }
     }
     return out;
@@ -295,9 +301,9 @@ export function bcKit() {
 // leave everything uncompressed (to compare).
 let support = null;
 export function bcSupport() {
-  if (broken) return { bc3: false, bc3s: false, bc5: false };
+  if (broken) return { bc3: false, bc3s: false, bc4: false, bc5: false };
   if (support) return support;
-  support = { bc3: false, bc3s: false, bc5: false };
+  support = { bc3: false, bc3s: false, bc4: false, bc5: false };
   try {
     if (typeof location !== 'undefined' && /[?&]nobc\b/.test(location.search)) return support;
     if (typeof Worker === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return support;
@@ -306,7 +312,7 @@ export function bcSupport() {
     const ext = gl.getSupportedExtensions() || [];
     support.bc3 = ext.includes('WEBGL_compressed_texture_s3tc');
     support.bc3s = support.bc3 && ext.includes('WEBGL_compressed_texture_s3tc_srgb');
-    support.bc5 = ext.includes('EXT_texture_compression_rgtc');
+    support.bc5 = support.bc4 = ext.includes('EXT_texture_compression_rgtc');
     const lose = gl.getExtension('WEBGL_lose_context');
     if (lose) lose.loseContext();
   } catch {

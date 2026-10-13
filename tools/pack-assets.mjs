@@ -34,7 +34,13 @@ if (fs.existsSync(manifest)) {
       tl[name] = files.map((f) => b64(path.join(texDir, f)));
       textures += files.length;
     }
-    tex.tiles = { size: tiles.size, layers: tl, repeat: tiles.repeat };
+    // (the masks of the tiles' second materials: a grey image each)
+    const masks = { size: tiles.masks ? tiles.masks.size : 0, layers: {} };
+    for (const [name, file] of Object.entries(tiles.masks ? tiles.masks.layers : {})) {
+      masks.layers[name] = b64(path.join(texDir, file));
+      textures++;
+    }
+    tex.tiles = { size: tiles.size, layers: tl, repeat: tiles.repeat, masks };
   }
   lines.push(`  textures: ${JSON.stringify(tex)},`);
 }

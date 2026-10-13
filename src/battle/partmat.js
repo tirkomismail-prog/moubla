@@ -37,25 +37,32 @@ export async function pixels(size, b64, alpha = null) {
 }
 
 // Layers as one array texture: block-compressed (bc.js: the mipmaps of
-// each layer, encoded) or as RGBA8 pixels (size x size each). Pixel rows go
-// up the texture (row 0 at v = 0) either way.
-function compressedArray(chains, size, colorSpace) {
+// each layer, encoded) or as RGBA8 pixels (size x size each; a mask, `red`,
+// keeps only the red: R8). Pixel rows go up the texture (row 0 at v = 0)
+// either way.
+// colour (sRGB) layers as BC3, normal maps as BC5, masks as BC4, if the
+// browser can
+const KIND = (colorSpace) => (colorSpace === THREE.SRGBColorSpace ? 'bc3s' : 'bc5');
+const FORMAT = { bc3s: THREE.RGBA_S3TC_DXT5_Format, bc5: THREE.RED_GREEN_RGTC2_Format, bc4: THREE.RED_RGTC1_Format };
+function compressedArray(chains, size, colorSpace, kind = KIND(colorSpace)) {
   const mipmaps = chains[0].map((first, level) => {
     const data = new Uint8Array(first.length * chains.length);
     chains.forEach((c, i) => data.set(c[level], i * first.length));
     const s = Math.max(1, size >> level);
     return { data, width: s, height: s };
   });
-  const format = colorSpace === THREE.SRGBColorSpace ? THREE.RGBA_S3TC_DXT5_Format : THREE.RED_GREEN_RGTC2_Format;
-  const texture = new THREE.CompressedArrayTexture(mipmaps, size, size, chains.length, format);
+  const texture = new THREE.CompressedArrayTexture(mipmaps, size, size, chains.length, FORMAT[kind]);
   texture.userData.bytes = mipmaps.reduce((n, m) => n + m.data.length, 0);
   return finish(texture, colorSpace);
 }
 
-function rawArray(layers, size, colorSpace) {
-  const data = new Uint8Array(size * size * 4 * layers.length);
-  layers.forEach((l, i) => data.set(l, i * size * size * 4));
+function rawArray(layers, size, colorSpace, red = false) {
+  const n = size * size;
+  const data = new Uint8Array(n * (red ? 1 : 4) * layers.length);
+  if (red) layers.forEach((l, i) => { for (let k = 0; k < n; k++) data[i * n + k] = l[k * 4]; });
+  else layers.forEach((l, i) => data.set(l, i * n * 4));
   const texture = new THREE.DataArrayTexture(data, size, size, layers.length);
+  if (red) texture.format = THREE.RedFormat;
   texture.generateMipmaps = true;
   texture.userData.bytes = Math.round((data.length * 4) / 3);
   return finish(texture, colorSpace);
@@ -83,8 +90,6 @@ const quiet = (job) => {
   return job;
 };
 
-// colour (sRGB) layers as BC3, normal maps as BC5, if the browser can
-const KIND = (colorSpace) => (colorSpace === THREE.SRGBColorSpace ? 'bc3s' : 'bc5');
 
 // Texture layers as one array texture. Each layer is a colour image plus,
 // for see-through ones, a separate alpha image (sRGB colour), or a normal
@@ -114,9 +119,12 @@ export async function decodeLayers(size, layers, colorSpace, compress = true) {
 // Tileable cloth and armour materials: a colour array with the roughness in
 // its alpha (BC3 keeps that alpha well) and a surface array with the normal
 // (x, y), and how often each repeats per metre. The images: colour, and
-// surface (normal x, y, roughness).
+// surface (normal x, y, roughness). A few have a second material (the
+// lamellar's lacing, a brigandine's rivets: a tint and metalness of their
+// own, see partLook): a mask array of those only, where it is (masks.size
+// each, maskIndex its layer).
 export async function decodeTiles(tiles, compress = true) {
-  const { size, layers, repeat } = tiles;
+  const { size, layers, repeat, masks = { size: 0, layers: {} } } = tiles;
   const names = Object.keys(layers);
   const zipColor = compress && bcSupport().bc3s;
   const zipSurface = compress && bcSupport().bc5;
@@ -129,11 +137,21 @@ export async function decodeTiles(tiles, compress = true) {
     surfaces.push(zipSurface ? quiet(encodeLayer(surf, size, 'bc5')) : surf);
   }
   const index = Object.fromEntries(names.map((n, i) => [n, i]));
+  const masked = Object.keys(masks.layers);
+  const maskIndex = Object.fromEntries(masked.map((n, i) => [n, i]));
+  const zipMask = compress && bcSupport().bc4;
+  const maskPixels = [];
+  for (const n of masked) {
+    const px = await pixels(masks.size, masks.layers[n]);
+    maskPixels.push(zipMask ? quiet(encodeLayer(px, masks.size, 'bc4')) : px);
+  }
   try {
-    const [c, s] = await Promise.all([Promise.all(colors), Promise.all(surfaces)]);
+    const [c, s, m] = await Promise.all([Promise.all(colors), Promise.all(surfaces), Promise.all(maskPixels)]);
     const color = zipColor ? compressedArray(c, size, THREE.SRGBColorSpace) : rawArray(c, size, THREE.SRGBColorSpace);
     const surface = zipSurface ? compressedArray(s, size, THREE.NoColorSpace) : rawArray(s, size, THREE.NoColorSpace);
-    return { color: note(color), surface: note(surface), index, repeat };
+    const mask = !m.length ? null
+      : zipMask ? compressedArray(m, masks.size, THREE.NoColorSpace, 'bc4') : rawArray(m, masks.size, THREE.NoColorSpace, true);
+    return { color: note(color), surface: note(surface), mask: mask && note(mask), index, maskIndex, repeat };
   } catch (e) {
     console.warn('Texture compression failed, tiles left uncompressed:', e);
     return decodeTiles(tiles, false);
@@ -141,13 +159,16 @@ export async function decodeTiles(tiles, compress = true) {
 }
 
 // a part's look: a plain colour, or a tint of a tileable material (see
-// tools/characters/materials.py) with a factor for the roughness it gives
+// tools/characters/materials.py) with a factor for the roughness it gives,
+// and for a tile with a second material its {color, metalness} (its
+// roughness is the tile's own)
 export const surface = (color, roughness, metalness = 0) => ({ color, roughness, metalness });
-export const tiled = (tile, color, roughness = 1, metalness = 0) => ({ color, roughness, metalness, tile });
+export const tiled = (tile, color, roughness = 1, metalness = 0, second = null) => ({ color, roughness, metalness, tile, second });
 
 // Each model's own look is a row of a palette texture (PalettePool): per
 // part four texels, (colour, roughness), (metalness, texture layer, kind,
-// normal map layer), (tile, tile repeats per metre, hidden), (mark colour).
+// normal map layer), (tile, tile repeats per metre, hidden, the tile's mask
+// layer), (mark colour, or the tile's second material: colour, metalness).
 // The row comes with the model's meshes (boneBase.y, see poolBones), so one
 // material draws all the models of a kind in a battle.
 const PALETTE_TEXELS = 4;
@@ -156,7 +177,7 @@ const PART_VERTEX = `
   attribute vec4 boneBase;
   uniform highp sampler2D partPalette;
   varying vec3 vPartTex;
-  varying vec2 vPartTile;
+  varying vec3 vPartTile;
   varying vec2 vPartUv;`;
 const PART_BEGIN = `
   int part = int(_part + 0.5);
@@ -165,7 +186,7 @@ const PART_BEGIN = `
   vec4 pal1 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 1, partRow), 0);
   vec4 pal2 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 2, partRow), 0);
   vPartTex = pal1.yzw;
-  vPartTile = pal2.xy;
+  vPartTile = pal2.xyw;
   vPartUv = uv;`;
 // moves the vertices of a hidden part out of the view: its triangles vanish
 const HIDE_VERTEX = `
@@ -179,7 +200,7 @@ const PART_FRAGMENT = `
   uniform highp sampler2DArray partLayers;
   uniform float layerSize;
   varying vec3 vPartTex;
-  varying vec2 vPartTile;
+  varying vec3 vPartTile;
   varying vec2 vPartUv;
   vec4 partTexel() {
     if (vPartTex.x < -0.5) return vec4(1.0);
@@ -193,12 +214,17 @@ const PART_FRAGMENT = `
     return tex;
   }`;
 // Tileable materials: UVs in metres times the repeats per metre (y) of
-// layer x (x < 0: none). The colour texture's alpha holds the roughness,
-// the surface texture the normal (x, y); there are no tangents, the frame
-// comes from derivatives.
+// layer x (x < 0: none; z: the layer of its second material's mask). The
+// colour texture's alpha holds the roughness, the surface texture the
+// normal (x, y); there are no tangents, the frame comes from derivatives.
+// The normal maps' y is up the image (as ambientCG's NormalGL), and the
+// images' rows go down the UVs' v: tileNormal turns it round.
 export const TILE_FRAGMENT = `
   uniform highp sampler2DArray tileColor;
   uniform highp sampler2DArray tileSurface;
+  vec3 tileNormal(vec2 xy) {
+    return vec3(xy.x * 2.0 - 1.0, 1.0 - xy.y * 2.0, 1.0);
+  }
   mat3 tileFrame(vec3 eyePos, vec3 n, vec2 uv) {
     vec3 q0 = dFdx(eyePos);
     vec3 q1 = dFdy(eyePos);
@@ -481,8 +507,15 @@ export function partLook(owner, o, look) {
       normals && layer in normals.index ? normals.index[layer] : -1,
     ], k + 4);
     const tiled = tiles && s.tile in tiles.index;
-    row.set([tiled ? tiles.index[s.tile] : -1, tiled ? tiles.repeat[s.tile] : -1, look.hidden ? look.hidden[i] : 0, 0], k + 8);
-    row.set([mark.r, mark.g, mark.b, 0], k + 12);
+    const second = tiled && s.second && tiles.maskIndex && s.tile in tiles.maskIndex;
+    row.set([
+      tiled ? tiles.index[s.tile] : -1,
+      tiled ? tiles.repeat[s.tile] : -1,
+      look.hidden ? look.hidden[i] : 0,
+      second ? tiles.maskIndex[s.tile] : -1,
+    ], k + 8);
+    if (second) c.set(s.second.color);
+    row.set(second ? [c.r, c.g, c.b, s.second.metalness] : [mark.r, mark.g, mark.b, 0], k + 12);
   });
   return { material: kind.material, row: kind.palette.add(row) };
 }
@@ -501,49 +534,58 @@ function makeKind(o) {
     shader.uniforms.partNormals = { value: normals ? normals.texture : null };
     shader.uniforms.tileColor = { value: tiles ? tiles.color : null };
     shader.uniforms.tileSurface = { value: tiles ? tiles.surface : null };
+    shader.uniforms.tileMask = { value: tiles ? tiles.mask : null };
     shader.uniforms.mudColor = { value: new THREE.Color(o.mud || '#4a3b2a') };
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', SKINNING)
       .replace('#include <common>', `#include <common>${PART_VERTEX}
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;
+        varying vec3 vPartSurface;
         varying vec3 vMarkColor;
         varying vec2 vDirt;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
+        vec4 pal3 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 3, partRow), 0);
         vPartColor = pal0.rgb;
-        vPartSurface = vec2(pal0.a, pal1.x);
-        vMarkColor = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 3, partRow), 0).rgb;
+        vPartSurface = vec3(pal0.a, pal1.x, pal3.a);
+        vMarkColor = pal3.rgb;
         // (the height in the bind pose: the feet at 0)
         vDirt = vec2(boneBase.z, position.y);`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${PART_FRAGMENT}${TILE_FRAGMENT}
         uniform highp sampler2DArray partNormals;
+        uniform highp sampler2DArray tileMask;
         uniform vec3 mudColor;
         varying vec3 vPartColor;
-        varying vec2 vPartSurface;
+        varying vec3 vPartSurface;
         varying vec3 vMarkColor;
         varying vec2 vDirt;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec4 partTex = partTexel();
         vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, vMarkColor, partTex.a) : vPartColor;
-        diffuseColor.rgb *= partTint * partTex.rgb;
-        diffuseColor.a = 1.0;
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
+        // (how much of the texel is the tile's second material: its tint,
+        // metalness and own roughness; filtered like the rest, so that far
+        // away it is its share)
+        float second = 0.0;
         if (vPartTile.x > -0.5) {
           vec3 tileUv = vec3(vPartUv * vPartTile.y, vPartTile.x);
           vec4 tileCol = texture(tileColor, tileUv);
+          if (vPartTile.z > -0.5) second = texture(tileMask, vec3(tileUv.xy, vPartTile.z)).r;
+          partTint = mix(partTint, vMarkColor, second);
           diffuseColor.rgb *= tileCol.rgb;
           tileSurf = vec3(texture(tileSurface, tileUv).xy, tileCol.a);
         }
+        diffuseColor.rgb *= partTint * partTex.rgb;
+        diffuseColor.a = 1.0;
         // mud and dust from the ground: most above the boots, less up to the
         // knees, as dirty as the model
         float mud = vDirt.x * (1.0 - smoothstep(0.1, 0.8, vDirt.y));
         diffuseColor.rgb = mix(diffuseColor.rgb, mudColor, mud);`)
       .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
-          : clamp(tileSurf.z * vPartSurface.x, 0.04, 1.0);
+          : clamp(tileSurf.z * mix(vPartSurface.x, 1.0, second), 0.04, 1.0);
         roughnessFactor = mix(roughnessFactor, 0.95, mud);`)
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(vPartSurface.y, 0.0, mud);')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(mix(vPartSurface.y, vPartSurface.z, second), 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (vPartTex.z > -0.5) {
           vec2 partXY = texture(partNormals, vec3(vPartUv, vPartTex.z)).xy * 2.0 - 1.0;
@@ -551,7 +593,7 @@ function makeKind(o) {
           normal = normalize(tileFrame(-vViewPosition, normal, vPartUv) * partN);
         } else if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);
-          normal = normalize(frame * vec3(tileSurf.xy * 2.0 - 1.0, 1.0));
+          normal = normalize(frame * tileNormal(tileSurf.xy));
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };

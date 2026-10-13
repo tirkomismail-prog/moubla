@@ -711,11 +711,7 @@ def build():
     materials.fetch(ARGS.cache)
     tiles = materials.write_tiles(ARGS.cache, tex_dir)
     with open(os.path.join(tex_dir, 'layers.json'), 'w', encoding='utf-8') as f:
-        json.dump({
-            'size': mhassets.LAYER_SIZE, 'layers': dict(zip(mhassets.LAYERS, files)),
-            'tiles': {'size': materials.TILE_SIZE, 'layers': tiles,
-                      'repeat': {name: round(1 / metres, 3) for name, (_, _, metres, _) in materials.TILES.items()}},
-        }, f, indent=1)
+        json.dump({'size': mhassets.LAYER_SIZE, 'layers': dict(zip(mhassets.LAYERS, files)), 'tiles': tiles}, f, indent=1)
     rig['parts'] = PARTS
     rig['part_layers'] = {**{part: layer for part, (layer, _) in mhassets.PLACE.items()}, 'Hands': 'skin'}
 

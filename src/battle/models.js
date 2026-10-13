@@ -277,14 +277,16 @@ const ARMOR_COLORS = {
   lamellar: '#7f8487',
   plate: '#b4bcc4',
 };
+// (the Kaganate's lamellar is leather lacquered black)
+const LACQUER = '#2e2924';
 
 // Body cross-sections are ellipses: depth = radius * DEPTH.
 const DEPTH = 0.62;
 
-function torsoGeo(look, team, team2) {
-  return cached(`torso:${look}:${team}:${team2}`, () => {
+function torsoGeo(look, team, team2, armour = ARMOR_COLORS[look]) {
+  return cached(`torso:${look}:${team}:${team2}:${armour}`, () => {
     const b = new GeoBuilder();
-    const base = ARMOR_COLORS[look] || team;
+    const base = armour || team;
     const sz = [1, 1, DEPTH];
     // chest (wider at the shoulders) and belly
     b.cyl(0.215, 0.18, 0.34, 14, base, [0, 0.43, 0], [0, 0, 0], sz);
@@ -314,9 +316,10 @@ function torsoGeo(look, team, team2) {
       b.cyl(0.236, 0.24, 0.04, 14, team2, [0, -0.26, 0], [0, 0, 0], [1, 1, 0.7]);
     }
     if (look === 'plate' || look === 'lamellar') {
-      // pauldrons
-      for (const x of [0.25, -0.25]) b.sphere(0.12, STEEL, [x, 0.56, 0], 10, 6, [1, 0.62, 1.05]);
-      b.cyl(0.12, 0.2, 0.06, 12, STEEL, [0, 0.62, 0], [0, 0, 0], sz); // gorget
+      // pauldrons (lacquered like the lamellar of the Kaganate)
+      const metal = armour === LACQUER ? LACQUER : STEEL;
+      for (const x of [0.25, -0.25]) b.sphere(0.12, metal, [x, 0.56, 0], 10, 6, [1, 0.62, 1.05]);
+      b.cyl(0.12, 0.2, 0.06, 12, metal, [0, 0.62, 0], [0, 0, 0], sz); // gorget
     } else if (look === 'mail') {
       b.cyl(0.1, 0.19, 0.08, 12, '#8d949b', [0, 0.63, 0], [0, 0, 0], sz); // coif collar
     }
@@ -472,14 +475,15 @@ export function buildHuman(spec) {
   hips.add(legL, legR);
   const torso = new THREE.Group();
   hips.add(torso);
-  mesh(torsoGeo(spec.look, spec.team, spec.team2), torso, `torso:${spec.look}:${spec.team}:${spec.team2}`);
+  const armour = spec.look === 'lamellar' && spec.faction === 'kaganate' ? LACQUER : ARMOR_COLORS[spec.look];
+  mesh(torsoGeo(spec.look, spec.team, spec.team2, armour), torso, `torso:${spec.look}:${spec.team}:${spec.team2}:${armour}`);
   const neck = new THREE.Group();
   neck.position.y = 0.6;
   torso.add(neck);
   mesh(headGeo(spec.skin, spec.hair, !!spec.beard), neck, `head:${spec.skin}:${spec.hair}:${!!spec.beard}`);
   const hg = show ? helmetGeo(spec.helmet, spec.team) : null;
   if (hg) mesh(hg, neck, `helmet:${spec.helmet}:${spec.team}`);
-  const sleeve = ARMOR_COLORS[spec.look] || spec.team;
+  const sleeve = armour || spec.team;
   const glove = spec.look === 'mail' || spec.look === 'plate' || spec.look === 'lamellar';
   const armR = new THREE.Group();
   armR.position.set(-0.28, 0.53, 0);
