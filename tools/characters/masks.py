@@ -1,16 +1,18 @@
 """The masks in the soldiers' vertex colours (read by src/battle/partmat.js):
 R the ambient occlusion of the whole outfit, G the distance to the
 garment's open edge (worn hems, cuffs and rims), B a smooth noise in the
-model's space (mottled cloth, the uneven edge of the mud); A is 1. The
-helmets' A is the distance to their rims (rims).
+model's space (mottled cloth, the uneven edge of the mud); A is 1 (the
+game puts there the shade with the hair hidden). The helmets' A is the
+distance to their rims (rims).
 
 The occlusion is baked for each outfit the game puts together
 (outfits.contexts): a garment is shaded by the ones over it, the neck by
-the collar, the head by the hood or the coif. R holds a piece's shade in
-the first outfit that wears it; its shades in the others, where they
-differ, go with it packed four to an attribute (_ao0, _ao1, ...; which
-outfit uses which in the rig's 'ao'), and the game puts the right one into
-R when it joins an outfit (src/battle/character.js outfitGeometry).
+the collar, the head by the hood or the coif, or with its hair hidden by
+a helmet. R holds a piece's shade in the first outfit that wears it; its
+shades in the others, where they differ, go with it packed four to an
+attribute (_ao0, _ao1, ...; which outfit uses which in the rig's 'ao'),
+and the game puts the right ones into R and A when it joins an outfit
+(src/battle/character.js outfitGeometry).
 """
 import heapq
 
@@ -25,8 +27,12 @@ BEARD = ('Beard', 'Moustache')
 # but walking they come out
 SOFT = {'Hose': 0.5, 'VikingPants': 0.5}
 # an outfit's shade is packed only if it differs from R and from every one
-# packed before by more than this, at one vertex in a hundred
+# packed before by more than SAME at one vertex in a hundred, or by more
+# than NEAR at more than FEW vertices (a collar's shade on the neck is a
+# few dozen of the head's thousands)
 SAME = 0.03
+NEAR = 0.1
+FEW = 5
 
 # distance to the edge (m) at which G reaches 1
 EDGE = 0.25
@@ -41,6 +47,9 @@ SEWN = {'Tunic', 'Gambeson', 'Hauberk', 'Surcoat', 'Cuirass', 'Jupon'}
 NOISE = 0.35
 # helmets: distance to the rim (m) at which A reaches 1
 RIM = 0.05
+# the helmet that shades the head under all of them (each comes down to
+# about the brows; a dome with a rim)
+SHELL = 'cap'
 
 # the shades packed with each mesh, and the one each outfit uses (R if none):
 # {'Soldier': {'kept': [outfit, ...], 'use': {outfit: outfit kept}}, 'Piece_Tunic': ...}
@@ -81,11 +90,14 @@ def world(obj):
 def bake(common, pieces, helmets, bake_ao):
     """The occlusion of every outfit of outfits.contexts, into 'ao <outfit>'
     (a float per vertex; not exported) of each object it shades, and R of
-    the first. Only the outfit is seen while it is baked: not the helmets
-    (carried items), the beard and moustache shaded with the first."""
+    the first. Only what the game shows of the outfit is seen while it is
+    baked: not the hair under a hood, a coif or a helmet, nor the helmets
+    (carried items; under one, the head is shaded by the SHELL of
+    `helmets` {look: object}); the beard and moustache shaded with the
+    first outfit."""
     everything = {**common, **pieces}
     looks = outfits.contexts()
-    for obj in helmets:
+    for obj in helmets.values():
         obj.hide_render = True
 
     def show(names):
@@ -96,16 +108,20 @@ def bake(common, pieces, helmets, bake_ao):
     bake_ao([common[n] for n in BEARD if n in common])
     skin = [n for n in common if n not in BEARD]
     for ctx, names in looks.items():
-        seen = [n for n in skin + list(names) if n in everything]
+        head = ctx.partition(':')[2]
+        seen = [n for n in skin + list(names) if n in everything and not (head and n == 'Hair')]
         show(set(seen))
-        bake_ao([everything[n] for n in seen])
-        for n in seen:
+        # (under a helmet only the head: the clothes are as without it)
+        helmets[SHELL].hide_render = head != 'helmet'
+        shaded = [n for n in seen if head != 'helmet' or n in common]
+        bake_ao([everything[n] for n in shaded])
+        for n in shaded:
             me = everything[n].data
             _, c = colours(me)
             store(me, 'ao ' + ctx, 1 - (1 - c[:, 0]) * SOFT.get(n, 1))
     for obj in everything.values():
         obj.hide_render = False
-    for obj in helmets:
+    for obj in helmets.values():
         obj.hide_render = False
     # R: the shade in the first outfit; the outfits without the object
     # (hidden in them) the same, so that the meshes joined later agree
@@ -256,14 +272,18 @@ def pack(obj):
             seen = 1 - (1 - shade[ctx]) / SOFT.get(piece, 1) > 0.45
             if not seen.any():
                 continue
-            diff = {k: np.percentile(np.abs(shade[ctx] - (c[:, 0] if k is None else shade[k]))[seen], 99) for k in [None] + kept}
-            best = min(diff, key=diff.get)
-            if diff[best] > SAME:
+            diff, same = {}, []
+            for k in [None] + kept:
+                d = np.abs(shade[ctx] - (c[:, 0] if k is None else shade[k]))[seen]
+                diff[k] = np.percentile(d, 99)
+                if diff[k] <= SAME and np.count_nonzero(d > NEAR) <= FEW:
+                    same.append(k)
+            best = min(same, key=diff.get) if same else ctx
+            if not same:
                 kept.append(ctx)
-                best = ctx
             if best is not None:
                 use[ctx] = best
-            print(f'{base:22s} {ctx:18s} -> {best or "R"} ({diff[min(diff, key=diff.get)]:.3f})')
+            print(f'{base:22s} {ctx:18s} -> {best or "R"} ({min(diff.values()):.3f})')
         TABLE[base] = {'kept': kept, 'use': use}
     kept = TABLE[base]['kept']
     for i in range(0, len(kept), 4):

@@ -43,8 +43,10 @@ COIF = {'mail': 'Coif-Surcoat', 'plate': 'Coif-Jupon'}
 def contexts():
     """The outfits whose ambient occlusion is baked (masks.py), each a look
     of DRESS with its hands, with a hood ('<look>:hood') or a coif
-    ('<look>:coif'): {name: pieces}. (The Norse kit has a hood only with the
-    gambeson; the game's other outfits differ from these in the feet only.)"""
+    ('<look>:coif'): {name: pieces}; and each look's head under a carried
+    helmet ('<look>:helmet': the hair hidden, as in the hood and the coif).
+    (The Norse kit has a hood only with the gambeson; the game's other
+    outfits differ from these in the feet only.)"""
     out = {}
     for look, dress in DRESS.items():
         own = dress + ('Gloves' if look in GLOVED else 'Hands',)
@@ -53,6 +55,7 @@ def contexts():
             out[look + ':hood'] = own + (HOOD.get(look, 'Hood'),)
         if look in COIF:
             out[look + ':coif'] = own + (COIF[look],)
+        out[look + ':helmet'] = own
     return out
 
 TORSO = {'spine_01', 'spine_02', 'spine_03', 'neck_01', 'clavicle_l', 'clavicle_r', 'pelvis'}

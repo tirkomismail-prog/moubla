@@ -579,18 +579,30 @@ function outfitGeometry(outfit, level) {
 }
 
 // Each part's shade in the outfit `name` (prepare) into R of the joined
-// geometry's colours; R stays where the part has none of its own.
+// geometry's colours (R stays where the part has none of its own), and into
+// A its shade with the hair hidden under a carried helmet ('<name>:helmet',
+// the head's; the others' as in R): partmat.js takes A when the hair is
+// hidden (a helmet, a hood or a coif).
 function shade(geo, parts, name) {
   const color = geo.getAttribute('color');
+  if (!state.t.masks || !color || color.itemSize < 4) return;
+  const helmet = name.includes(':') ? null : `${name}:helmet`;
   let start = 0;
   for (const g of parts) {
     const s = state.t.ao.get(g);
-    const k = s && s.use[name] ? s.kept.indexOf(s.use[name]) : -1;
-    if (color && k >= 0) {
-      const from = s.packed[k >> 2];
-      for (let i = 0; i < from.count; i++) color.setX(start + i, from.getComponent(i, k & 3));
+    const own = (outfit) => {
+      const k = s && s.use[outfit] ? s.kept.indexOf(s.use[outfit]) : -1;
+      return k >= 0 ? { from: s.packed[k >> 2], c: k & 3 } : null;
+    };
+    const r = own(name);
+    const a = helmet && own(helmet);
+    const count = g.getAttribute('position').count;
+    for (let i = 0; i < count; i++) {
+      const v = r ? r.from.getComponent(i, r.c) : color.getX(start + i);
+      color.setX(start + i, v);
+      color.setW(start + i, a ? a.from.getComponent(i, a.c) : v);
     }
-    start += g.getAttribute('position').count;
+    start += count;
   }
 }
 

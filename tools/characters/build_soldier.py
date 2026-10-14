@@ -657,7 +657,7 @@ def build():
         print(f'{name:16s} {tri_count(obj):6d} tris')
     # vertex colours (masks.py): the ambient occlusion of each outfit, the
     # distance to the garments' open edges and a noise
-    masks.bake(common, pieces, list(helmet_objs.values()), bake_ao)
+    masks.bake(common, pieces, helmet_objs, bake_ao)
     masks.paint(everything, bare=set(common))
 
     # levels of detail. The head of each level is one mesh (Soldier_LOD<n>),

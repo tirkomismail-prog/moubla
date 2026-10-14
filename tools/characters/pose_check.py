@@ -23,7 +23,10 @@ when any total is over (run it after each build).
 """
 import json
 import math
+import os
+import struct
 import sys
+import tempfile
 import time
 
 import bpy  # noqa: I001
@@ -84,8 +87,34 @@ NORSE_LIMITS = {'0': (8, 2), '1': (14, 4), '2': (28, 5)}
 HOLE_LIMITS = {'0': (28, 26), '1': (61, 28), '2': (52, 44)}
 PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
+
+
+def without_shades(path):
+    """The model without the outfits' packed shades (_AO*, masks.py), for
+    Blender's importer: it pairs custom attributes of different sizes with
+    the wrong data (it walks their names as a set)."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    n = struct.unpack_from('<I', data, 12)[0]
+    gltf = json.loads(data[20:20 + n])
+    attrs = [p['attributes'] for m in gltf['meshes'] for p in m['primitives']]
+    if not any(k.startswith('_AO') for a in attrs for k in a):
+        return path
+    for a in attrs:
+        for k in [k for k in a if k.startswith('_AO')]:
+            del a[k]
+    text = json.dumps(gltf, separators=(',', ':')).encode('utf-8')
+    text += b' ' * (-len(text) % 4)
+    rest = data[20 + n:]
+    out = os.path.join(tempfile.mkdtemp(), os.path.basename(path))
+    with open(out, 'wb') as f:
+        f.write(struct.pack('<III', 0x46546C67, 2, 20 + len(text) + len(rest)))
+        f.write(struct.pack('<II', len(text), 0x4E4F534A) + text + rest)
+    return out
+
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=GLB)
+bpy.ops.import_scene.gltf(filepath=without_shades(GLB))
 scene = bpy.context.scene
 rig = bpy.data.objects['Soldier']
 objs = {}
