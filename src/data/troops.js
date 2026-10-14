@@ -30,7 +30,8 @@ export const TROOPS = {
   velmar_manatarms: T({ name: 'Латник', faction: 'velmar', tier: 3, type: 'cav', hp: 65, ms: 6, rd: 6,
     eq: { melee: ['sword_arming', 'lance'], shield: ['shield_kite'], armor: ['mail_shirt'], helmet: ['nasal'], horse: ['hunter', 'courser'] },
     up: ['velmar_knight'] }),
-  velmar_knight: T({ name: 'Лицар Вельмару', faction: 'velmar', tier: 5, type: 'cav', hp: 85, ms: 9, rd: 9,
+  // (arms: each bears his own coat of arms, src/battle/character.js knightArms)
+  velmar_knight: T({ name: 'Лицар Вельмару', faction: 'velmar', tier: 5, type: 'cav', hp: 85, ms: 9, rd: 9, arms: true,
     eq: { melee: ['lance', 'sword_fine', 'flail'], shield: ['shield_heater'], armor: ['brigandine', 'plate'], helmet: ['great_helm'], horse: ['destrier', 'charger'] } }),
 
   // ======================= НОРДГЕЙМ =======================

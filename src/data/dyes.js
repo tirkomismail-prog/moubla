@@ -58,3 +58,49 @@ export function sideCloth(faction, enemy) {
 // tarred; the north's dark brown; else a plain brown (the tile alone looks
 // pink).
 export const JERKIN = { kaganate: '#5a5650', nordheim: '#8a7a5e', default: '#a9a27b' };
+
+// Black: wool dyed with iron and oak galls (an estimate: darker than the
+// dark walnut, never coal black). The tinctures of the knights' arms
+// (tools/heraldry) are these dyes.
+export const SABLE = '#403c3a';
+export const TINCTURES = { argent: UNDYED, or: WELD, gules: MADDER_DARK, azure: WOAD_DARK, vert: WOAD_ON_WELD, sable: SABLE };
+
+// The lightness (L*) of the cloth of a dye as it is seen (the colours here
+// are of the cloth / 0.75, in linear light).
+export function lightness(hex) {
+  const lin = (k) => {
+    const v = parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const y = 0.75 * (0.2126 * lin(0) + 0.7152 * lin(1) + 0.0722 * lin(2));
+  return y > 0.008856 ? 116 * Math.cbrt(y) - 16 : 903.3 * y;
+}
+
+// The sign of an army, worn before and behind (art. XVIII of Richard II's
+// ordinances at Durham, 1385: every man of the party, of whatever estate or
+// nation, a large sign of St George's arms; the Scots and French the same
+// month a white saltire, on a patch of black cloth if the coat is white): a
+// shape, and its dye far from the side's field colour in lightness. It tells
+// the sides apart close by only (partmat.js fades it out by 32 m; farther
+// the big garment of the side's colour does).
+const SIGNS = {
+  // a cross or on madder: the faction's own colours
+  velmar: { shape: 'cross', color: WELD },
+  // the Scots' white saltire of 1385
+  nordheim: { shape: 'saltire', color: UNDYED },
+  // a sash over the right shoulder (of later times, the one shape no other
+  // side has)
+  rodan: { shape: 'bend', color: UNDYED },
+  // bands round the upper arms (the steppe's lamellar and leather chests
+  // show no sign)
+  kaganate: { shape: 'armbands', color: DARK.walnutDark },
+};
+
+// The sign of a side (as sideCloth: a faction id, 'player' or 'bandits');
+// null: none (bandits, arena fighters).
+export function sideSign(faction, enemy) {
+  // St George's: a madder cross on the undyed white; white on the dark woad
+  // against the Kaganate
+  if (faction === 'player') return { shape: 'cross', color: enemy === 'kaganate' ? UNDYED : MADDER_DARK };
+  return SIGNS[faction] || null;
+}

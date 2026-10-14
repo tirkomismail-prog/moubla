@@ -189,6 +189,8 @@ export class UI {
       item('Тканини, шкіра, метал, дерево, ґрунти, трава, дерева', a('https://ambientcg.com', 'ambientCG'), ' і ',
         a('https://polyhaven.com', 'Poly Haven'), ' (Rob Tuytel, Rico Cilliers, Charlotte Baglioni, Dario Barresi, Greg Zaal, Lennart Demes), CC0.'),
       item('Кольори барвників', 'за вимірами з робіт Peruzzi et al. 2021, Stasińska 2021, Bukhari et al. 2017 (CC BY 4.0).'),
+      item('Герби лицарів', 'згенеровано програмою ', a('https://github.com/Azgaar/armoria-api', 'Armoria'),
+        ' (Azgaar, MIT); фігури — Azgaar, ', a('https://creativecommons.org/publicdomain/zero/1.0/', 'CC0'), '.'),
       item('Програми', 'three.js і meshoptimizer (MIT).'),
     );
     const win = this.windows.show({ title: 'Подяки', body, footer: [btn('Закрити', () => this.windows.close(win), 'primary')] });

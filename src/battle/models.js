@@ -139,7 +139,9 @@ export class GeoBuilder {
   }
 
   // `r` is an Euler triple or a quaternion. `surface`: [tileable material,
-  // tint] for the textured look instead of the one of `color` (SURFACE).
+  // tint] for the textured look instead of the one of `color` (SURFACE);
+  // with 'coat' third, the face a coat of arms is painted on (metal -1,
+  // character.js itemMaterial).
   add(geo, color, p = [0, 0, 0], r = [0, 0, 0], s = [1, 1, 1], surface = null) {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (r.isQuaternion) tmpQ.copy(r);
@@ -147,8 +149,8 @@ export class GeoBuilder {
     tmpM.compose(tmpV.set(p[0], p[1], p[2]), tmpQ, tmpS.set(s[0], s[1], s[2]));
     g.applyMatrix4(tmpM);
     const c = new THREE.Color(color);
-    const metal = METAL[color] || 0;
     const surf = surface || SURFACE[color];
+    const metal = surf && surf[2] === 'coat' ? -1 : METAL[color] || 0;
     const tile = surf && surf[0] in tileIndex ? tileIndex[surf[0]] : -1;
     const tint = tile >= 0 ? new THREE.Color(surf[1]) : c;
     const pa = g.attributes.position.array;
@@ -706,12 +708,13 @@ const PLANKS = ['planks', '#e8d8c0'];
 const paint = (color) => ['paint', color];
 const FACE = 0.016; // front of a board of depth 0.02 with its bevel
 
-// A flat board of `shape` with bevelled edges, painted `color` in front,
-// and a rawhide rim.
-function board(b, shape, wood, color, depth = 0.02) {
+// A flat board of `shape` with bevelled edges, painted `color` in front (or
+// a coat of arms, `coat`), and a rawhide rim.
+function board(b, shape, wood, color, depth = 0.02, coat = false) {
   const opts = { depth, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.01, bevelSegments: 1, curveSegments: 12 };
   b.add(new THREE.ExtrudeGeometry(shape, opts), wood, [0, 0, -depth / 2], [0, 0, 0], [1, 1, 1], PLANKS);
-  if (color) b.add(new THREE.ShapeGeometry(shape, 12), color, [0, 0, depth / 2 + 0.0068], [0, 0, 0], [1, 1, 1], paint(color));
+  const face = coat ? ['paint', color, 'coat'] : paint(color);
+  if (color) b.add(new THREE.ShapeGeometry(shape, 12), color, [0, 0, depth / 2 + 0.0068], [0, 0, 0], [1, 1, 1], face);
   b.add(new THREE.ExtrudeGeometry(shape, { ...opts, depth: depth * 0.6 }), DARK_LEATHER, [0, 0, -depth / 2 - 0.004], [0, 0, 0], [1.035, 1.03, 1]);
 }
 
@@ -734,8 +737,10 @@ function boss(b, r, z = FACE) {
   b.add(new THREE.SphereGeometry(r, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2), STEEL, [0, 0, z + 0.004], [Math.PI / 2, 0, 0], [1, 0.8, 1]);
 }
 
-export function shieldGeo(model, color, team, team2 = '#dddddd') {
-  return cached(`sh:${model}:${color}:${team}:${team2}`, () => {
+// (`coat`: a heater painted with its bearer's arms, given per instance,
+// props.js; the geometry says so in userData.coats)
+export function shieldGeo(model, color, team, team2 = '#dddddd', coat = false) {
+  return cached(`sh:${model}:${color}:${team}:${team2}${coat ? ':arms' : ''}`, () => {
     const b = new GeoBuilder();
     const S = [Math.PI / 2, 0, 0];
     switch (model) {
@@ -763,9 +768,9 @@ export function shieldGeo(model, color, team, team2 = '#dddddd') {
         break;
       }
       case 'heater': {
-        board(b, HEATER, WOOD, team);
-        // a chevron
-        charge(b, [[0, 0.16], [0.235, -0.07], [0.235, 0.0], [0, 0.23], [-0.235, 0.0], [-0.235, -0.07]], team2);
+        board(b, HEATER, WOOD, team, 0.02, coat);
+        // a chevron (a knight's has his arms)
+        if (!coat) charge(b, [[0, 0.16], [0.235, -0.07], [0.235, 0.0], [0, 0.23], [-0.235, 0.0], [-0.235, -0.07]], team2);
         rivets(b, HEATER, 14);
         break;
       }
@@ -780,7 +785,9 @@ export function shieldGeo(model, color, team, team2 = '#dddddd') {
       default:
         b.box(0.5, 0.6, 0.04, color, [0, 0, 0], [0, 0, 0], [1, 1, 1], PLANKS);
     }
-    return b.build();
+    const geo = b.build();
+    geo.userData.coats = coat && model === 'heater';
+    return geo;
   });
 }
 

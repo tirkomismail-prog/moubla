@@ -6,7 +6,7 @@ import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
-import { SkinnedHuman, charactersReady, itemMaterial } from './character.js';
+import { SkinnedHuman, charactersReady, itemMaterial, knightArms } from './character.js';
 import { clamp, wrapAngle, approachAngle } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
 
@@ -236,9 +236,18 @@ export class Agent {
       beard: r1() < 0.45 ? (r1() < 0.6 ? 'full' : 'moustache') : null,
       stubble: r1() < 0.5,
       pants: pick(cloth.pool),
+      // the army's sign (dyes.js sideSign), and a knight's own coat of arms:
+      // on his garment when he fights for his faction (else the sign of the
+      // side he fights for), on his shield always
+      badge: colors.badge || null,
+      arms: troop && troop.arms ? knightArms(this.id) : -1,
+      armsWorn: !!troop && troop.faction === colors.faction,
       // a chosen face (skin, hair, beard, stubble) instead of a random one
       ...opts.appearance,
     };
+    // (arms are sewn new for the campaign)
+    if (spec.arms >= 0) spec.fade = Math.min(spec.fade, 0.1);
+    this.arms = spec.arms;
     // the worn edges of the clothes (partmat.js PART_MASKS): as worn as faded
     spec.wear = 0.5 + 2 * spec.fade;
     // realistic skinned body (medium/high graphics) or the procedural one
@@ -340,7 +349,11 @@ export class Agent {
     else r.wristR.add(this.weaponMesh);
     if (this.shield) {
       const it = ITEMS[this.shield];
-      this.shieldMesh = props.add(shieldGeo(it.model, it.color, this.colors.team, this.colors.team2), mat);
+      // (a knight's heater painted with his arms: one model for all, the arms
+      // of each in its instance, props.js)
+      const coat = !!mat && this.arms >= 0 && it.model === 'heater';
+      this.shieldMesh = props.add(shieldGeo(it.model, it.color, this.colors.team, this.colors.team2, coat), mat);
+      if (coat) this.shieldMesh.userData.coat = this.arms;
       r.shieldMount.add(this.shieldMesh);
     }
     // show an inactive bow / crossbow on the back

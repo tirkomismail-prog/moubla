@@ -14,7 +14,7 @@ import { Effects } from './effects.js';
 import { gfxPreset, Environment, createPost } from './graphics.js';
 import { setMaterialQuality } from './models.js';
 import { Props } from './props.js';
-import { sideCloth } from '../data/dyes.js';
+import { sideCloth, sideSign } from '../data/dyes.js';
 import { AutoResolution } from './autores.js';
 import { flushBones, SHADOW_LAYER } from './partmat.js';
 import { T, findMeleeTarget, isBlocked, attackDamage, computeDamage, speedBonus, requiredBlock } from './combat.js';
@@ -348,13 +348,16 @@ export class Battle {
     return this.factions;
   }
 
-  // team: the colour of its banners and shields (team, team2) and its cloth
-  // (sideCloth: the dyed field colour and the pool of the rest)
+  // team: the colour of its banners and shields (team, team2), its cloth
+  // (sideCloth: the dyed field colour and the pool of the rest), the sign
+  // its men wear (sideSign; none in the arena) and its faction ('player' for
+  // the player's side)
   colorsFor(team) {
     const c = toHex((this.config.factionColors || [])[team] || (team === 0 ? '#3f6fb5' : '#a8322a'));
     const [player, enemy] = this.sideFactions();
-    const cloth = team === 0 ? sideCloth(player, enemy) : sideCloth(enemy, player);
-    return { team: c, team2: toHex(lighten(c, 1.6)), cloth };
+    const [own, other] = team === 0 ? [player, enemy] : [enemy, player];
+    const badge = this.config.kind === 'arena' ? null : sideSign(own, other);
+    return { team: c, team2: toHex(lighten(c, 1.6)), cloth: sideCloth(own, other), badge, faction: own };
   }
 
   spawnInitial() {

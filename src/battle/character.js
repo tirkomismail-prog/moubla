@@ -8,8 +8,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex } from './models.js';
-import { bytesOf, decodeLayers, decodeTiles, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
-import { JERKIN, UNDYED } from '../data/dyes.js';
+import { bytesOf, decodeLayers, decodeTiles, deco, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
+import { JERKIN, SABLE, TINCTURES, UNDYED, lightness } from '../data/dyes.js';
 import { horseTextures, loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
@@ -40,10 +40,18 @@ export function loadCharacters() {
       const trees = assets.trees ? loadTrees(assets) : null;
       const ground = assets.ground ? loadGround(assets) : null;
       for (const job of [horseTex, trees, ground]) if (job) job.catch(() => {});
-      [t.layers, t.tiles] = await Promise.all([
+      [t.layers, t.tiles, t.heraldry] = await Promise.all([
         tex ? decodeLayers(tex.size, tex.layers, THREE.SRGBColorSpace) : null,
         tex && tex.tiles ? decodeTiles(tex.tiles) : null,
+        // the knights' coats of arms (tools/heraldry): not repeated (each
+        // ends at its edges, carried on to the seams)
+        assets.heraldry ? decodeLayers(assets.heraldry.size, assets.heraldry.layers, THREE.SRGBColorSpace) : null,
       ]);
+      if (t.heraldry) {
+        t.heraldry.texture.wrapS = t.heraldry.texture.wrapT = THREE.ClampToEdgeWrapping;
+        t.heraldry.texture.needsUpdate = true;
+        t.heraldry.meta = assets.heraldry.meta || [];
+      }
       // weapons and shields name their materials by these layers
       if (t.tiles) setTileIndex(t.tiles.index);
       if (t.tiles) ironHelmets(t.helmets, t.tiles.index);
@@ -85,6 +93,17 @@ export function loadCharacters() {
 
 export function charactersReady() {
   return state.status === 'ready';
+}
+
+// The coat of arms of a knight (troops.js `arms`) among the coats of
+// tools/heraldry: the first LORD_ARMS are the king's and the lords' of
+// Velmar, the knights' are the rest, one for each `n` (an agent's id); -1
+// without the coats.
+const LORD_ARMS = 6;
+export function knightArms(n) {
+  const h = state.t && state.t.heraldry;
+  const count = h ? Object.keys(h.index).length - LORD_ARMS : 0;
+  return count > 0 ? LORD_ARMS + ((Math.imul(n, 2654435761) >>> 0) % count) : -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +451,7 @@ function palette(spec) {
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar((state.t && state.t.masks ? HAIR_SHADE : 1) / HAIR_MEAN);
-  return {
+  return decorate(spec, {
     Body: surface(skin, 0.55),
     // (the cloth look's shirt; the Norse kyrtle's body is wool)
     Tunic: look === 'cloth' && spec.kit !== 'norse' ? linen : team,
@@ -470,7 +489,61 @@ function palette(spec) {
     Brows: surface(hair, 0.7),
     Lashes: surface('#2a211b', 0.7),
     Eyes: surface('#ffffff', 0.12),
+  });
+}
+
+// The tiles of the cloth dyed in the sides' colours (made to WOOL_MEAN),
+// and the mean albedo of the others (tools/characters/materials.py TILES)
+const DYED_TILES = new Set(['wool', 'linen', 'quilted', 'brigandine']);
+const TILE_MEAN = { mail: [0.28, 0.28, 0.28], leather: [0.171, 0.082, 0.071], lamellar: [0.55, 0.55, 0.55], iron: [0.42, 0.42, 0.42] };
+
+// The lightness (L*) a part's look is seen with.
+function seenLightness(s) {
+  const mean = DYED_TILES.has(s.tile) ? WOOL_MEAN : TILE_MEAN[s.tile] || [1, 1, 1];
+  const c = new THREE.Color(s.color);
+  const y = 0.2126 * c.r * mean[0] + 0.7152 * c.g * mean[1] + 0.0722 * c.b * mean[2];
+  return y > 0.008856 ? 116 * Math.cbrt(y) - 16 : 903.3 * y;
+}
+
+// The part that bears the army's sign or a knight's arms: the outer garment
+// of the chest, or the sleeves for armbands
+const CHEST = { cloth: 'Tunic', padded: 'Gambeson', leather: 'Jerkin', mail: 'Surcoat', lamellar: 'Cuirass', brigandine: 'Cuirass', plate: 'Jupon' };
+const SLEEVES = { cloth: 'Tunic', padded: 'Gambeson', leather: 'Tunic', lamellar: 'Tunic' };
+function bearer(spec, sleeves) {
+  const look = OUTFITS[spec.look] ? spec.look : 'cloth';
+  if (spec.kit === 'norse' && NORSE[look] && !norseFailed) {
+    return sleeves ? 'Oversleeves' : look === 'padded' ? 'Gambeson' : look === 'brigandine' ? 'Cuirass' : 'Vest';
+  }
+  return sleeves ? SLEEVES[look] || 'Hauberk' : CHEST[look];
+}
+
+// A knight's arms over his whole garment (of his field's colour: so it is
+// seen beyond 32 m, partmat.js DECO_FRAGMENT); or the army's sign on the
+// part that bears it, on a patch of undyed or black cloth where it would not
+// stand out (as the Scots' ordinance of 1385 has it).
+function decorate(spec, look) {
+  const h = state.t && state.t.heraldry;
+  if (spec.arms >= 0 && spec.armsWorn && h) {
+    const part = bearer(spec, false);
+    const s = look[part];
+    if (s && DYED_TILES.has(s.tile)) {
+      const field = h.meta[spec.arms] && TINCTURES[h.meta[spec.arms].field];
+      look[part] = { ...s, color: field ? clothColor(field, spec.fade, spec.shade) : s.color, deco: deco('coat', { coat: spec.arms }) };
+      return look;
+    }
+  }
+  const sign = spec.badge;
+  const part = sign && bearer(spec, sign.shape === 'armbands');
+  const s = part && look[part];
+  if (!s) return look;
+  const L = lightness(sign.color);
+  const boxed = sign.shape === 'cross' || sign.shape === 'saltire';
+  const patch = boxed && Math.abs(L - seenLightness(s)) < 30 ? (L > 50 ? SABLE : UNDYED) : null;
+  look[part] = {
+    ...s,
+    deco: deco(sign.shape, { color: clothColor(sign.color), patch: patch && clothColor(patch), weave: DYED_TILES.has(s.tile) }),
   };
+  return look;
 }
 
 // The garments of each armour look (see tools/characters/outfits.py); the
@@ -614,7 +687,8 @@ function soldierLook(owner, spec, hidden) {
   const t = state.t;
   const layers = t.layers;
   const stubble = spec.stubble && layers && 'skin_stubble' in layers.index;
-  return partLook(owner, { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud, masks: t.masks }, {
+  const kind = { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud, masks: t.masks, deco: t.masks, heraldry: t.heraldry };
+  return partLook(owner, kind, {
     palette: palette(spec),
     layerOf: (name) => ((name === 'Body' || name === 'Hands') && stubble ? 'skin_stubble' : t.partLayers[name]),
     cards: CARDS,
@@ -643,6 +717,7 @@ export function itemMaterial() {
     shader.uniforms.tileColor = { value: tiles.color };
     shader.uniforms.tileSurface = { value: tiles.surface };
     shader.uniforms.tileRepeat = { value: repeat };
+    shader.uniforms.heraldry = { value: state.t.heraldry ? state.t.heraldry.texture : null };
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float _tile;
@@ -651,35 +726,64 @@ export function itemMaterial() {
         varying float vTile;
         varying float vMetal;
         varying vec3 vTint;
-        varying vec2 vTileUv;`)
+        varying vec2 vTileUv;
+        varying float vCoat;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vTile = _tile;
         vMetal = metal;
         vTint = tint;
-        vTileUv = uv;`);
+        vTileUv = uv;`)
+      // (the instance colour of a knight's shield is his coat of arms, not a colour)
+      .replace('#include <color_vertex>', `
+        #if defined(USE_COLOR) || defined(USE_COLOR_ALPHA) || defined(USE_INSTANCING_COLOR)
+        vColor = vec4(1.0);
+        #endif
+        #ifdef USE_COLOR_ALPHA
+        vColor *= color;
+        #elif defined(USE_COLOR)
+        vColor.rgb *= color;
+        #endif
+        #ifdef USE_INSTANCING_COLOR
+        vCoat = instanceColor.r;
+        #else
+        vCoat = -1.0;
+        #endif`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${TILE_FRAGMENT}
         uniform float tileRepeat[${repeat.length}];
+        uniform highp sampler2DArray heraldry;
         varying float vTile;
         varying float vMetal;
         varying vec3 vTint;
-        varying vec2 vTileUv;`)
+        varying vec2 vTileUv;
+        varying float vCoat;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
         vec2 tileUv = vTileUv;
+        vec3 itemTint = vTint;
+        // a knight's arms on the face of his heater (metal -1 there; the
+        // arms are the instance's, props.js): its field from the top, as
+        // wide as the shield (on the face vTileUv is (y, x) in metres,
+        // models.js), painted (x 1.25: the paint tile's mean is 0.6, the
+        // dyes' colours are of the cloth / 0.75)
+        vec2 coatUv = vec2((vTileUv.y + 0.25) * 2.0, (0.31 - vTileUv.x) / 0.583);
+        vec2 coatDx = dFdx(coatUv);
+        vec2 coatDy = dFdy(coatUv);
+        if (vCoat > -0.5 && vMetal < -0.5) itemTint = 1.25 * textureGrad(heraldry, vec3(coatUv, vCoat), coatDx, coatDy).rgb;
+        float itemMetal = max(vMetal, 0.0);
         if (vTile > -0.5) {
           tileUv *= tileRepeat[int(vTile + 0.5)];
           vec4 tileCol = texture(tileColor, vec3(tileUv, vTile));
-          diffuseColor.rgb = vTint * tileCol.rgb;
+          diffuseColor.rgb = itemTint * tileCol.rgb;
           tileSurf = vec3(texture(tileSurface, vec3(tileUv, vTile)).xy, tileCol.a);
         }
         // worn rims (a helmet's colour alpha is the distance to the nearest
         // rim, tools/characters/masks.py; 1 elsewhere): the metal rubbed
         // bright and smooth there, not drawn far away (smaller than a pixel)
-        float rimWear = vMetal * (1.0 - smoothstep(0.0, 0.6, vColor.a)) * (1.0 - smoothstep(12.0, 18.0, length(vViewPosition)));
+        float rimWear = itemMetal * (1.0 - smoothstep(0.0, 0.6, vColor.a)) * (1.0 - smoothstep(12.0, 18.0, length(vViewPosition)));
         diffuseColor.rgb *= 1.0 + 0.4 * rimWear;`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = (tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0)) * (1.0 - 0.4 * rimWear);')
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = itemMetal;')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, tileUv);

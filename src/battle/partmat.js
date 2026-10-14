@@ -14,15 +14,16 @@ export function bytesOf(b64) {
   return bytes;
 }
 
-// The RGBA8 pixels of a WebP image (base64), drawn at size x size; with
-// `alpha` (another image) its grey in the alpha channel. (Masks never go in
-// a WebP's own alpha: the canvas premultiplies it.)
+// The RGBA8 pixels of a WebP (or PNG) image (base64), drawn at size x
+// size; with `alpha` (another image) its grey in the alpha channel. (Masks
+// never go in a WebP's own alpha: the canvas premultiplies it.)
 export async function pixels(size, b64, alpha = null) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const draw = async (b) => {
-    const img = await createImageBitmap(new Blob([bytesOf(b)], { type: 'image/webp' }));
+    const type = b.startsWith('iVBORw0KGgo') ? 'image/png' : 'image/webp';
+    const img = await createImageBitmap(new Blob([bytesOf(b)], { type }));
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(img, 0, 0, size, size);
     img.close();
@@ -481,12 +482,15 @@ const kinds = new WeakMap();
 //                 layers by the same names), tiles (tileable materials,
 //                 decodeTiles), mud (colour of the dirt, linear), masks
 //                 (the vertex colours are masks, see PART_MASKS; else a
-//                 shade; with masks, parts has 'Hair')
-//   look          palette {part: surface() or tiled()}, layerOf (part ->
-//                 name of its texture layer), cards (parts made of see-through
-//                 cards), marked (parts whose texture alpha selects the mark
-//                 colour, a horse's white markings), markColor, hidden (per
-//                 part 1 = not drawn)
+//                 shade; with masks, parts has 'Hair'), deco (the army's
+//                 sign and the knights' arms, DECO_FRAGMENT), heraldry (the
+//                 arms' array texture, decodeLayers)
+//   look          palette {part: surface() or tiled(); on the part that
+//                 bears a sign or arms with `deco`: deco()}, layerOf (part ->
+//                 name of its texture layer), cards (parts made of
+//                 see-through cards), marked (parts whose texture alpha
+//                 selects the mark colour, a horse's white markings),
+//                 markColor, hidden (per part 1 = not drawn)
 // Returns {material, row}: the row goes to poolBones.
 export function partLook(owner, o, look) {
   let byProgram = kinds.get(owner);
@@ -518,9 +522,39 @@ export function partLook(owner, o, look) {
       second ? tiles.maskIndex[s.tile] : -1,
     ], k + 8);
     if (second) c.set(s.second.color);
-    row.set(second ? [c.r, c.g, c.b, s.second.metalness] : [mark.r, mark.g, mark.b, 0], k + 12);
+    // (a sign or arms: its code with the second metalness, decoCoder)
+    const code = s.deco && kind.decoCode ? kind.decoCode(s.deco) : 0;
+    row.set(second ? [c.r, c.g, c.b, s.second.metalness + 2 * code] : [mark.r, mark.g, mark.b, 2 * code], k + 12);
   });
   return { material: kind.material, row: kind.palette.add(row) };
+}
+
+// What a part bears (character.js palette): the army's sign (shape 'cross',
+// 'saltire', 'bend' or 'armbands', in `color`, on a `patch` of another
+// cloth or null) or a coat of arms (shape 'coat', `coat` its layer in the
+// heraldry array); colours as tints of the part's cloth; `weave`: the part
+// is dyed cloth (the sign in its weave), else the sign is cloth sewn on
+// (mail, leather, lamellar).
+export const deco = (shape, { color = null, patch = null, coat = -1, weave = true } = {}) => ({ shape, color, patch, coat, weave });
+const DECO_SHAPES = { cross: 1, saltire: 2, bend: 3, armbands: 4, coat: 5 };
+// The code in a palette row (texel 3's alpha, with the second material's
+// metalness: a = metalness + 2 * code; next to the largest codes a float
+// keeps the metalness to 1/64): bits 0-2 the shape, 3 woven, 4-7 the sign's
+// tint, 8-11 the patch's (0: none), 12-16 the coat's layer + 1. The tints
+// are a table of the kind (uniform decoTint).
+function decoCoder(tints) {
+  const index = new Map();
+  const slot = (color) => {
+    if (!color) return 0;
+    const key = color.getHexString();
+    if (!index.has(key)) {
+      if (index.size >= 15) return 0;
+      index.set(key, index.size + 1);
+      tints.value[index.size].copy(color);
+    }
+    return index.get(key);
+  };
+  return (d) => (DECO_SHAPES[d.shape] || 0) | (d.weave ? 8 : 0) | (slot(d.color) << 4) | (slot(d.patch) << 8) | ((d.coat + 1) << 12);
 }
 
 function makeKind(o) {
@@ -532,7 +566,11 @@ function makeKind(o) {
     layerSize: { value: layers ? layers.size : 1 },
   };
   const m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
-  if (o.masks) m.defines = { PART_MASKS: '', PART_HAIR: Math.max(0, parts.indexOf('Hair')) };
+  m.defines = {};
+  if (o.masks) Object.assign(m.defines, { PART_MASKS: '', PART_HAIR: Math.max(0, parts.indexOf('Hair')) });
+  // the army's sign and the arms (DECO_FRAGMENT)
+  const decoTint = { value: Array.from({ length: 16 }, () => new THREE.Color(0, 0, 0)) };
+  if (o.deco) m.defines.PART_DECO = '';
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
     shader.uniforms.partNormals = { value: normals ? normals.texture : null };
@@ -540,6 +578,8 @@ function makeKind(o) {
     shader.uniforms.tileSurface = { value: tiles ? tiles.surface : null };
     shader.uniforms.tileMask = { value: tiles ? tiles.mask : null };
     shader.uniforms.mudColor = { value: new THREE.Color(o.mud || '#4a3b2a') };
+    shader.uniforms.decoTint = decoTint;
+    shader.uniforms.heraldry = { value: o.heraldry ? o.heraldry.texture : null };
     shader.vertexShader = shader.vertexShader
       .replace('#include <skinning_pars_vertex>', SKINNING)
       .replace('#include <common>', `#include <common>${PART_VERTEX}
@@ -550,6 +590,10 @@ function makeKind(o) {
         #ifdef PART_MASKS
         varying float vMottle;
         varying float vShade;
+        #endif
+        #ifdef PART_DECO
+        flat varying float vDeco;
+        varying vec2 vDecoXY;
         #endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
         vec4 pal3 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 3, partRow), 0);
@@ -563,6 +607,14 @@ function makeKind(o) {
         vMottle = sin(6.2832 * (color.b * 2.0 + fract(boneBase.x * 0.618)));
         // the outfit's shade; A with the hair hidden (a helmet, hood or coif)
         vShade = texelFetch(partPalette, ivec2(PART_HAIR * ${PALETTE_TEXELS} + 2, partRow), 0).z > 0.5 ? color.a : color.r;
+        #endif
+        #ifdef PART_DECO
+        // a sign or arms (texel 3's alpha: the second metalness + 2 * code)
+        vDeco = floor(pal3.a * 0.5);
+        vPartSurface.z = pal3.a - 2.0 * vDeco;
+        // where in the bind pose: across the body (x), and how squarely the
+        // surface faces the front (+) or the back (-) (the height: vDirt.y)
+        vDecoXY = vec2(position.x, sign(normal.z) * smoothstep(0.55, 0.75, abs(normal.z)));
         #endif`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
@@ -577,6 +629,12 @@ function makeKind(o) {
         #ifdef PART_MASKS
         varying float vMottle;
         varying float vShade;
+        #endif
+        #ifdef PART_DECO
+        uniform vec3 decoTint[16];
+        uniform highp sampler2DArray heraldry;
+        flat varying float vDeco;
+        varying vec2 vDecoXY;
         #endif`)
       .replace('#include <color_fragment>', `
         #ifndef PART_MASKS
@@ -584,6 +642,8 @@ function makeKind(o) {
         #endif
         vec4 partTex = partTexel();
         vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, vMarkColor, partTex.a) : vPartColor;
+        #ifdef PART_DECO${DECO_FRAGMENT}
+        #endif
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
         // (how much of the texel is the tile's second material: its tint,
         // metalness and own roughness; filtered like the rest, so that far
@@ -602,6 +662,11 @@ function makeKind(o) {
         float mudLine = vDirt.y;
         float wear = 0.0;
         float partMetal = mix(vPartSurface.y, vPartSurface.z, second);
+        #ifdef PART_DECO
+        // (a sign sewn on mail, leather or lamellar: cloth)
+        diffuseColor.rgb = mix(diffuseColor.rgb, decoCol * vec3(0.77, 0.729, 0.669), decoSewn);
+        partMetal *= 1.0 - decoSewn;
+        #endif
         #ifdef PART_MASKS
         // the vertex colours are masks (tools/characters/masks.py): R (or A)
         // the outfit's shade (vShade, below), G the distance to the
@@ -629,6 +694,9 @@ function makeKind(o) {
       .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
           : clamp(tileSurf.z * mix(vPartSurface.x, 1.0, second), 0.04, 1.0);
         roughnessFactor *= 1.0 - 0.45 * wear * partMetal;
+        #ifdef PART_DECO
+        roughnessFactor = mix(roughnessFactor, 0.9, decoSewn);
+        #endif
         roughnessFactor = mix(roughnessFactor, 0.95, mud);`)
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(partMetal, 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
@@ -642,7 +710,7 @@ function makeKind(o) {
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
-  m.customProgramCacheKey = () => `${o.program}:${parts.length}${o.masks ? ':masks' : ''}`;
+  m.customProgramCacheKey = () => `${o.program}:${parts.length}${o.masks ? ':masks' : ''}${o.deco ? ':deco' : ''}`;
   // shadows: hidden parts cast none, cards only where they are not see-through
   const depth = new THREE.MeshDepthMaterial();
   depth.onBeforeCompile = (shader) => {
@@ -658,8 +726,70 @@ function makeKind(o) {
   };
   depth.customProgramCacheKey = () => `${o.program}:${parts.length}-depth`;
   m.userData.depth = depth;
-  return { material: m, palette };
+  // (the palette texture, a row per model: for the tests)
+  m.userData.palette = palette.uniform;
+  return { material: m, palette, decoCode: o.deco ? decoCoder(decoTint) : null };
 }
+
+// The army's sign or a knight's arms on the part that bears them (DECO),
+// projected from the bind pose onto the chest and the back (the outer
+// garments are cut alike: these rectangles are on each of them, flat, under
+// the coif's mantle and above the belt), faded out from 24 to 32 m (beyond,
+// the side's big garment tells the sides apart; and the bars would be under
+// a pixel). The arms cover the whole garment: a heater's field (6:7) on the
+// chest and on the back (as a viewer behind sees it), its edges carried on
+// to the seams; the sign is a cross or saltire with 5 cm bars in a 24 cm
+// field (on a patch of other cloth where it would not show), a sash over
+// the right shoulder, or bands round the upper arms. Mixed into the cloth's
+// tint (under its weave, the brigandine's rivets, mud and wear), or sewn on
+// over mail, leather or lamellar (decoSewn: after the tile).
+const DECO_FRAGMENT = `
+  vec3 decoCol = vec3(0.0);
+  float decoSewn = 0.0;
+  // (derivatives before any branch)
+  vec2 decoP = vec2(vDecoXY.x, vDirt.y);
+  vec2 decoDx = dFdx(decoP);
+  vec2 decoDy = dFdy(decoP);
+  float decoPx = max(0.7 * (length(decoDx) + length(decoDy)), 1e-4);
+  float decoFade = 1.0 - smoothstep(24.0, 32.0, length(vViewPosition));
+  if (vDeco > 0.5 && decoFade > 0.0) {
+    int code = int(vDeco + 0.5);
+    int shape = code & 7;
+    float back = vDecoXY.y > 0.0 ? 0.0 : 1.0;
+    if (shape == 5) {
+      vec2 frame = mix(vec2(0.21, 0.245), vec2(0.22, 0.257), back);
+      float flip = 1.0 - 2.0 * back;
+      vec2 g = vec2(flip, -1.0) / frame;
+      vec2 uv = vec2(0.5, 0.5) + vec2(decoP.x, decoP.y - mix(1.215, 1.225, back)) * g;
+      vec3 coat = textureGrad(heraldry, vec3(uv, float((code >> 12) - 1)), decoDx * g, decoDy * g).rgb;
+      // (the coat's dyes as tints of the wool: 0.75 / its mean)
+      partTint = mix(partTint, coat * vec3(0.974, 1.029, 1.121), decoFade);
+    } else {
+      vec2 q = vec2(decoP.x, decoP.y - mix(1.205, 1.215, back));
+      vec2 a = abs(q);
+      float box = max(a.x, a.y) - 0.12;
+      float d;
+      float facing = abs(vDecoXY.y);
+      if (shape == 1) d = max(min(a.x, a.y) - 0.025, box);
+      else if (shape == 2) d = max(abs(a.x - a.y) * 0.7071 - 0.025, box);
+      else if (shape == 3) d = abs(0.8 * decoP.x + 0.6 * (decoP.y - 1.2)) - 0.04;
+      else {
+        // (the upper arm in the bind pose: from the shoulder down and out)
+        vec2 arm = vec2(abs(decoP.x) - 0.184, decoP.y - 1.386);
+        float along = dot(arm, vec2(0.658, -0.752));
+        float off = abs(arm.x * -0.752 - arm.y * 0.658);
+        d = max(abs(along - 0.13) - 0.025, off - 0.09);
+        facing = 1.0;
+      }
+      float cov = clamp(0.5 - d / decoPx, 0.0, 1.0) * facing * decoFade;
+      int patchTint = (code >> 8) & 15;
+      float patchCov = patchTint > 0 ? clamp(0.5 - box / decoPx, 0.0, 1.0) * facing * decoFade : 0.0;
+      float decoCov = max(cov, patchCov);
+      decoCol = mix(decoTint[patchTint], decoTint[(code >> 4) & 15], cov / max(decoCov, 1e-4));
+      if ((code & 8) != 0) partTint = mix(partTint, decoCol, decoCov);
+      else decoSewn = decoCov;
+    }
+  }`;
 
 // Metal reflects a third less of the surroundings: the sky dome's glow
 // otherwise lights armour in the shade like chrome.

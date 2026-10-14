@@ -1,0 +1,135 @@
+{
+ "size": 128,
+ "coats": [
+  "heraldry_00.png",
+  "heraldry_01.png",
+  "heraldry_02.png",
+  "heraldry_03.png",
+  "heraldry_04.png",
+  "heraldry_05.png",
+  "heraldry_06.png",
+  "heraldry_07.png",
+  "heraldry_08.png",
+  "heraldry_09.png",
+  "heraldry_10.png",
+  "heraldry_11.png",
+  "heraldry_12.png",
+  "heraldry_13.png",
+  "heraldry_14.png",
+  "heraldry_15.png"
+ ],
+ "meta": [
+  {
+   "seed": "velmar-1",
+   "field": "sable",
+   "blazon": "perCross sable and or",
+   "L": 52.9
+  },
+  {
+   "seed": "velmar-0",
+   "field": "gules",
+   "blazon": "gules, 2 mullet argent",
+   "L": 38.3
+  },
+  {
+   "seed": "velmar-37",
+   "field": "gules",
+   "blazon": "perCross gules and or",
+   "L": 54.5
+  },
+  {
+   "seed": "velmar-168",
+   "field": "gules",
+   "blazon": "gules, a bend or, 1 crescent or",
+   "L": 50.7
+  },
+  {
+   "seed": "velmar-77",
+   "field": "sable",
+   "blazon": "perPale sable and or",
+   "L": 53
+  },
+  {
+   "seed": "velmar-2",
+   "field": "gules",
+   "blazon": "gules, 1 crossPatonce argent",
+   "L": 48.5
+  },
+  {
+   "seed": "velmar-78",
+   "field": "gules",
+   "blazon": "gules, a chevron or",
+   "L": 43.7
+  },
+  {
+   "seed": "velmar-211",
+   "field": "gules",
+   "blazon": "gules, a fess or, 3 roundel or",
+   "L": 49.5
+  },
+  {
+   "seed": "velmar-109",
+   "field": "gules",
+   "blazon": "gules, a fess or",
+   "L": 46.3
+  },
+  {
+   "seed": "velmar-3",
+   "field": "azure",
+   "blazon": "azure, 1 crossFleury argent",
+   "L": 45.3
+  },
+  {
+   "seed": "velmar-166",
+   "field": "gules",
+   "blazon": "perPale gules and or",
+   "L": 54.5
+  },
+  {
+   "seed": "velmar-404",
+   "field": "azure",
+   "blazon": "azure, a bend or, 1 mullet or",
+   "L": 50.5
+  },
+  {
+   "seed": "velmar-220",
+   "field": "sable",
+   "blazon": "sable, a chevron argent",
+   "L": 49.3
+  },
+  {
+   "seed": "velmar-6",
+   "field": "gules",
+   "blazon": "gules, 2 mullet6Pierced argent",
+   "L": 37.5
+  },
+  {
+   "seed": "velmar-905",
+   "field": "azure",
+   "blazon": "azure, a quarter or",
+   "L": 43
+  },
+  {
+   "seed": "velmar-647",
+   "field": "sable",
+   "blazon": "sable, a bendSinister or, 2 crossFleury argent",
+   "L": 50
+  }
+ ],
+ "tinctures": {
+  "argent": "#fff2d1",
+  "or": "#edb600",
+  "gules": "#8d3433",
+  "azure": "#34556d",
+  "vert": "#5f794f",
+  "sable": "#403c3a"
+ },
+ "charges": [
+  "crescent",
+  "crossFleury",
+  "crossPatonce",
+  "mullet",
+  "mullet6Pierced",
+  "roundel"
+ ]
+}

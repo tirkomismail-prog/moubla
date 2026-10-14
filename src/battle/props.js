@@ -7,6 +7,9 @@
 // Every model has two instanced meshes: items near the camera cast shadows,
 // far ones do not (like the far soldiers' bodies). Items outside the view
 // are skipped (near ones with a margin: their shadows may fall into it).
+// Shields painted with their bearers' arms (geometry userData.coats) give
+// each instance its coat: the holder's userData.coat, in the instance colour
+// (character.js itemMaterial reads it).
 import * as THREE from 'three';
 import { material } from './models.js';
 
@@ -64,6 +67,10 @@ export class Props {
     }
     m = new THREE.InstancedMesh(model.geo, model.mat || material(), size);
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    if (model.geo.userData.coats && model.mat) {
+      m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(size * 3).fill(-1), 3);
+      m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    }
     m.frustumCulled = false;
     m.castShadow = shadow;
     m.receiveShadow = true;
@@ -91,8 +98,10 @@ export class Props {
         const close = _sphere.center.distanceToSquared(cam) < d2;
         _sphere.radius = close ? SHADOW_MARGIN : ITEM_RADIUS;
         if (!_frustum.intersectsSphere(_sphere)) continue;
-        if (close) near.instanceMatrix.array.set(e, 16 * n++);
-        else far.instanceMatrix.array.set(e, 16 * f++);
+        const into = close ? near : far;
+        const i = close ? n++ : f++;
+        into.instanceMatrix.array.set(e, 16 * i);
+        if (into.instanceColor) into.instanceColor.array[3 * i] = h.userData.coat ?? -1;
       }
       near.count = n;
       far.count = f;
@@ -100,6 +109,8 @@ export class Props {
       far.visible = f > 0;
       near.instanceMatrix.needsUpdate = n > 0;
       far.instanceMatrix.needsUpdate = f > 0;
+      if (near.instanceColor && n > 0) near.instanceColor.needsUpdate = true;
+      if (far.instanceColor && f > 0) far.instanceColor.needsUpdate = true;
     }
   }
 

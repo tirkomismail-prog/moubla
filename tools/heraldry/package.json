@@ -1,0 +1,10 @@
+{
+  "name": "moubla-heraldry",
+  "private": true,
+  "description": "Build-time tools of tools/heraldry/build_heraldry.mjs (not part of the game)",
+  "license": "MIT",
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "node-html-parser": "2.1.0"
+  }
+}
