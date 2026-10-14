@@ -89,10 +89,10 @@ PROCEDURAL = ('ride', 'overhead', 'arms_up', 'look')
 
 
 
-def without_shades(path):
+def without_shades(path, tmp):
     """The model without the outfits' packed shades (_AO*, masks.py), for
     Blender's importer: it pairs custom attributes of different sizes with
-    the wrong data (it walks their names as a set)."""
+    the wrong data (it walks their names as a set). Written into `tmp`."""
     with open(path, 'rb') as f:
         data = f.read()
     n = struct.unpack_from('<I', data, 12)[0]
@@ -106,7 +106,7 @@ def without_shades(path):
     text = json.dumps(gltf, separators=(',', ':')).encode('utf-8')
     text += b' ' * (-len(text) % 4)
     rest = data[20 + n:]
-    out = os.path.join(tempfile.mkdtemp(), os.path.basename(path))
+    out = os.path.join(tmp, os.path.basename(path))
     with open(out, 'wb') as f:
         f.write(struct.pack('<III', 0x46546C67, 2, 20 + len(text) + len(rest)))
         f.write(struct.pack('<II', len(text), 0x4E4F534A) + text + rest)
@@ -114,7 +114,8 @@ def without_shades(path):
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=without_shades(GLB))
+with tempfile.TemporaryDirectory() as tmp:
+    bpy.ops.import_scene.gltf(filepath=without_shades(GLB, tmp))
 scene = bpy.context.scene
 rig = bpy.data.objects['Soldier']
 objs = {}
