@@ -20,6 +20,7 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { carriesOn, isLookalike, LONE_BANNED, rgbOf, shapeOf } from './rules.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -38,7 +39,7 @@ const OUT = arg('--out', PICK ? null : path.join(here, '../../assets/characters/
 // the knights in battle draw from (src/battle/agent.js); each a seed of
 // Armoria's generator, picked by --pick and checked by eye
 const SEEDS = [
-  'velmar-1', 'velmar-0', 'velmar-37', 'velmar-211', 'velmar-77', 'velmar-5', 'velmar-109', 'velmar-898',
+  'velmar-1', 'velmar-0', 'velmar-37', 'velmar-211', 'velmar-77', 'velmar-5', 'velmar-109', 'velmar-506',
   'velmar-166', 'velmar-11', 'velmar-905', 'velmar-4323', 'velmar-942', 'velmar-21', 'velmar-976', 'velmar-6687',
 ];
 const COUNT = 16;
@@ -110,24 +111,6 @@ export const TINCTURES = {
 const METALS = new Set(['argent', 'or']);
 // arms too light for a dark side: the mean lightness of the cloth (L*)
 const MAX_L = 55;
-// arms like the flags of today's states, or like the sides' own signs
-// (src/data/dyes.js SIGNS: the player's against the Kaganate is a white
-// cross on woad): [field, ordinary or lone charge, its tincture], a lone
-// cross of any kind as a cross (crossSaltire as a saltire), a star of any
-// points as a mullet
-const LOOKALIKES = [
-  ['gules', 'cross', 'argent'],
-  ['gules', 'fess', 'argent'],
-  ['gules', 'cross', 'or'],
-  ['azure', 'cross', 'or'],
-  ['azure', 'cross', 'argent'],
-  ['azure', 'saltire', 'argent'],
-  ['azure', 'saltire', 'or'],
-  ['vert', 'bend', 'argent'],
-  ['azure', 'fleurDeLis', 'or'],
-];
-// nor a star or a crescent alone, of any tinctures (the flags with them)
-const LONE_BANNED = ['mullet', 'crescent'];
 // of the 16: ordinaries or divisions alone (about half the arms of the
 // rolls), an ordinary with charges, charges alone
 const QUOTA = { ordinary: 8, both: 4, charges: 4 };
@@ -265,12 +248,14 @@ function coatOf(A, seed) {
   for (const t of [coa.division && coa.division.t, ord && ord.t, ...(coa.charges || []).map((c) => c.t)]) {
     if (t && !METALS.has(t)) return null;
   }
+  // (a bare field is no knight's arms: a soldier without a sign)
+  if (!coa.division && !ord && !coa.charges) return null;
+  // no state's or side's sign (rules.mjs); an ordinary as such, the charges
+  // beside it do not hide it
   const lone = coa.charges && coa.charges.length === 1 && coa.charges[0].p === 'e' ? coa.charges[0] : null;
-  const shape = (c) => (c === 'crossSaltire' ? 'saltire' : CROSSES.includes(c) ? 'cross' : c.startsWith('mullet') ? 'mullet' : c);
-  if (lone && !ord && LONE_BANNED.includes(shape(lone.charge))) return null;
-  // (an ordinary as such: the charges beside it do not hide it)
-  const key = ord ? [coa.t1, ord.ordinary, ord.t] : lone ? [coa.t1, shape(lone.charge), lone.t] : null;
-  if (key && LOOKALIKES.some((b) => b.every((v, i) => v === key[i]))) return null;
+  if (lone && !ord && LONE_BANNED.includes(shapeOf(lone.charge))) return null;
+  const key = ord ? [coa.t1, ord.ordinary, ord.t] : lone ? [coa.t1, shapeOf(lone.charge), lone.t] : null;
+  if (key && isLookalike(key)) return null;
   return coa;
 }
 
@@ -292,47 +277,8 @@ async function flatSvg(A, coa, id, size) {
 
 const render = (svg) => new Resvg(svg, { font: { loadSystemFonts: false } }).render();
 
-// Whether a coat's edges carry on to the garment's seams: the game repeats
-// its outer rows and columns over the rest of the garment (ClampToEdge), as
-// right for a fess, a pale, a chief or a division along them as it is wrong
-// for what crosses an edge aslant (a bend, a chevron: it turns into a pale)
-// or a charge cut by it. Each stretch of a tincture other than the field's
-// along an edge must be there, as wide (but for the drawing's antialiasing),
-// an eighth of the coat in.
-function carriesOn(pixels, size, field) {
-  const depth = Math.round(size / 8);
-  const near = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) <= 40;
-  const edges = [
-    (i, k) => [i, k],
-    (i, k) => [i, size - 1 - k],
-    (i, k) => [k, i],
-    (i, k) => [size - 1 - k, i],
-  ];
-  for (const edge of edges) {
-    const line = (k) => Array.from({ length: size }, (_, i) => {
-      const [x, y] = edge(i, k);
-      return [0, 1, 2].map((c) => pixels[4 * (y * size + x) + c]);
-    });
-    const outer = line(0);
-    const inner = line(depth);
-    for (let a = 0, b; a < size; a = b + 1) {
-      b = a;
-      while (b + 1 < size && near(outer[b + 1], outer[a])) b++;
-      if (b - a < 2 || near(outer[a], field)) continue;
-      const m = (a + b) >> 1;
-      if (!near(inner[m], outer[m])) return false;
-      let a2 = m;
-      let b2 = m;
-      while (a2 > 0 && near(inner[a2 - 1], outer[m])) a2--;
-      while (b2 + 1 < size && near(inner[b2 + 1], outer[m])) b2++;
-      if (Math.abs(a2 - a) > 2 || Math.abs(b2 - b) > 2) return false;
-    }
-  }
-  return true;
-}
-
 // a tincture as sRGB bytes
-const rgb = (t) => [1, 3, 5].map((k) => parseInt(TINCTURES[t].slice(k, k + 2), 16));
+const rgb = (t) => rgbOf(TINCTURES[t]);
 
 // mean lightness (L*) of the cloth as seen (the dyes' colours x 0.75 in
 // linear light, plan 2.1)
@@ -348,8 +294,9 @@ function meanL(pixels) {
 
 // a short blazon (for the game's texts and for checking)
 function blazon(coa) {
-  const parts = [coa.division ? `${coa.division.division} ${coa.t1} and ${coa.division.t}` : coa.t1];
-  for (const o of coa.ordinaries || []) parts.push(`a ${o.ordinary}${o.line && o.line !== 'straight' ? ' ' + o.line : ''} ${o.t}`);
+  const line = (l) => (l && l !== 'straight' ? ' ' + l : '');
+  const parts = [coa.division ? `${coa.division.division}${line(coa.division.line)} ${coa.t1} and ${coa.division.t}` : coa.t1];
+  for (const o of coa.ordinaries || []) parts.push(`a ${o.ordinary}${line(o.line)} ${o.t}`);
   for (const c of coa.charges || []) parts.push(`${c.p.length} ${c.charge} ${c.t}`);
   return parts.join(', ');
 }
@@ -391,8 +338,9 @@ async function main() {
       const c = coa.charges && coa.charges[0];
       const like = JSON.stringify([coa.t1, coa.division && [coa.division.division, coa.division.t], ord && [ord.ordinary, ord.t], c && [c.p, c.t]]);
       if (seen.has(like)) continue;
-      // (no more than two of a division or of an ordinary)
-      const div = (coa.division && coa.division.division) || (ord && ord.ordinary);
+      // (no more than two of a division or of an ordinary alone, and two
+      // with charges)
+      const div = ((coa.division && coa.division.division) || (ord && ord.ordinary)) && `${kind}:${(coa.division && coa.division.division) || ord.ordinary}`;
       if (div && (divisions[div] || 0) >= 2) continue;
       const { pixels } = render(await flatSvg(A, coa, 'pick', SIZE));
       if (meanL(pixels) > MAX_L || !carriesOn(pixels, SIZE, rgb(coa.t1))) continue;

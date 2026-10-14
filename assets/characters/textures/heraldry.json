@@ -46,7 +46,7 @@
   {
    "seed": "velmar-77",
    "field": "sable",
-   "blazon": "perPale sable and or",
+   "blazon": "perPale engrailed sable and or",
    "L": 53
   },
   {
@@ -62,10 +62,10 @@
    "L": 46.3
   },
   {
-   "seed": "velmar-898",
-   "field": "sable",
-   "blazon": "sable, a cross or, 4 crossCercelee or",
-   "L": 49.9
+   "seed": "velmar-506",
+   "field": "azure",
+   "blazon": "azure, a fess or, 3 mullet argent",
+   "L": 50
   },
   {
    "seed": "velmar-166",
@@ -126,7 +126,6 @@
  },
  "charges": [
   "annulet",
-  "crossCercelee",
   "crossFleury",
   "crossVoided",
   "lozenge",

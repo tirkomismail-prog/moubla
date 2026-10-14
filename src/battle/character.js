@@ -521,8 +521,9 @@ function bearer(spec, sleeves, parts) {
   return parts.has(part) ? part : null;
 }
 
-// A knight's arms over his whole garment (of his field's colour: so it is
-// seen beyond 32 m, partmat.js DECO_FRAGMENT); or the army's sign on the
+// A knight's arms over his whole garment (of his field's colour: partmat.js
+// DECO_FRAGMENT fades the arms out from 40 to 56 m, the field is seen
+// beyond); or the army's sign on the
 // part that bears it, on a patch of undyed or black cloth where it would not
 // stand out (as the Scots' ordinance of 1385 has it).
 function decorate(spec, parts, look) {

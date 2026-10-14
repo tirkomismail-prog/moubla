@@ -3,13 +3,52 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import * as THREE from 'three';
 import { TINCTURES, lightness, sideCloth, sideSign } from '../src/data/dyes.js';
 import { deco, partLook, surface, tiled } from '../src/battle/partmat.js';
+import { carriesOn, isLookalike, LONE_BANNED, rgbOf, shapeOf } from '../tools/heraldry/rules.mjs';
 
 const texDir = new URL('../assets/characters/textures/', import.meta.url);
 const manifest = JSON.parse(fs.readFileSync(new URL('heraldry.json', texDir), 'utf8'));
 const builder = fs.readFileSync(new URL('../tools/heraldry/build_heraldry.mjs', import.meta.url), 'utf8');
+
+// An 8-bit RGBA PNG (as the heraldry build writes them): its side and pixels
+function readPng(file) {
+  const buf = fs.readFileSync(file);
+  let pos = 8;
+  let width = 0;
+  const idat = [];
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.toString('latin1', pos + 4, pos + 8);
+    const data = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      assert.deepEqual([data[8], data[9], data[12]], [8, 6, 0], 'an 8-bit RGBA PNG, not interlaced');
+    } else if (type === 'IDAT') idat.push(data);
+    pos += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * 4;
+  const pixels = new Uint8Array(stride * width);
+  for (let y = 0; y < width; y++) {
+    const filter = raw[y * (stride + 1)];
+    for (let x = 0; x < stride; x++) {
+      const v = raw[y * (stride + 1) + 1 + x];
+      const a = x >= 4 ? pixels[y * stride + x - 4] : 0;
+      const b = y > 0 ? pixels[(y - 1) * stride + x] : 0;
+      const c = x >= 4 && y > 0 ? pixels[(y - 1) * stride + x - 4] : 0;
+      const p = a + b - c;
+      const pa = Math.abs(p - a);
+      const pb = Math.abs(p - b);
+      const pc = Math.abs(p - c);
+      const paeth = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      pixels[y * stride + x] = (v + [0, a, b, (a + b) >> 1, paeth][filter]) & 255;
+    }
+  }
+  return { size: width, pixels };
+}
 
 test('the coats are there, one image each, of the dyes the game knows', () => {
   assert.equal(manifest.coats.length, 16);
@@ -90,13 +129,36 @@ test('the code of a sign or a coat goes with the second metalness into the palet
 });
 
 test("the arms carry on to the garment's seams, and are not a state's or a side's", () => {
-  // (tools/heraldry carriesOn: nothing aslant across the coat's edges)
-  for (const m of manifest.meta) assert.ok(!/bend|chevron|saltire|pile/.test(m.blazon), `${m.seed}: ${m.blazon}`);
-  // (no star or crescent alone; no cross alone on the sides' own fields)
-  for (const m of manifest.meta) {
-    assert.ok(!/^\w+, 1 (mullet\w*|crescent)$/.test(m.blazon), `${m.seed}: ${m.blazon}`);
-    assert.ok(!/^(gules|azure), 1 cross\w* (argent|or)$/.test(m.blazon), `${m.seed}: ${m.blazon}`);
+  // the images themselves: nothing aslant across a coat's edges, no charge
+  // cut by one (tools/heraldry/rules.mjs carriesOn)
+  for (const [i, f] of manifest.coats.entries()) {
+    const { size, pixels } = readPng(new URL(f, texDir));
+    assert.equal(size, manifest.size);
+    assert.ok(carriesOn(pixels, size, rgbOf(manifest.tinctures[manifest.meta[i].field])), `${f}: ${manifest.meta[i].blazon}`);
   }
+  for (const m of manifest.meta) {
+    // the blazon: the field or its division, then an ordinary ('a fess or'),
+    // then charges ('3 mullet argent')
+    const [field, ...rest] = m.blazon.split(', ');
+    const ords = rest.filter((p) => p.startsWith('a '));
+    const charges = rest.filter((p) => !p.startsWith('a '));
+    for (const p of [field, ...ords]) assert.ok(!/bend|chevron|saltire|pile/i.test(p), `${m.seed}: ${m.blazon}`);
+    // (as build_heraldry.mjs coatOf: an ordinary as such; a charge alone)
+    for (const o of ords) {
+      const [, name, t] = /^a (\w+)(?: \w+)? (argent|or)$/.exec(o);
+      assert.ok(!isLookalike([m.field, name, t]), `${m.seed}: ${m.blazon}`);
+    }
+    if (!ords.length && charges.length === 1 && /^1 /.test(charges[0])) {
+      const [, name, t] = /^1 (\w+) (argent|or)$/.exec(charges[0]);
+      assert.ok(!LONE_BANNED.includes(shapeOf(name)), `${m.seed}: ${m.blazon}`);
+      assert.ok(!isLookalike([m.field, shapeOf(name), t]), `${m.seed}: ${m.blazon}`);
+    }
+  }
+  // (the rules themselves: each side's sign on its cloth, and a star alone)
+  assert.ok(isLookalike(['gules', shapeOf('crossPatonce'), 'or']));
+  assert.ok(isLookalike(['azure', shapeOf('crossFleury'), 'argent']));
+  assert.ok(isLookalike(['sable', shapeOf('crossSaltire'), 'argent']));
+  assert.ok(LONE_BANNED.includes(shapeOf('mullet6Pierced')));
 });
 
 test("a side's sign is the same on every man of it, faded or not, on the part his outfit has", async () => {
