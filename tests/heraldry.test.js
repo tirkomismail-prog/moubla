@@ -88,3 +88,44 @@ test('the code of a sign or a coat goes with the second metalness into the palet
   assert.notEqual(again, looked.row);
   assert.equal(texel3('Surcoat', again), texel3('Surcoat'));
 });
+
+test("the arms carry on to the garment's seams, and are not a state's or a side's", () => {
+  // (tools/heraldry carriesOn: nothing aslant across the coat's edges)
+  for (const m of manifest.meta) assert.ok(!/bend|chevron|saltire|pile/.test(m.blazon), `${m.seed}: ${m.blazon}`);
+  // (no star or crescent alone; no cross alone on the sides' own fields)
+  for (const m of manifest.meta) {
+    assert.ok(!/^\w+, 1 (mullet\w*|crescent)$/.test(m.blazon), `${m.seed}: ${m.blazon}`);
+    assert.ok(!/^(gules|azure), 1 cross\w* (argent|or)$/.test(m.blazon), `${m.seed}: ${m.blazon}`);
+  }
+});
+
+test("a side's sign is the same on every man of it, faded or not, on the part his outfit has", async () => {
+  const { palette } = await import('../src/battle/character.js');
+  const man = (faction, enemy, look, kit, fade, shade) => ({
+    look, kit, fade, shade, faction,
+    sign: sideCloth(faction, enemy).sign, team: '#808080', pants: '#706050',
+    skin: '#c09070', hair: '#403020', badge: sideSign(faction, enemy), arms: -1, armsWorn: false,
+  });
+  // (the parts of the Norse gambeson and of the Norse kyrtle: tools/characters/viking.py)
+  const gambeson = new Set(['Gambeson', 'Belt', 'Trousers', 'Boots', 'Wraps', 'Hands']);
+  const kyrtle = new Set(['Tunic', 'Vest', 'Oversleeves', 'Undersleeves', 'Belt', 'Trousers', 'Boots', 'Hands']);
+  const brigandine = new Set(['Hauberk', 'Cuirass', 'Belt', 'Trousers', 'Boots', 'Wraps', 'Gloves']);
+  // Velmar's weld cross on its madder, however faded the madder: never on a patch
+  for (const fade of [0, 0.1, 0.18, 0.25]) {
+    for (const shade of [0.94, 1.06]) {
+      const look = palette(man('velmar', 'player', 'padded', null, fade, shade), new Set(['Gambeson', 'Belt', 'Hose']));
+      assert.equal(look.Gambeson.deco.shape, 'cross');
+      assert.equal(look.Gambeson.deco.patch, null, `fade ${fade}, shade ${shade}`);
+    }
+  }
+  // the Kaganate's armbands on the sleeves a Norse man of its side has
+  assert.equal(palette(man('kaganate', 'player', 'padded', 'norse', 0, 1), gambeson).Gambeson.deco.shape, 'armbands');
+  assert.equal(palette(man('kaganate', 'player', 'brigandine', 'norse', 0, 1), brigandine).Hauberk.deco.shape, 'armbands');
+  assert.equal(palette(man('kaganate', 'player', 'cloth', 'norse', 0, 1), kyrtle).Oversleeves.deco.shape, 'armbands');
+  // and the cross on a Norse kyrtle's vest, on black cloth over a mail one
+  // (UNDYED on the player's mail: Nordheim's white saltire on mail)
+  assert.equal(palette(man('player', 'nordheim', 'cloth', 'norse', 0, 1), kyrtle).Vest.deco.shape, 'cross');
+  const mail = palette(man('nordheim', 'player', 'mail', 'norse', 0, 1), kyrtle).Vest.deco;
+  assert.equal(mail.shape, 'saltire');
+  assert.ok(mail.patch && !mail.weave);
+});

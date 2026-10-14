@@ -427,7 +427,10 @@ const LAMELLAR_LACQUER = '#6e5a48';
 const THONG = clothColor('#7d5f47');
 const RIVETS = '#d0d0d0';
 
-function palette(spec) {
+// A soldier's look of each part, with his side's sign or his arms on the
+// part of his outfit (`parts`, outfitParts) that bears it. (Exported for
+// the tests.)
+export function palette(spec, parts) {
   const look = spec.look || 'cloth';
   const sign = clothColor(spec.sign || spec.team, spec.fade, spec.shade);
   const team = tiled('wool', sign);
@@ -451,7 +454,7 @@ function palette(spec) {
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
   const hair = new THREE.Color(spec.hair).multiplyScalar((state.t && state.t.masks ? HAIR_SHADE : 1) / HAIR_MEAN);
-  return decorate(spec, {
+  return decorate(spec, parts, {
     Body: surface(skin, 0.55),
     // (the cloth look's shirt; the Norse kyrtle's body is wool)
     Tunic: look === 'cloth' && spec.kit !== 'norse' ? linen : team,
@@ -506,26 +509,27 @@ function seenLightness(s) {
 }
 
 // The part that bears the army's sign or a knight's arms: the outer garment
-// of the chest, or the sleeves for armbands
+// of the chest, or the sleeves for armbands. Of the parts the soldier's
+// outfit has (outfitParts): the Norse kyrtle has its vest and oversleeves,
+// the Norse gambeson, hauberk and brigandine are the others'.
 const CHEST = { cloth: 'Tunic', padded: 'Gambeson', leather: 'Jerkin', mail: 'Surcoat', lamellar: 'Cuirass', brigandine: 'Cuirass', plate: 'Jupon' };
 const SLEEVES = { cloth: 'Tunic', padded: 'Gambeson', leather: 'Tunic', lamellar: 'Tunic' };
-function bearer(spec, sleeves) {
+function bearer(spec, sleeves, parts) {
   const look = OUTFITS[spec.look] ? spec.look : 'cloth';
-  if (spec.kit === 'norse' && NORSE[look] && !norseFailed) {
-    return sleeves ? 'Oversleeves' : look === 'padded' ? 'Gambeson' : look === 'brigandine' ? 'Cuirass' : 'Vest';
-  }
-  return sleeves ? SLEEVES[look] || 'Hauberk' : CHEST[look];
+  if (parts.has('Vest')) return sleeves ? 'Oversleeves' : 'Vest';
+  const part = sleeves ? SLEEVES[look] || 'Hauberk' : CHEST[look];
+  return parts.has(part) ? part : null;
 }
 
 // A knight's arms over his whole garment (of his field's colour: so it is
 // seen beyond 32 m, partmat.js DECO_FRAGMENT); or the army's sign on the
 // part that bears it, on a patch of undyed or black cloth where it would not
 // stand out (as the Scots' ordinance of 1385 has it).
-function decorate(spec, look) {
+function decorate(spec, parts, look) {
   const h = state.t && state.t.heraldry;
   if (spec.arms >= 0 && spec.armsWorn && h) {
-    const part = bearer(spec, false);
-    const s = look[part];
+    const part = bearer(spec, false, parts);
+    const s = part && look[part];
     if (s && DYED_TILES.has(s.tile)) {
       const field = h.meta[spec.arms] && TINCTURES[h.meta[spec.arms].field];
       look[part] = { ...s, color: field ? clothColor(field, spec.fade, spec.shade) : s.color, deco: deco('coat', { coat: spec.arms }) };
@@ -533,12 +537,15 @@ function decorate(spec, look) {
     }
   }
   const sign = spec.badge;
-  const part = sign && bearer(spec, sign.shape === 'armbands');
+  const part = sign && bearer(spec, sign.shape === 'armbands', parts);
   const s = part && look[part];
   if (!s) return look;
   const L = lightness(sign.color);
   const boxed = sign.shape === 'cross' || sign.shape === 'saltire';
-  const patch = boxed && Math.abs(L - seenLightness(s)) < 30 ? (L > 50 ? SABLE : UNDYED) : null;
+  // (against the side's cloth as it was dyed, not as this man's has faded:
+  // the same sign for the whole side)
+  const seen = DYED_TILES.has(s.tile) ? { ...s, color: clothColor(spec.sign || spec.team) } : s;
+  const patch = boxed && Math.abs(L - seenLightness(seen)) < 30 ? (L > 50 ? SABLE : UNDYED) : null;
   look[part] = {
     ...s,
     deco: deco(sign.shape, { color: clothColor(sign.color), patch: patch && clothColor(patch), weave: DYED_TILES.has(s.tile) }),
@@ -651,6 +658,21 @@ function outfitGeometry(outfit, level) {
   return geo;
 }
 
+// The names of the parts an outfit's garments have (their _part numbers)
+const partsOfOutfit = new Map();
+function outfitParts(outfit) {
+  let parts = partsOfOutfit.get(outfit);
+  if (!parts) {
+    parts = new Set();
+    // (a model without garments: the parts of its one mesh)
+    const geo = outfitGeometry(outfit, 0) || state.t.common[0];
+    const a = geo && geo.getAttribute('_part');
+    if (a) for (let i = 0; i < a.count; i++) parts.add(state.t.parts[Math.round(a.getX(i))]);
+    partsOfOutfit.set(outfit, parts);
+  }
+  return parts;
+}
+
 // Each part's shade in the outfit `name` (prepare) into R of the joined
 // geometry's colours (R stays where the part has none of its own), and into
 // A its shade with the hair hidden under a carried helmet ('<name>:helmet',
@@ -683,13 +705,13 @@ function shade(geo, parts, name) {
 const CARDS = new Set(['Hair', 'Beard', 'Moustache', 'Brows', 'Lashes']);
 
 // The soldiers' material in a battle (`owner`) and this soldier's palette row.
-function soldierLook(owner, spec, hidden) {
+function soldierLook(owner, spec, hidden, outfit) {
   const t = state.t;
   const layers = t.layers;
   const stubble = spec.stubble && layers && 'skin_stubble' in layers.index;
   const kind = { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud, masks: t.masks, deco: t.masks, heraldry: t.heraldry };
   return partLook(owner, kind, {
-    palette: palette(spec),
+    palette: palette(spec, outfitParts(outfit)),
     layerOf: (name) => ((name === 'Body' || name === 'Hands') && stubble ? 'skin_stubble' : t.partLayers[name]),
     cards: CARDS,
     hidden,
@@ -872,7 +894,7 @@ export class SkinnedHuman {
     if (!spec.beard) hide.add('Moustache');
     if (this.helmet || outfit.hood) hide.add('Hair');
     if (outfit.coif) hide.add('Hair').add('Beard');
-    const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)));
+    const { material: mat, row } = soldierLook(props, spec, t.parts.map((name) => (hide.has(name) ? 1 : 0)), outfit.key);
     // the farthest level, made at run time (outfitGeometry)
     const far = outfitGeometry(outfit.key, FAR_LEVEL);
     if (far) this.lod[FAR_LEVEL] = lodMesh(this.lod[FAR_LEVEL - 1], far, mat, `Soldier_LOD${FAR_LEVEL}`);

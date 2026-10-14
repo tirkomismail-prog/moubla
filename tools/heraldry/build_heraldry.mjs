@@ -7,11 +7,13 @@
 // heraldry.json (packed by tools/pack-assets.mjs).
 //
 //   (cd tools/heraldry && npm ci)
-//   node tools/heraldry/build_heraldry.mjs [--cache DIR] [--out assets/characters/textures] [--pick]
+//   node tools/heraldry/build_heraldry.mjs [--cache ~/.cache/moubla-heraldry] [--out assets/characters/textures]
+//   node tools/heraldry/build_heraldry.mjs --pick [--out SCRATCH_DIR]
 //
 // --pick chooses the coats again by the rules below (from the seeds
-// velmar-0, velmar-1, ...) and prints them, to be checked by eye and
-// pinned in SEEDS.
+// velmar-0, velmar-1, ...) and prints their seeds, to be pinned in SEEDS;
+// with --out it also writes them there, to be checked by eye first (never
+// over the game's own: --pick without --out writes nothing).
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -28,16 +30,16 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i > 0 ? process.argv[i + 1] : fallback;
 };
-const CACHE = path.resolve(arg('--cache', path.join(os.tmpdir(), 'moubla-heraldry')));
-const OUT = path.resolve(arg('--out', path.join(here, '../../assets/characters/textures')));
+const CACHE = path.resolve(arg('--cache', path.join(os.homedir(), '.cache', 'moubla-heraldry')));
 const PICK = process.argv.includes('--pick');
+const OUT = arg('--out', PICK ? null : path.join(here, '../../assets/characters/textures'));
 
 // the coats: 0-5 the arms of the king and the lords of Velmar, 6-15 those
 // the knights in battle draw from (src/battle/agent.js); each a seed of
 // Armoria's generator, picked by --pick and checked by eye
 const SEEDS = [
-  'velmar-1', 'velmar-0', 'velmar-37', 'velmar-168', 'velmar-77', 'velmar-2', 'velmar-78', 'velmar-211',
-  'velmar-109', 'velmar-3', 'velmar-166', 'velmar-404', 'velmar-220', 'velmar-6', 'velmar-905', 'velmar-647',
+  'velmar-1', 'velmar-0', 'velmar-37', 'velmar-211', 'velmar-77', 'velmar-5', 'velmar-109', 'velmar-898',
+  'velmar-166', 'velmar-11', 'velmar-905', 'velmar-4323', 'velmar-942', 'velmar-21', 'velmar-976', 'velmar-6687',
 ];
 const COUNT = 16;
 // pixels per coat: about one texel per pixel on a chest at the player's camera
@@ -58,7 +60,8 @@ const CHARGES_AT = 'https://raw.githubusercontent.com/Azgaar/Armoria/3904829c81a
 // in the rolls of arms of 1298-1418 (J. Foster, Some Feudal Coats of Arms),
 // weighted by how often they are there (x10). Not taken: the other charges
 // (most are non-commercial, some ShareAlike, some state or military
-// emblems), crosses of later times or with a modern meaning, card suits.
+// emblems), crosses of later times or with a modern meaning, card suits,
+// the goutte (alone, a flame).
 const CHARGES = {
   // conventional
   mullet: [30, '314dd8840421507847484a7f5081e25622a73c458237a2637df8b17507622a85'],
@@ -73,7 +76,6 @@ const CHARGES = {
   fleurDeLis: [14, '5b583747db04407dd126c77ffb174ff7a2b2c3bc47a987c106fe1aadcbaef4fe'],
   billet: [11, '989c86bb0defbbdfa69faf63635db8ceaee0cc9afb24702f50feee34641208cc'],
   annulet: [10, 'd19b56833dd697f91904ccbfe36815f893adf963d55d4b4927cac655ad64a8a2'],
-  goutte: [3, '33f02358ef667e7e9264759918a5630d6196990312396c14142086affb9c9cdd'],
   rustre: [1, 'dbc3007e2f4fdb21908fd9ea53beb10dbf6a16be9daeccd57db3d61e521de857'],
   // crosses
   crosslet: [25, '457ab69351bee1e436fe7944f1072b1fcf96c74481559be45d6ac590af7bf392'],
@@ -109,33 +111,44 @@ const METALS = new Set(['argent', 'or']);
 // arms too light for a dark side: the mean lightness of the cloth (L*)
 const MAX_L = 55;
 // arms like the flags of today's states, or like the sides' own signs
-// (src/data/dyes.js SIGNS): [field, ordinary or lone charge, its tincture]
+// (src/data/dyes.js SIGNS: the player's against the Kaganate is a white
+// cross on woad): [field, ordinary or lone charge, its tincture], a lone
+// cross of any kind as a cross (crossSaltire as a saltire), a star of any
+// points as a mullet
 const LOOKALIKES = [
   ['gules', 'cross', 'argent'],
-  ['gules', 'crossHummetty', 'argent'],
   ['gules', 'fess', 'argent'],
   ['gules', 'cross', 'or'],
-  ['gules', 'crossHummetty', 'or'],
   ['azure', 'cross', 'or'],
   ['azure', 'cross', 'argent'],
   ['azure', 'saltire', 'argent'],
   ['azure', 'saltire', 'or'],
   ['vert', 'bend', 'argent'],
+  ['azure', 'fleurDeLis', 'or'],
 ];
+// nor a star or a crescent alone, of any tinctures (the flags with them)
+const LONE_BANNED = ['mullet', 'crescent'];
 // of the 16: ordinaries or divisions alone (about half the arms of the
 // rolls), an ordinary with charges, charges alone
 const QUOTA = { ordinary: 8, both: 4, charges: 4 };
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
+// (the text that was checked is the text used; written beside and renamed,
+// so a link in its place is replaced, not followed)
 async function fetchPinned(url, file, sha) {
-  if (fs.existsSync(file) && sha256(fs.readFileSync(file)) === sha) return fs.readFileSync(file, 'utf8');
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (fs.existsSync(file)) {
+    const buf = fs.readFileSync(file);
+    if (sha256(buf) === sha) return buf.toString('utf8');
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (sha256(buf) !== sha) throw new Error(`${url}: not the pinned file (sha256 ${sha256(buf)})`);
-  fs.writeFileSync(file, buf);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, buf, { flag: 'wx' });
+  fs.renameSync(tmp, file);
   return buf.toString('utf8');
 }
 
@@ -253,7 +266,10 @@ function coatOf(A, seed) {
     if (t && !METALS.has(t)) return null;
   }
   const lone = coa.charges && coa.charges.length === 1 && coa.charges[0].p === 'e' ? coa.charges[0] : null;
-  const key = ord && !coa.charges ? [coa.t1, ord.ordinary, ord.t] : lone && !ord ? [coa.t1, lone.charge, lone.t] : null;
+  const shape = (c) => (c === 'crossSaltire' ? 'saltire' : CROSSES.includes(c) ? 'cross' : c.startsWith('mullet') ? 'mullet' : c);
+  if (lone && !ord && LONE_BANNED.includes(shape(lone.charge))) return null;
+  // (an ordinary as such: the charges beside it do not hide it)
+  const key = ord ? [coa.t1, ord.ordinary, ord.t] : lone ? [coa.t1, shape(lone.charge), lone.t] : null;
   if (key && LOOKALIKES.some((b) => b.every((v, i) => v === key[i]))) return null;
   return coa;
 }
@@ -275,6 +291,48 @@ async function flatSvg(A, coa, id, size) {
 }
 
 const render = (svg) => new Resvg(svg, { font: { loadSystemFonts: false } }).render();
+
+// Whether a coat's edges carry on to the garment's seams: the game repeats
+// its outer rows and columns over the rest of the garment (ClampToEdge), as
+// right for a fess, a pale, a chief or a division along them as it is wrong
+// for what crosses an edge aslant (a bend, a chevron: it turns into a pale)
+// or a charge cut by it. Each stretch of a tincture other than the field's
+// along an edge must be there, as wide (but for the drawing's antialiasing),
+// an eighth of the coat in.
+function carriesOn(pixels, size, field) {
+  const depth = Math.round(size / 8);
+  const near = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) <= 40;
+  const edges = [
+    (i, k) => [i, k],
+    (i, k) => [i, size - 1 - k],
+    (i, k) => [k, i],
+    (i, k) => [size - 1 - k, i],
+  ];
+  for (const edge of edges) {
+    const line = (k) => Array.from({ length: size }, (_, i) => {
+      const [x, y] = edge(i, k);
+      return [0, 1, 2].map((c) => pixels[4 * (y * size + x) + c]);
+    });
+    const outer = line(0);
+    const inner = line(depth);
+    for (let a = 0, b; a < size; a = b + 1) {
+      b = a;
+      while (b + 1 < size && near(outer[b + 1], outer[a])) b++;
+      if (b - a < 2 || near(outer[a], field)) continue;
+      const m = (a + b) >> 1;
+      if (!near(inner[m], outer[m])) return false;
+      let a2 = m;
+      let b2 = m;
+      while (a2 > 0 && near(inner[a2 - 1], outer[m])) a2--;
+      while (b2 + 1 < size && near(inner[b2 + 1], outer[m])) b2++;
+      if (Math.abs(a2 - a) > 2 || Math.abs(b2 - b) > 2) return false;
+    }
+  }
+  return true;
+}
+
+// a tincture as sRGB bytes
+const rgb = (t) => [1, 3, 5].map((k) => parseInt(TINCTURES[t].slice(k, k + 2), 16));
 
 // mean lightness (L*) of the cloth as seen (the dyes' colours x 0.75 in
 // linear light, plan 2.1)
@@ -315,7 +373,8 @@ async function main() {
   console.log = () => {};
 
   let seeds = SEEDS;
-  if (PICK || seeds.length !== COUNT) {
+  if (!PICK && seeds.length !== COUNT) throw new Error(`SEEDS: ${seeds.length} of ${COUNT} (pick them with --pick)`);
+  if (PICK) {
     const taken = { ordinary: [], both: [], charges: [] };
     const seen = new Set();
     const divisions = {};
@@ -326,12 +385,17 @@ async function main() {
       const kind = kindOf(coa);
       if (taken[kind].length >= QUOTA[kind]) continue;
       const ord = coa.ordinaries && coa.ordinaries[0];
-      const like = JSON.stringify([coa.t1, coa.division && coa.division.division, ord && ord.ordinary, coa.charges && coa.charges[0].charge]);
+      // (alike: of the same tinctures and the same division or ordinary, the
+      // charges in the same places, whatever they are; not told apart at a
+      // distance)
+      const c = coa.charges && coa.charges[0];
+      const like = JSON.stringify([coa.t1, coa.division && [coa.division.division, coa.division.t], ord && [ord.ordinary, ord.t], c && [c.p, c.t]]);
       if (seen.has(like)) continue;
       // (no more than two of a division or of an ordinary)
       const div = (coa.division && coa.division.division) || (ord && ord.ordinary);
       if (div && (divisions[div] || 0) >= 2) continue;
-      if (meanL(render(await flatSvg(A, coa, 'pick', 32)).pixels) > MAX_L) continue;
+      const { pixels } = render(await flatSvg(A, coa, 'pick', SIZE));
+      if (meanL(pixels) > MAX_L || !carriesOn(pixels, SIZE, rgb(coa.t1))) continue;
       seen.add(like);
       if (div) divisions[div] = (divisions[div] || 0) + 1;
       taken[kind].push(seed);
@@ -339,11 +403,13 @@ async function main() {
     // (interleaved, so that the knights' range 6-15 gets every kind)
     seeds = [];
     for (let i = 0; i < QUOTA.both; i++) seeds.push(taken.ordinary[2 * i], taken.charges[i], taken.ordinary[2 * i + 1], taken.both[i]);
-    seeds = seeds.filter(Boolean);
+    if (seeds.some((s) => !s)) throw new Error(`the rules leave too few coats: ${JSON.stringify(taken)}`);
     log('seeds:', JSON.stringify(seeds));
+    if (!OUT) return;
   }
 
-  fs.mkdirSync(OUT, { recursive: true });
+  const out = path.resolve(OUT);
+  fs.mkdirSync(out, { recursive: true });
   const coats = [];
   const meta = [];
   for (const [i, seed] of seeds.entries()) {
@@ -352,18 +418,19 @@ async function main() {
     const id = `c${i}`;
     const svg = await flatSvg(A, coa, id, SIZE);
     const image = render(svg);
+    if (!carriesOn(image.pixels, SIZE, rgb(coa.t1))) throw new Error(`${seed}: its edges do not carry on`);
     const file = `heraldry_${String(i).padStart(2, '0')}.png`;
-    fs.writeFileSync(path.join(OUT, file), image.asPng());
+    fs.writeFileSync(path.join(out, file), image.asPng());
     coats.push(file);
     meta.push({ seed, field: coa.t1, blazon: blazon(coa), L: Math.round(meanL(image.pixels) * 10) / 10 });
     log(`${file}  ${blazon(coa)}`);
   }
   const charges_used = [...new Set(seeds.flatMap((s) => (coatOf(A, s).charges || []).map((c) => c.charge)))].sort();
   fs.writeFileSync(
-    path.join(OUT, 'heraldry.json'),
+    path.join(out, 'heraldry.json'),
     JSON.stringify({ size: SIZE, coats, meta, tinctures: TINCTURES, charges: charges_used }, null, 1) + '\n',
   );
-  log(`wrote ${coats.length} coats to ${OUT}`);
+  log(`wrote ${coats.length} coats to ${out}`);
 }
 
 await main();

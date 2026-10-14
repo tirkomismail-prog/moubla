@@ -38,10 +38,10 @@
    "L": 54.5
   },
   {
-   "seed": "velmar-168",
+   "seed": "velmar-211",
    "field": "gules",
-   "blazon": "gules, a bend or, 1 crescent or",
-   "L": 50.7
+   "blazon": "gules, a fess or, 3 roundel or",
+   "L": 49.5
   },
   {
    "seed": "velmar-77",
@@ -50,22 +50,10 @@
    "L": 53
   },
   {
-   "seed": "velmar-2",
-   "field": "gules",
-   "blazon": "gules, 1 crossPatonce argent",
-   "L": 48.5
-  },
-  {
-   "seed": "velmar-78",
-   "field": "gules",
-   "blazon": "gules, a chevron or",
-   "L": 43.7
-  },
-  {
-   "seed": "velmar-211",
-   "field": "gules",
-   "blazon": "gules, a fess or, 3 roundel or",
-   "L": 49.5
+   "seed": "velmar-5",
+   "field": "azure",
+   "blazon": "azure, 3 crossFleury argent",
+   "L": 40.6
   },
   {
    "seed": "velmar-109",
@@ -74,10 +62,10 @@
    "L": 46.3
   },
   {
-   "seed": "velmar-3",
-   "field": "azure",
-   "blazon": "azure, 1 crossFleury argent",
-   "L": 45.3
+   "seed": "velmar-898",
+   "field": "sable",
+   "blazon": "sable, a cross or, 4 crossCercelee or",
+   "L": 49.9
   },
   {
    "seed": "velmar-166",
@@ -86,22 +74,10 @@
    "L": 54.5
   },
   {
-   "seed": "velmar-404",
-   "field": "azure",
-   "blazon": "azure, a bend or, 1 mullet or",
-   "L": 50.5
-  },
-  {
-   "seed": "velmar-220",
-   "field": "sable",
-   "blazon": "sable, a chevron argent",
-   "L": 49.3
-  },
-  {
-   "seed": "velmar-6",
+   "seed": "velmar-11",
    "field": "gules",
-   "blazon": "gules, 2 mullet6Pierced argent",
-   "L": 37.5
+   "blazon": "gules, 1 annulet argent",
+   "L": 44.6
   },
   {
    "seed": "velmar-905",
@@ -110,10 +86,34 @@
    "L": 43
   },
   {
-   "seed": "velmar-647",
+   "seed": "velmar-4323",
    "field": "sable",
-   "blazon": "sable, a bendSinister or, 2 crossFleury argent",
-   "L": 50
+   "blazon": "sable, a pale engrailed or, 1 crossVoided argent",
+   "L": 46.9
+  },
+  {
+   "seed": "velmar-942",
+   "field": "sable",
+   "blazon": "sable, a chief argent",
+   "L": 53.5
+  },
+  {
+   "seed": "velmar-21",
+   "field": "sable",
+   "blazon": "sable, 3 mullet argent",
+   "L": 30.8
+  },
+  {
+   "seed": "velmar-976",
+   "field": "sable",
+   "blazon": "sable, a quarter or",
+   "L": 39.5
+  },
+  {
+   "seed": "velmar-6687",
+   "field": "gules",
+   "blazon": "gules, a pale or, 1 lozenge argent",
+   "L": 50.1
   }
  ],
  "tinctures": {
@@ -125,11 +125,12 @@
   "sable": "#403c3a"
  },
  "charges": [
-  "crescent",
+  "annulet",
+  "crossCercelee",
   "crossFleury",
-  "crossPatonce",
+  "crossVoided",
+  "lozenge",
   "mullet",
-  "mullet6Pierced",
   "roundel"
  ]
 }

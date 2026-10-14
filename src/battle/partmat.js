@@ -613,8 +613,10 @@ function makeKind(o) {
         vDeco = floor(pal3.a * 0.5);
         vPartSurface.z = pal3.a - 2.0 * vDeco;
         // where in the bind pose: across the body (x), and how squarely the
-        // surface faces the front (+) or the back (-) (the height: vDirt.y)
-        vDecoXY = vec2(position.x, sign(normal.z) * smoothstep(0.55, 0.75, abs(normal.z)));
+        // surface faces the front (+) or the back (-) (the height: vDirt.y);
+        // the sides keep which of them they turn to, so that front and back
+        // meet at the side seam
+        vDecoXY = vec2(position.x, (normal.z < 0.0 ? -1.0 : 1.0) * max(smoothstep(0.55, 0.75, abs(normal.z)), 1e-3));
         #endif`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
@@ -706,7 +708,12 @@ function makeKind(o) {
           normal = normalize(tileFrame(-vViewPosition, normal, vPartUv) * partN);
         } else if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);
+          #ifdef PART_DECO
+          // (a sign sewn on: flat cloth over the mail's rings or the plates)
+          normal = normalize(mix(normal, frame * tileNormal(tileSurf.xy), 1.0 - decoSewn));
+          #else
           normal = normalize(frame * tileNormal(tileSurf.xy));
+          #endif
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
@@ -734,13 +741,14 @@ function makeKind(o) {
 // The army's sign or a knight's arms on the part that bears them (DECO),
 // projected from the bind pose onto the chest and the back (the outer
 // garments are cut alike: these rectangles are on each of them, flat, under
-// the coif's mantle and above the belt), faded out from 24 to 32 m (beyond,
-// the side's big garment tells the sides apart; and the bars would be under
-// a pixel). The arms cover the whole garment: a heater's field (6:7) on the
-// chest and on the back (as a viewer behind sees it), its edges carried on
-// to the seams; the sign is a cross or saltire with 5 cm bars in a 24 cm
-// field (on a patch of other cloth where it would not show), a sash over
-// the right shoulder, or bands round the upper arms. Mixed into the cloth's
+// the coif's mantle and above the belt). The arms cover the whole garment: a
+// heater's field (6:7) on the chest and on the back (as a viewer behind sees
+// it), its edges carried on to the seams (tools/heraldry keeps only arms
+// whose edges carry on), faded out from 40 to 56 m; the sign is a cross or
+// saltire with 5 cm bars in a 24 cm field (on a patch of other cloth where
+// it would not show), a sash over the right shoulder, or bands round the
+// upper arms, faded out from 24 to 32 m (beyond, the side's big garment
+// tells the sides apart; and the bars would be under a pixel). Mixed into the cloth's
 // tint (under its weave, the brigandine's rivets, mud and wear), or sewn on
 // over mail, leather or lamellar (decoSewn: after the tile).
 const DECO_FRAGMENT = `
@@ -751,8 +759,10 @@ const DECO_FRAGMENT = `
   vec2 decoDx = dFdx(decoP);
   vec2 decoDy = dFdy(decoP);
   float decoPx = max(0.7 * (length(decoDx) + length(decoDy)), 1e-4);
-  float decoFade = 1.0 - smoothstep(24.0, 32.0, length(vViewPosition));
-  if (vDeco > 0.5 && decoFade > 0.0) {
+  float decoDist = length(vViewPosition);
+  float decoFade = 1.0 - smoothstep(24.0, 32.0, decoDist);
+  float coatFade = 1.0 - smoothstep(40.0, 56.0, decoDist);
+  if (vDeco > 0.5 && coatFade > 0.0) {
     int code = int(vDeco + 0.5);
     int shape = code & 7;
     float back = vDecoXY.y > 0.0 ? 0.0 : 1.0;
@@ -763,8 +773,8 @@ const DECO_FRAGMENT = `
       vec2 uv = vec2(0.5, 0.5) + vec2(decoP.x, decoP.y - mix(1.215, 1.225, back)) * g;
       vec3 coat = textureGrad(heraldry, vec3(uv, float((code >> 12) - 1)), decoDx * g, decoDy * g).rgb;
       // (the coat's dyes as tints of the wool: 0.75 / its mean)
-      partTint = mix(partTint, coat * vec3(0.974, 1.029, 1.121), decoFade);
-    } else {
+      partTint = mix(partTint, coat * vec3(0.974, 1.029, 1.121), coatFade);
+    } else if (decoFade > 0.0) {
       vec2 q = vec2(decoP.x, decoP.y - mix(1.205, 1.215, back));
       vec2 a = abs(q);
       float box = max(a.x, a.y) - 0.12;
@@ -772,7 +782,11 @@ const DECO_FRAGMENT = `
       float facing = abs(vDecoXY.y);
       if (shape == 1) d = max(min(a.x, a.y) - 0.025, box);
       else if (shape == 2) d = max(abs(a.x - a.y) * 0.7071 - 0.025, box);
-      else if (shape == 3) d = abs(0.8 * decoP.x + 0.6 * (decoP.y - 1.2)) - 0.04;
+      else if (shape == 3) {
+        d = abs(0.8 * decoP.x + 0.6 * (decoP.y - 1.2)) - 0.04;
+        // (over the shoulder's top too, from the chest on to the back)
+        facing = max(facing, smoothstep(1.28, 1.36, decoP.y));
+      }
       else {
         // (the upper arm in the bind pose: from the shoulder down and out)
         vec2 arm = vec2(abs(decoP.x) - 0.184, decoP.y - 1.386);
