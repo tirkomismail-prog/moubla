@@ -32,6 +32,28 @@ DRESS = {
     'norse-padded': ('Gambeson', 'Belt-Gambeson', 'VikingPants', 'VikingBoots'),
     'norse-brigandine': ('Hauberk', 'Cuirass', 'Belt-Cuirass', 'VikingPants', 'VikingBoots'),
 }
+# and as outfitOf adds the hands (Gloves; or the bare Hands, part of the
+# Body when the shade is baked), a cloth hood (any look, the padded ones
+# their own) and a mail coif (mail, plate)
+GLOVED = {'mail', 'lamellar', 'brigandine', 'plate', 'norse-brigandine'}
+HOOD = {'padded': 'Hood-Gambeson', 'norse-padded': 'Hood-Gambeson'}
+COIF = {'mail': 'Coif-Surcoat', 'plate': 'Coif-Jupon'}
+
+
+def contexts():
+    """The outfits whose ambient occlusion is baked (masks.py), each a look
+    of DRESS with its hands, with a hood ('<look>:hood') or a coif
+    ('<look>:coif'): {name: pieces}. (The Norse kit has a hood only with the
+    gambeson; the game's other outfits differ from these in the feet only.)"""
+    out = {}
+    for look, dress in DRESS.items():
+        own = dress + ('Gloves' if look in GLOVED else 'Hands',)
+        out[look] = own
+        if not look.startswith('norse') or look in HOOD:
+            out[look + ':hood'] = own + (HOOD.get(look, 'Hood'),)
+        if look in COIF:
+            out[look + ':coif'] = own + (COIF[look],)
+    return out
 
 TORSO = {'spine_01', 'spine_02', 'spine_03', 'neck_01', 'clavicle_l', 'clavicle_r', 'pelvis'}
 ARMS = {'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r'}

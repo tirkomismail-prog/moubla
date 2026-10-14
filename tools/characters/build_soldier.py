@@ -13,7 +13,8 @@ The body, its skeleton and skin weights and the helper shells used for the
 clothes come from MakeHuman / MPFB; the skin texture, eyes, eyebrows,
 eyelashes, hair, beards and gloves from MakeHuman asset packs and the tileable cloth
 and armour textures from ambientCG (all CC0, downloaded into --cache, see
-mhassets.py and materials.py). The clothes, helmets, ambient occlusion and
+mhassets.py and materials.py). The clothes, helmets, the masks in the vertex
+colours (each outfit's ambient occlusion, worn edges, noise: masks.py) and
 three levels of detail are generated here; each level is exported as one mesh whose vertices name their
 part (_PART attribute), and the textures as layers next to the model.
 """
@@ -36,6 +37,7 @@ from mathutils.kdtree import KDTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import garments  # noqa: E402
 import helmets  # noqa: E402
+import masks  # noqa: E402
 import materials  # noqa: E402
 import mhassets  # noqa: E402
 import mocap  # noqa: E402
@@ -507,6 +509,7 @@ def merge_parts(objs, name):
     merged.name = name
     merged.data.name = name
     keep_normals(merged.data)
+    masks.pack(merged)
     mat = bpy.data.materials.get('soldier') or bpy.data.materials.new('soldier')
     merged.data.materials.clear()
     merged.data.materials.append(mat)
@@ -652,23 +655,10 @@ def build():
             m = obj.modifiers.new('Armature', 'ARMATURE')
             m.object = rig
         print(f'{name:16s} {tri_count(obj):6d} tris')
-    # ambient occlusion: the head and hands with the legs' clothes; each
-    # garment with the head and hands only (outfits combine them freely)
-    for obj in pieces.values():
-        obj.hide_render = True
-    for name in ('Hose', 'Boots'):
-        pieces[name].hide_render = False
-    bake_ao(list(common.values()))
-    # (the Norse trousers darken inside the boot tops)
-    with_ao = {'VikingPants': 'VikingBoots'}
-    for name, obj in pieces.items():
-        for other in pieces.values():
-            other.hide_render = other is not obj and other is not pieces.get(with_ao.get(name))
-        bake_ao([obj])
-    for obj in everything.values():
-        obj.hide_render = False
-    for obj in helmet_objs.values():
-        obj.hide_render = False
+    # vertex colours (masks.py): the ambient occlusion of each outfit, the
+    # distance to the garments' open edges and a noise
+    masks.bake(common, pieces, list(helmet_objs.values()), bake_ao)
+    masks.paint(everything, bare=set(common))
 
     # levels of detail. The head of each level is one mesh (Soldier_LOD<n>),
     # each garment and the bare hands another (Piece_<name>_LOD<n>); the game
@@ -690,6 +680,8 @@ def build():
                 bpy.data.objects.remove(bare)
                 continue
             levels[level][name] = copy_object(obj, lod) if tri_count(obj) < 400 else decimate(obj, ratio, lod)
+    for obj in levels[2].values():
+        masks.far(obj)
     # the hands, a piece of their own (bare-handed outfits; the others wear gloves)
     for level, objs in levels.items():
         objs['Hands'] = split_hands(objs['Body'], f'Hands_LOD{level}')
@@ -714,6 +706,9 @@ def build():
         json.dump({'size': mhassets.LAYER_SIZE, 'layers': dict(zip(mhassets.LAYERS, files)), 'tiles': tiles}, f, indent=1)
     rig['parts'] = PARTS
     rig['part_layers'] = {**{part: layer for part, (layer, _) in mhassets.PLACE.items()}, 'Hands': 'skin'}
+    # the vertex colours are masks (partmat.js); the outfits' shades (masks.pack)
+    rig['masks'] = 1
+    rig['ao'] = {mesh: t for mesh, t in masks.TABLE.items() if t['kept']}
 
     os.makedirs(os.path.dirname(os.path.abspath(ARGS.out)), exist_ok=True)
     bpy.ops.object.select_all(action='DESELECT')
@@ -725,7 +720,7 @@ def build():
         filepath=os.path.abspath(ARGS.out), export_format='GLB', use_selection=True, export_apply=True,
         export_yup=True, export_animations=True, export_animation_mode='ACTIONS',
         export_force_sampling=True, export_morph=False, export_skins=True, export_all_influences=False,
-        export_vertex_color='ACTIVE', export_normals=True, export_tangents=False, export_texcoords=True,
+        export_vertex_color='ACTIVE', export_all_vertex_colors=False, export_normals=True, export_tangents=False, export_texcoords=True,
         export_extras=True, export_attributes=True)
     print('wrote', ARGS.out, os.path.getsize(ARGS.out), 'bytes')
 

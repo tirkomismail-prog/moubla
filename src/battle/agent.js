@@ -239,6 +239,8 @@ export class Agent {
       // a chosen face (skin, hair, beard, stubble) instead of a random one
       ...opts.appearance,
     };
+    // the worn edges of the clothes (partmat.js PART_MASKS): as worn as faded
+    spec.wear = 0.5 + 2 * spec.fade;
     // realistic skinned body (medium/high graphics) or the procedural one
     spec.driverOnly = !!(battle.gfx && battle.gfx.standard && charactersReady());
     this.rig = buildHuman(spec);

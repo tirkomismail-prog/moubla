@@ -380,11 +380,12 @@ const bonePools = new WeakMap();
 // Puts a model's skeleton (an ownSpaceSkeleton) into the bone pool of
 // `owner` (one per battle) and gives each of `meshes` its own geometry
 // (sharing the buffers) with the boneBase attribute: the first bone, the
-// model's palette row (partLook), how dirty it is (0..1).
-export function poolBones(owner, skeleton, meshes, row = 0, dirt = 0) {
+// model's palette row (partLook), how dirty it is and how worn its clothes'
+// edges are (0..1, PART_MASKS).
+export function poolBones(owner, skeleton, meshes, row = 0, dirt = 0, wear = 0) {
   let pool = bonePools.get(owner);
   if (!pool) bonePools.set(owner, (pool = new BonePool()));
-  const base = new THREE.InstancedBufferAttribute(new Float32Array([pool.add(skeleton), row, dirt, 0]), 4);
+  const base = new THREE.InstancedBufferAttribute(new Float32Array([pool.add(skeleton), row, dirt, wear]), 4);
   for (const m of meshes) m.geometry = withBoneBase(m.geometry, base);
   return base;
 }
@@ -478,7 +479,8 @@ const kinds = new WeakMap();
 //   o (the kind)  program, parts (part names in the order of their numbers),
 //                 layers (colour layers, decodeLayers), normals (normal map
 //                 layers by the same names), tiles (tileable materials,
-//                 decodeTiles), mud (colour of the dirt, linear)
+//                 decodeTiles), mud (colour of the dirt, linear), masks
+//                 (the vertex colours are masks, see PART_MASKS; else a shade)
 //   look          palette {part: surface() or tiled()}, layerOf (part ->
 //                 name of its texture layer), cards (parts made of see-through
 //                 cards), marked (parts whose texture alpha selects the mark
@@ -529,6 +531,7 @@ function makeKind(o) {
     layerSize: { value: layers ? layers.size : 1 },
   };
   const m = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, metalness: 0, vertexColors: true });
+  if (o.masks) m.defines = { PART_MASKS: '' };
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
     shader.uniforms.partNormals = { value: normals ? normals.texture : null };
@@ -542,14 +545,21 @@ function makeKind(o) {
         varying vec3 vPartColor;
         varying vec3 vPartSurface;
         varying vec3 vMarkColor;
-        varying vec2 vDirt;`)
+        varying vec3 vDirt;
+        #ifdef PART_MASKS
+        varying float vMottle;
+        #endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
         vec4 pal3 = texelFetch(partPalette, ivec2(part * ${PALETTE_TEXELS} + 3, partRow), 0);
         vPartColor = pal0.rgb;
         vPartSurface = vec3(pal0.a, pal1.x, pal3.a);
         vMarkColor = pal3.rgb;
         // (the height in the bind pose: the feet at 0)
-        vDirt = vec2(boneBase.z, position.y);`)
+        vDirt = vec3(boneBase.z, position.y, boneBase.w);
+        #ifdef PART_MASKS
+        // blotches of the noise (B), others on each model
+        vMottle = sin(6.2832 * (color.b * 2.0 + fract(boneBase.x * 0.618)));
+        #endif`)
       .replace('#include <project_vertex>', `#include <project_vertex>${HIDE_VERTEX}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${PART_FRAGMENT}${TILE_FRAGMENT}
@@ -559,8 +569,14 @@ function makeKind(o) {
         varying vec3 vPartColor;
         varying vec3 vPartSurface;
         varying vec3 vMarkColor;
-        varying vec2 vDirt;`)
-      .replace('#include <color_fragment>', `#include <color_fragment>
+        varying vec3 vDirt;
+        #ifdef PART_MASKS
+        varying float vMottle;
+        #endif`)
+      .replace('#include <color_fragment>', `
+        #ifndef PART_MASKS
+        #include <color_fragment>
+        #endif
         vec4 partTex = partTexel();
         vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, vMarkColor, partTex.a) : vPartColor;
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
@@ -578,14 +594,38 @@ function makeKind(o) {
         }
         diffuseColor.rgb *= partTint * partTex.rgb;
         diffuseColor.a = 1.0;
+        float mudLine = vDirt.y;
+        float wear = 0.0;
+        float partMetal = mix(vPartSurface.y, vPartSurface.z, second);
+        #ifdef PART_MASKS
+        // the vertex colours are masks (tools/characters/masks.py): R the
+        // outfit's shade (below), G the distance to the garment's open edge,
+        // B a noise. Cloth and armour a little blotchy; worn at the edges,
+        // as much as the model's (boneBase.w): metal rubbed bright, cloth and
+        // leather faded (gone by the far level, too small there); the mud's
+        // edge uneven
+        if (vPartTile.x > -0.5) {
+          diffuseColor.rgb *= 1.0 + 0.1 * vMottle;
+          wear = (1.0 - smoothstep(0.0, 0.08, vColor.g)) * vDirt.z * clamp(0.6 + 0.8 * vColor.b, 0.0, 1.0)
+            * (1.0 - smoothstep(12.0, 18.0, length(vViewPosition)));
+          // (the dye worn off: towards the undyed fibre, as light as the lightest channel)
+          vec3 faded = mix(diffuseColor.rgb, max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)) * vec3(1.0, 0.94, 0.84), 0.45);
+          diffuseColor.rgb = mix(diffuseColor.rgb, mix(faded, diffuseColor.rgb * 1.5, partMetal), wear);
+        }
+        mudLine += 0.3 * (vColor.b - 0.5);
+        #endif
         // mud and dust from the ground: most above the boots, less up to the
         // knees, as dirty as the model
-        float mud = vDirt.x * (1.0 - smoothstep(0.1, 0.8, vDirt.y));
-        diffuseColor.rgb = mix(diffuseColor.rgb, mudColor, mud);`)
+        float mud = vDirt.x * (1.0 - smoothstep(0.1, 0.8, mudLine));
+        diffuseColor.rgb = mix(diffuseColor.rgb, mudColor, mud);
+        #ifdef PART_MASKS
+        diffuseColor.rgb *= vColor.r;
+        #endif`)
       .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
           : clamp(tileSurf.z * mix(vPartSurface.x, 1.0, second), 0.04, 1.0);
+        roughnessFactor *= 1.0 - 0.45 * wear * partMetal;
         roughnessFactor = mix(roughnessFactor, 0.95, mud);`)
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(mix(vPartSurface.y, vPartSurface.z, second), 0.0, mud);')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(partMetal, 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (vPartTex.z > -0.5) {
           vec2 partXY = texture(partNormals, vec3(vPartUv, vPartTex.z)).xy * 2.0 - 1.0;
@@ -597,7 +637,7 @@ function makeKind(o) {
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
-  m.customProgramCacheKey = () => `${o.program}:${parts.length}`;
+  m.customProgramCacheKey = () => `${o.program}:${parts.length}${o.masks ? ':masks' : ''}`;
   // shadows: hidden parts cast none, cards only where they are not see-through
   const depth = new THREE.MeshDepthMaterial();
   depth.onBeforeCompile = (shader) => {

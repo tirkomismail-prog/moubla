@@ -3,14 +3,16 @@ they fit without scaling in the game. Exported as meshes named
 Helmet_<look> in the rest pose; the game moves them with the head bone.
 
 Every vertex says how the game should shade it: _tile (a material of
-materials.TILES, -1 for plain colour), the colour (a tint), _metal
-(metalness) and _team (1: painted in the team colour). UVs are in metres.
+materials.TILES, -1 for plain colour), the colour (a tint; its alpha the
+distance to the nearest rim, masks.rims: worn there), _metal (metalness)
+and _team (1: painted in the team colour). UVs are in metres.
 """
 import math
 
 import bpy
 from mathutils import Vector
 
+import masks
 import materials
 
 TILE = {name: float(i) for i, name in enumerate(materials.TILES)}
@@ -112,8 +114,9 @@ class Mesh:
                 uv.data[li].uv = (u, v)
         col = me.color_attributes['Col']
         tile, metal, team = (me.attributes[a] for a in ('_tile', '_metal', '_team'))
+        rim = masks.rims(self)
         for i, (t, tint, m, tm) in enumerate(self.attrs):
-            col.data[i].color = (*tint, 1.0)
+            col.data[i].color = (*tint, rim[i])
             tile.data[i].value = TILE.get(t, -1.0)
             metal.data[i].value = m
             team.data[i].value = 1.0 if tm else 0.0

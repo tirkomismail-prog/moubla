@@ -162,6 +162,12 @@ function prepare(gltf) {
   // level of detail (Soldier_LOD<n>) into one mesh per outfit, see outfitGeometry
   t.common = [];
   t.pieces = {};
+  // the vertex colours are masks (partmat.js), and the shades of the
+  // outfits (tools/characters/masks.py) are taken out of the geometries
+  // (the pieces of an outfit must have the same attributes to be joined):
+  // outfitGeometry puts the outfit's into R
+  t.masks = !!fit.masks;
+  t.ao = new Map();
   const pieces = [];
   scene.traverse((o) => {
     const m = o.isSkinnedMesh && /^(Soldier|Piece_(.+))_LOD(\d)$/.exec(o.name);
@@ -170,6 +176,13 @@ function prepare(gltf) {
       (t.pieces[m[2]] ||= [])[+m[3]] = o.geometry;
       pieces.push(o);
     } else t.common[+m[3]] = o.geometry;
+    const packed = [];
+    for (let i = 0; o.geometry.getAttribute(`_ao${i}`); i++) {
+      packed.push(o.geometry.getAttribute(`_ao${i}`));
+      o.geometry.deleteAttribute(`_ao${i}`);
+    }
+    const table = fit.ao && fit.ao[m[2] ? `Piece_${m[2]}` : 'Soldier'];
+    if (table && packed.length) t.ao.set(o.geometry, { kept: table.kept, use: table.use, packed });
   });
   for (const o of pieces) o.removeFromParent();
   // helmets (tools/characters/helmets.py), moved into the head bone's space;
@@ -364,6 +377,9 @@ function wrapPose(bones, s, hand, r) {
 
 // hair-like textures are grey with a mean of 0.8; skin textures are this light tone
 const HAIR_MEAN = 0.8;
+// hair is darker than its strands (they shade each other; the shade baked
+// into the cards, masks.py, is only that of the head and the clothes)
+const HAIR_SHADE = 0.65;
 const SKIN_REF = new THREE.Color('#e8c3a0');
 
 // Cloth of a colour (of the dyed cloth seen in daylight, src/data/dyes.js)
@@ -415,7 +431,7 @@ function palette(spec) {
   const leather = tiled('leather', JERKIN[spec.faction] || JERKIN.default);
   const skin = new THREE.Color(spec.skin);
   skin.setRGB(skin.r / SKIN_REF.r, skin.g / SKIN_REF.g, skin.b / SKIN_REF.b);
-  const hair = new THREE.Color(spec.hair).multiplyScalar(1 / HAIR_MEAN);
+  const hair = new THREE.Color(spec.hair).multiplyScalar((state.t && state.t.masks ? HAIR_SHADE : 1) / HAIR_MEAN);
   return {
     Body: surface(skin, 0.55),
     // (the cloth look's shirt; the Norse kyrtle's body is wool)
@@ -501,8 +517,10 @@ let norseFailed = false;
 // the helmet leaves room for it, shoes or boots (the riders of the steppe
 // keep their boots) and bare or gloved hands. Pieces a model does not have
 // are left out (an older model has the hands in the body, no shoes, no
-// hood: the hood is then a carried helmet).
+// hood: the hood is then a carried helmet). Each with the name of its
+// shade (tools/characters/outfits.py contexts: the look, ':hood' or ':coif').
 const outfitList = new Map();
+const outfitShade = new Map();
 function outfitOf(spec) {
   const has = (n) => !!state.t.pieces[n];
   const look = OUTFITS[spec.look] ? spec.look : 'cloth';
@@ -512,7 +530,11 @@ function outfitOf(spec) {
     const hood = spec.helmet === 'hood' && HOOD[look] && has(HOOD[look]) ? HOOD[look] : null;
     const hands = look === 'brigandine' && has('Gloves') ? 'Gloves' : 'Hands';
     const key = ['norse', look, hood || '', hands].join(':');
-    if (!outfitList.has(key)) outfitList.set(key, [...NORSE[look], ...(hood ? [hood] : []), 'VikingBoots', hands]);
+    if (!outfitList.has(key)) {
+      outfitList.set(key, [...NORSE[look], ...(hood ? [hood] : []), 'VikingBoots', hands]);
+      const kit = look === 'padded' || look === 'brigandine' ? `norse-${look}` : 'norse';
+      outfitShade.set(key, kit + (hood ? ':hood' : ''));
+    }
     if (outfitGeometry(key, 0)) return { key, coif: false, hood: !!hood };
     console.warn('Norse outfit unusable:', key);
     norseFailed = true;
@@ -523,7 +545,10 @@ function outfitOf(spec) {
   const hands = GLOVED.has(look) && has('Gloves') ? 'Gloves' : 'Hands';
   const head = hood || coif;
   const key = [look, head || '', feet, hands].join(':');
-  if (!outfitList.has(key)) outfitList.set(key, [...OUTFITS[look], ...(head ? [head] : []), feet, hands]);
+  if (!outfitList.has(key)) {
+    outfitList.set(key, [...OUTFITS[look], ...(head ? [head] : []), feet, hands]);
+    outfitShade.set(key, look + (hood ? ':hood' : coif ? ':coif' : ''));
+  }
   return { key, coif: !!coif, hood: !!hood };
 }
 
@@ -545,10 +570,28 @@ function outfitGeometry(outfit, level) {
     geo = far && simplified(far, FAR_SHARE, FAR_ERROR);
   } else {
     const names = outfitList.get(outfit).filter((n) => t.pieces[n] && t.pieces[n][level]);
-    geo = names.length ? mergeGeometries([t.common[level], ...names.map((n) => t.pieces[n][level])]) : null;
+    const parts = [t.common[level], ...names.map((n) => t.pieces[n][level])];
+    geo = names.length ? mergeGeometries(parts) : null;
+    if (geo) shade(geo, parts, outfitShade.get(outfit));
   }
   outfits.set(key, geo);
   return geo;
+}
+
+// Each part's shade in the outfit `name` (prepare) into R of the joined
+// geometry's colours; R stays where the part has none of its own.
+function shade(geo, parts, name) {
+  const color = geo.getAttribute('color');
+  let start = 0;
+  for (const g of parts) {
+    const s = state.t.ao.get(g);
+    const k = s && s.use[name] ? s.kept.indexOf(s.use[name]) : -1;
+    if (color && k >= 0) {
+      const from = s.packed[k >> 2];
+      for (let i = 0; i < from.count; i++) color.setX(start + i, from.getComponent(i, k & 3));
+    }
+    start += g.getAttribute('position').count;
+  }
 }
 
 // parts made of see-through cards
@@ -559,7 +602,7 @@ function soldierLook(owner, spec, hidden) {
   const t = state.t;
   const layers = t.layers;
   const stubble = spec.stubble && layers && 'skin_stubble' in layers.index;
-  return partLook(owner, { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud }, {
+  return partLook(owner, { program: 'soldier', parts: t.parts, layers, tiles: t.tiles, mud: spec.mud, masks: t.masks }, {
     palette: palette(spec),
     layerOf: (name) => ((name === 'Body' || name === 'Hands') && stubble ? 'skin_stubble' : t.partLayers[name]),
     cards: CARDS,
@@ -617,8 +660,13 @@ export function itemMaterial() {
           vec4 tileCol = texture(tileColor, vec3(tileUv, vTile));
           diffuseColor.rgb = vTint * tileCol.rgb;
           tileSurf = vec3(texture(tileSurface, vec3(tileUv, vTile)).xy, tileCol.a);
-        }`)
-      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0);')
+        }
+        // worn rims (a helmet's colour alpha is the distance to the nearest
+        // rim, tools/characters/masks.py; 1 elsewhere): the metal rubbed
+        // bright and smooth there, not drawn far away (smaller than a pixel)
+        float rimWear = vMetal * (1.0 - smoothstep(0.0, 0.6, vColor.a)) * (1.0 - smoothstep(12.0, 18.0, length(vViewPosition)));
+        diffuseColor.rgb *= 1.0 + 0.4 * rimWear;`)
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = (tileSurf.z < 0.0 ? 0.7 : clamp(tileSurf.z, 0.04, 1.0)) * (1.0 - 0.4 * rimWear);')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         if (tileSurf.z >= 0.0) {
@@ -731,7 +779,7 @@ export class SkinnedHuman {
     // battle's bone texture
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
-    poolBones(props, shared, this.lod, row, spec.dirt || 0);
+    poolBones(props, shared, this.lod, row, spec.dirt || 0, spec.wear || 0);
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);
