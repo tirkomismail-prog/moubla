@@ -33,6 +33,8 @@ const PART_NAMES = {
   noSky: 'без неба',
   noSoldiers: 'без воїнів (і їхніх речей)',
   noHorses: 'без коней',
+  soldiersNoDeco: 'воїни без знаків військ і гербів (етап 4.4)',
+  soldiersNoMasks: 'воїни без масок вершин, знаків і гербів (етапи 4.3–4.4; вигляд хибний, лише ціна)',
   baseAgain: 'усе ще раз (розкид замірів)',
   groundNoSurface: 'земля без рельєфу шарів (нормалей і висот)',
   groundOneLayer: 'земля одним шаром (без змішування шарів)',
@@ -99,6 +101,11 @@ const PARTS = {
     };
   },
   noHorses: (b) => hide([...b.agents.map((a) => a.horse && a.horse.rig.root), ...[...b.looseHorses, ...b.deadHorses].map((h) => h.rig.root)]),
+  // what the soldiers' shader costs of the later stages of the plan: the
+  // army's sign and the knights' arms (4.4), and the vertex masks (4.3:
+  // the outfit's shade, wear at the edges, mottling)
+  soldiersNoDeco: soldierVariant('no-deco', ['PART_DECO']),
+  soldiersNoMasks: soldierVariant('no-masks', ['PART_DECO', 'PART_MASKS', 'PART_HAIR']),
   // the first measurement again at the end: how much the numbers drift
   baseAgain: () => () => {},
 };
@@ -111,6 +118,31 @@ function variantOf(mat, key, make) {
   if (!m) variants.set(mat, (m = new Map()));
   if (!m.has(key)) m.set(key, make());
   return m.get(key);
+}
+
+// The soldiers' material without some of its shader (its #defines, see
+// partmat.js makeKind), in a copy: on every soldier's levels of detail.
+function soldierVariant(key, drop) {
+  return (b) => {
+    const meshes = find(b, (o) => o.isMesh && o.material && o.material.customProgramCacheKey && o.material.customProgramCacheKey().startsWith('soldier:'));
+    const back = meshes.map((o) => [o, o.material]);
+    for (const [o, mat] of back) {
+      o.material = variantOf(mat, key, () => {
+        // (not its userData: the shadows' material and the palette, shared)
+        const userData = mat.userData;
+        mat.userData = {};
+        const copy = mat.clone();
+        mat.userData = userData;
+        copy.userData = userData;
+        copy.defines = { ...mat.defines };
+        for (const d of drop) delete copy.defines[d];
+        copy.onBeforeCompile = mat.onBeforeCompile;
+        copy.customProgramCacheKey = () => `${mat.customProgramCacheKey()}-${key}`;
+        return copy;
+      });
+    }
+    return () => back.forEach(([o, mat]) => (o.material = mat));
+  };
 }
 
 // What the ground's cost is made of: its shader changed in a copy of its

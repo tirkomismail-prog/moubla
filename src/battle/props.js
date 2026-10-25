@@ -101,7 +101,14 @@ export class Props {
         const into = close ? near : far;
         const i = close ? n++ : f++;
         into.instanceMatrix.array.set(e, 16 * i);
-        if (into.instanceColor) into.instanceColor.array[3 * i] = h.userData.coat ?? -1;
+        // (the coats sent to the video card only when one changes)
+        if (into.instanceColor) {
+          const coat = h.userData.coat ?? -1;
+          if (into.instanceColor.array[3 * i] !== coat) {
+            into.instanceColor.array[3 * i] = coat;
+            into.instanceColor.needsUpdate = true;
+          }
+        }
       }
       near.count = n;
       far.count = f;
@@ -109,8 +116,6 @@ export class Props {
       far.visible = f > 0;
       near.instanceMatrix.needsUpdate = n > 0;
       far.instanceMatrix.needsUpdate = f > 0;
-      if (near.instanceColor && n > 0) near.instanceColor.needsUpdate = true;
-      if (far.instanceColor && f > 0) far.instanceColor.needsUpdate = true;
     }
   }
 
