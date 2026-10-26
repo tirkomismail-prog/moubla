@@ -570,7 +570,13 @@ function makeKind(o) {
   if (o.masks) Object.assign(m.defines, { PART_MASKS: '', PART_HAIR: Math.max(0, parts.indexOf('Hair')) });
   // the army's sign and the arms (DECO_FRAGMENT)
   const decoTint = { value: Array.from({ length: 16 }, () => new THREE.Color(0, 0, 0)) };
-  if (o.deco) m.defines.PART_DECO = '';
+  if (o.deco) {
+    m.defines.PART_DECO = '';
+    // the arms' texels across; the cloth a sign is sewn on with: the wool
+    // tile's layer and repeat
+    m.defines.DECO_TEXELS = (o.heraldry ? o.heraldry.size : 128).toFixed(1);
+    if (tiles && 'wool' in tiles.index) m.defines.DECO_CLOTH = `vec2(${tiles.index.wool.toFixed(1)}, ${Number(tiles.repeat.wool).toFixed(4)})`;
+  }
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
     shader.uniforms.partNormals = { value: normals ? normals.texture : null };
@@ -632,6 +638,11 @@ function makeKind(o) {
         varying float vMottle;
         varying float vShade;
         #endif
+        #ifdef DECO_CLOTH
+        #define DECO_CLOTH_TILE DECO_CLOTH
+        #else
+        #define DECO_CLOTH_TILE vec2(0.0)
+        #endif
         #ifdef PART_DECO
         uniform vec3 decoTint[16];
         uniform highp sampler2DArray heraldry;
@@ -644,6 +655,8 @@ function makeKind(o) {
         #endif
         vec4 partTex = partTexel();
         vec3 partTint = vPartTex.y > 1.5 ? mix(vPartColor, vMarkColor, partTex.a) : vPartColor;
+        // (a sign sewn on here: the cloth's tile instead of the part's)
+        bool decoCloth = false;
         #ifdef PART_DECO${DECO_FRAGMENT}
         #endif
         vec3 tileSurf = vec3(0.5, 0.5, -1.0);
@@ -652,9 +665,9 @@ function makeKind(o) {
         // away it is its share)
         float second = 0.0;
         if (vPartTile.x > -0.5) {
-          vec3 tileUv = vec3(vPartUv * vPartTile.y, vPartTile.x);
+          vec3 tileUv = decoCloth ? vec3(vPartUv * DECO_CLOTH_TILE.y, DECO_CLOTH_TILE.x) : vec3(vPartUv * vPartTile.y, vPartTile.x);
           vec4 tileCol = texture(tileColor, tileUv);
-          if (vPartTile.z > -0.5) second = texture(tileMask, vec3(tileUv.xy, vPartTile.z)).r;
+          if (vPartTile.z > -0.5 && !decoCloth) second = texture(tileMask, vec3(tileUv.xy, vPartTile.z)).r;
           partTint = mix(partTint, vMarkColor, second);
           diffuseColor.rgb *= tileCol.rgb;
           tileSurf = vec3(texture(tileSurface, tileUv).xy, tileCol.a);
@@ -663,12 +676,7 @@ function makeKind(o) {
         diffuseColor.a = 1.0;
         float mudLine = vDirt.y;
         float wear = 0.0;
-        float partMetal = mix(vPartSurface.y, vPartSurface.z, second);
-        #ifdef PART_DECO
-        // (a sign sewn on mail, leather or lamellar: cloth)
-        diffuseColor.rgb = mix(diffuseColor.rgb, decoCol * vec3(0.77, 0.729, 0.669), decoSewn);
-        partMetal *= 1.0 - decoSewn;
-        #endif
+        float partMetal = decoCloth ? 0.0 : mix(vPartSurface.y, vPartSurface.z, second);
         #ifdef PART_MASKS
         // the vertex colours are masks (tools/characters/masks.py): R (or A)
         // the outfit's shade (vShade, below), G the distance to the
@@ -694,11 +702,8 @@ function makeKind(o) {
         diffuseColor.rgb *= vShade;
         #endif`)
       .replace('#include <roughnessmap_fragment>', `float roughnessFactor = tileSurf.z < 0.0 ? vPartSurface.x
-          : clamp(tileSurf.z * mix(vPartSurface.x, 1.0, second), 0.04, 1.0);
+          : clamp(tileSurf.z * (decoCloth ? 1.0 : mix(vPartSurface.x, 1.0, second)), 0.04, 1.0);
         roughnessFactor *= 1.0 - 0.45 * wear * partMetal;
-        #ifdef PART_DECO
-        roughnessFactor = mix(roughnessFactor, 0.9, decoSewn);
-        #endif
         roughnessFactor = mix(roughnessFactor, 0.95, mud);`)
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(partMetal, 0.0, mud);')
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
@@ -708,12 +713,7 @@ function makeKind(o) {
           normal = normalize(tileFrame(-vViewPosition, normal, vPartUv) * partN);
         } else if (tileSurf.z >= 0.0) {
           mat3 frame = tileFrame(-vViewPosition, normal, vPartUv * vPartTile.y);
-          #ifdef PART_DECO
-          // (a sign sewn on: flat cloth over the mail's rings or the plates)
-          normal = normalize(mix(normal, frame * tileNormal(tileSurf.xy), 1.0 - decoSewn));
-          #else
           normal = normalize(frame * tileNormal(tileSurf.xy));
-          #endif
         }`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>${DULL_METAL}`);
   };
@@ -748,35 +748,36 @@ function makeKind(o) {
 // saltire with 5 cm bars in a 24 cm field (on a patch of other cloth where
 // it would not show), a sash over the right shoulder, or bands round the
 // upper arms, faded out from 24 to 32 m (beyond, the side's big garment
-// tells the sides apart; and the bars would be under a pixel). Mixed into the cloth's
-// tint (under its weave, the brigandine's rivets, mud and wear), or sewn on
-// over mail, leather or lamellar (decoSewn: after the tile).
+// tells the sides apart; and the bars would be under a pixel). Mixed into the
+// cloth's tint (under its weave, the brigandine's rivets, mud and wear); sewn
+// on over mail, leather or lamellar, where its pixels take the cloth's tile
+// instead of the part's (decoCloth: DECO_CLOTH, its layer and repeat), dull.
+// (Written to keep few values alive at once: on the weak Intel cards a
+// shader that needs more registers runs at half the width, SIMD8 instead
+// of SIMD16, the whole soldier at half the speed. The arms' mip level from
+// the pixel's size on the body, the sewn sign as the cloth's tile: no
+// colour or weight kept from here to after the tile.)
 const DECO_FRAGMENT = `
-  vec3 decoCol = vec3(0.0);
-  float decoSewn = 0.0;
-  // (derivatives before any branch)
+  // (the size of a pixel on the body: derivatives before any branch)
   vec2 decoP = vec2(vDecoXY.x, vDirt.y);
-  vec2 decoDx = dFdx(decoP);
-  vec2 decoDy = dFdy(decoP);
-  float decoPx = max(0.7 * (length(decoDx) + length(decoDy)), 1e-4);
+  float decoPx = max(0.7 * (length(dFdx(decoP)) + length(dFdy(decoP))), 1e-4);
   float decoDist = length(vViewPosition);
   float decoFade = 1.0 - smoothstep(24.0, 32.0, decoDist);
   float coatFade = 1.0 - smoothstep(40.0, 56.0, decoDist);
   if (vDeco > 0.5 && coatFade > 0.0) {
     int code = int(vDeco + 0.5);
     int shape = code & 7;
-    float back = vDecoXY.y > 0.0 ? 0.0 : 1.0;
+    bool front = vDecoXY.y > 0.0;
     if (shape == 5) {
-      vec2 frame = mix(vec2(0.21, 0.245), vec2(0.22, 0.257), back);
-      float flip = 1.0 - 2.0 * back;
-      vec2 g = vec2(flip, -1.0) / frame;
-      vec2 uv = vec2(0.5, 0.5) + vec2(decoP.x, decoP.y - mix(1.215, 1.225, back)) * g;
-      vec3 coat = textureGrad(heraldry, vec3(uv, float((code >> 12) - 1)), decoDx * g, decoDy * g).rgb;
+      // (1 / its width, 1 / its height, the height of its middle: on the
+      // back mirrored, as a viewer behind sees it)
+      vec3 f = front ? vec3(1.0 / 0.21, 1.0 / 0.245, 1.215) : vec3(-1.0 / 0.22, 1.0 / 0.257, 1.225);
+      vec2 uv = vec2(0.5 + decoP.x * f.x, 0.5 - (decoP.y - f.z) * f.y);
+      vec3 coat = textureLod(heraldry, vec3(uv, float((code >> 12) - 1)), log2(decoPx * abs(f.x) * DECO_TEXELS)).rgb;
       // (the coat's dyes as tints of the wool: 0.75 / its mean)
       partTint = mix(partTint, coat * vec3(0.974, 1.029, 1.121), coatFade);
     } else if (decoFade > 0.0) {
-      vec2 q = vec2(decoP.x, decoP.y - mix(1.205, 1.215, back));
-      vec2 a = abs(q);
+      vec2 a = abs(vec2(decoP.x, decoP.y - (front ? 1.205 : 1.215)));
       float box = max(a.x, a.y) - 0.12;
       float d;
       float facing = abs(vDecoXY.y);
@@ -786,22 +787,21 @@ const DECO_FRAGMENT = `
         d = abs(0.8 * decoP.x + 0.6 * (decoP.y - 1.2)) - 0.04;
         // (over the shoulder's top too, from the chest on to the back)
         facing = max(facing, smoothstep(1.28, 1.36, decoP.y));
-      }
-      else {
-        // (the upper arm in the bind pose: from the shoulder down and out)
+      } else {
+        // (the upper arm in the bind pose: from the shoulder down and out;
+        // along it, across it)
         vec2 arm = vec2(abs(decoP.x) - 0.184, decoP.y - 1.386);
-        float along = dot(arm, vec2(0.658, -0.752));
-        float off = abs(arm.x * -0.752 - arm.y * 0.658);
-        d = max(abs(along - 0.13) - 0.025, off - 0.09);
+        d = max(abs(dot(arm, vec2(0.658, -0.752)) - 0.13) - 0.025, abs(dot(arm, vec2(-0.752, -0.658))) - 0.09);
         facing = 1.0;
       }
-      float cov = clamp(0.5 - d / decoPx, 0.0, 1.0) * facing * decoFade;
+      float fade = facing * decoFade;
+      float cov = clamp(0.5 - d / decoPx, 0.0, 1.0) * fade;
       int patchTint = (code >> 8) & 15;
-      float patchCov = patchTint > 0 ? clamp(0.5 - box / decoPx, 0.0, 1.0) * facing * decoFade : 0.0;
-      float decoCov = max(cov, patchCov);
-      decoCol = mix(decoTint[patchTint], decoTint[(code >> 4) & 15], cov / max(decoCov, 1e-4));
-      if ((code & 8) != 0) partTint = mix(partTint, decoCol, decoCov);
-      else decoSewn = decoCov;
+      float decoCov = patchTint > 0 ? max(cov, clamp(0.5 - box / decoPx, 0.0, 1.0) * fade) : cov;
+      partTint = mix(partTint, mix(decoTint[patchTint], decoTint[(code >> 4) & 15], cov / max(decoCov, 1e-4)), decoCov);
+      #ifdef DECO_CLOTH
+      decoCloth = (code & 8) == 0 && decoCov > 0.5;
+      #endif
     }
   }`;
 
