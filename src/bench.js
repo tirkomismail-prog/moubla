@@ -35,6 +35,10 @@ const PART_NAMES = {
   noHorses: 'без коней',
   soldiersNoDeco: 'воїни без знаків військ і гербів (етап 4.4)',
   soldiersNoMasks: 'воїни без масок вершин, знаків і гербів (етапи 4.3–4.4; вигляд хибний, лише ціна)',
+  decoNoCoat: 'знаки без гербів на одязі',
+  decoNoSigns: 'герби без знаків військ',
+  decoNoCloth: 'нашиті знаки без тайла сукна',
+  decoLoop: 'знаки й герби в циклі (чи гілку виконано для всіх пікселів)',
   baseAgain: 'усе ще раз (розкид замірів)',
   groundNoSurface: 'земля без рельєфу шарів (нормалей і висот)',
   groundOneLayer: 'земля одним шаром (без змішування шарів)',
@@ -105,7 +109,6 @@ const PARTS = {
   // army's sign and the knights' arms (4.4), and the vertex masks (4.3:
   // the outfit's shade, wear at the edges, mottling)
   soldiersNoDeco: soldierVariant('no-deco', ['PART_DECO']),
-  soldiersNoMasks: soldierVariant('no-masks', ['PART_DECO', 'PART_MASKS', 'PART_HAIR']),
   // the first measurement again at the end: how much the numbers drift
   baseAgain: () => () => {},
 };
@@ -121,8 +124,9 @@ function variantOf(mat, key, make) {
 }
 
 // The soldiers' material without some of its shader (its #defines, see
-// partmat.js makeKind), in a copy: on every soldier's levels of detail.
-function soldierVariant(key, drop) {
+// partmat.js makeKind, or its fragment shader edited), in a copy: on every
+// soldier's levels of detail.
+function soldierVariant(key, drop = [], edit = null) {
   return (b) => {
     const meshes = find(b, (o) => o.isMesh && o.material && o.material.customProgramCacheKey && o.material.customProgramCacheKey().startsWith('soldier:'));
     const back = meshes.map((o) => [o, o.material]);
@@ -136,7 +140,10 @@ function soldierVariant(key, drop) {
         copy.userData = userData;
         copy.defines = { ...mat.defines };
         for (const d of drop) delete copy.defines[d];
-        copy.onBeforeCompile = mat.onBeforeCompile;
+        copy.onBeforeCompile = (shader, renderer) => {
+          mat.onBeforeCompile(shader, renderer);
+          if (edit) shader.fragmentShader = edit(shader.fragmentShader);
+        };
         copy.customProgramCacheKey = () => `${mat.customProgramCacheKey()}-${key}`;
         return copy;
       });
@@ -164,8 +171,22 @@ function groundVariant(key, edit) {
     return () => (mesh.material = mat);
   };
 }
+// a piece of the fragment shader replaced (a warning if it is not there:
+// the measurement would be of the whole)
+const replaced = (from, to) => (f) => {
+  if (!f.includes(from)) console.warn('bench: not in the shader:', from);
+  return f.split(from).join(to);
+};
 const STILL_PARTS = {
   ...Object.fromEntries(Object.entries(PARTS).filter(([name]) => name !== 'baseAgain')),
+  // what is left of the signs' and arms' cost (partmat.js DECO_FRAGMENT)
+  soldiersNoMasks: soldierVariant('no-masks', ['PART_DECO', 'PART_MASKS', 'PART_HAIR']),
+  decoNoCoat: soldierVariant('no-coat', [], replaced('if (shape == 5) {', 'if (false) {')),
+  decoNoSigns: soldierVariant('no-signs', [], replaced('} else if (decoFade > 0.0) {', '} else if (false) {')),
+  decoNoCloth: soldierVariant('no-cloth', [], replaced('decoCloth = (code & 8) == 0 && decoCov > 0.5;', '')),
+  // (a loop of no or one turn instead of the if: the Direct3D compiler may
+  // run an if's both ways for every pixel, not a loop's)
+  decoLoop: soldierVariant('loop', [], replaced('if (vDeco > 0.5 && coatFade > 0.0) {', 'for (int decoK = 0; decoK < int(vDeco > 0.5 && coatFade > 0.0); decoK++) {')),
   groundNoSurface: groundVariant('no-surface', (f) => f.split('if (surface1 > 0.001) {').join('if (false) {')),
   groundOneLayer: groundVariant('one-layer', (f) => f.replace(/vec4 use = [^;]*;/, 'vec4 use = step(wTop, w);')),
   // (the look-ups: textureGrad(ground<Color|Surface><i>, uv, dx, dy))
