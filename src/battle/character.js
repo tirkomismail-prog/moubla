@@ -155,7 +155,7 @@ function prepare(gltf) {
     const knuck = bones[`index_01_${s}`].position.clone().sub(bones[`pinky_01_${s}`].position);
     knuck.addScaledVector(len, -knuck.dot(len)).normalize();
     const palm = s === 'r' ? new THREE.Vector3().crossVectors(knuck, len) : new THREE.Vector3().crossVectors(len, knuck);
-    const basis = new THREE.Matrix4().makeBasis(len, knuck, palm);
+    const basis = handBasis(len, knuck, new THREE.Matrix4());
     const knuckDist = bones[`middle_01_${s}`].position.length();
     const grip = len.clone().multiplyScalar(knuckDist * 0.9).addScaledVector(palm, 0.028);
     // weapon frame in hand space: +Z along the knuckle line, +Y back to the wrist
@@ -1204,9 +1204,7 @@ export class SkinnedHuman {
     const hand = this.t.hands[s];
     const len = H.len.set(0, -1, 0).applyQuaternion(q);
     const knuck = H.knuck.set(0, 0, 1).applyQuaternion(q);
-    const palm = s === 'r' ? H.palm.crossVectors(knuck, len) : H.palm.crossVectors(len, knuck);
-    H.m.makeBasis(len, knuck, palm);
-    return out.setFromRotationMatrix(H.m).multiply(H.inv.copy(hand.basisQ).invert());
+    return out.setFromRotationMatrix(handBasis(len, knuck, H.m)).multiply(H.inv.copy(hand.basisQ).invert());
   }
 
   placeWrist(s, wrist, handWorldQ, rootQ) {
@@ -1259,6 +1257,7 @@ const RW = scratch([], ['p', 'inv']);
 const SQ = scratch([], ['p']);
 const AI = scratch(['from', 'pos', 'to'], ['q', 'r']);
 const SL = scratch(['S', 'dir', 'p', 'E', 'T', 'n', 'h', 'axis', 'tmp'], ['q', 'r']);
+const HB = scratch(['v'], []);
 
 // a rotation given in the frame `frameQ` (e.g. the soldier's root) as a world rotation
 function worldRot(frameQ, local, out) {
@@ -1276,6 +1275,15 @@ function worldQuat(o, out) {
 function refresh(bone) {
   bone.updateMatrix();
   bone.matrixWorld.multiplyMatrices(bone.parent.matrixWorld, bone.matrix);
+}
+
+// A hand's frame (its length and knuckle line, unit and square to each
+// other) as a rotation: they and len x knuck, the palm's normal on the left
+// hand and the back's on the right (the right hand is the left's mirror
+// image: a frame with the palm on both would be a reflection, whose
+// quaternion is no rotation and scales the hand and what it holds).
+function handBasis(len, knuck, out) {
+  return out.makeBasis(len, knuck, HB.v.crossVectors(len, knuck));
 }
 
 // rotate a bone by the world rotation R about its own pivot
