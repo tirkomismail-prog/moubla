@@ -1022,13 +1022,19 @@ export class SkinnedHuman {
 
   // ---- per frame ----------------------------------------------------------------------
 
-  update(agent, dt) {
-    const r = agent.rig;
-    const cam = agent.battle.camera;
-    const d2 = cam.position.distanceToSquared(agent.pos);
+  // the level of detail by the camera's distance (of the fallen too, who
+  // are no longer posed: Battle.animateAgents); the distance squared
+  updateLod(camera, pos) {
+    const d2 = camera.position.distanceToSquared(pos);
     let level = 0;
     while (level < this.lod.length - 1 && d2 >= LOD_DIST[level] ** 2) level++;
     this.setLod(level);
+    return d2;
+  }
+
+  update(agent, dt) {
+    const r = agent.rig;
+    const d2 = this.updateLod(agent.battle.camera, agent.pos);
     // animation level of detail: distant soldiers are posed less often
     this.pending += dt;
     const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;

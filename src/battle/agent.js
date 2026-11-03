@@ -917,6 +917,7 @@ export class Agent {
   }
 
   dispose() {
+    this.disposed = true;
     const scene = this.battle.scene;
     for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh, this.body && this.body.helmet]) if (m) this.battle.props.remove(m);
     for (const root of [this.rig.root, this.horse && this.horse.rig.root]) {

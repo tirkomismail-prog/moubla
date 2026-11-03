@@ -1258,7 +1258,7 @@ export class Battle {
     this.updateCamera(dt);
     // (the processor's time of posing the soldiers: the benchmark reports it)
     const t0 = performance.now();
-    for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(this.paused ? 0 : dt);
+    this.animateAgents(this.paused ? 0 : dt);
     this.animMs = performance.now() - t0;
     if (!this.paused) {
       this.fx.update(dt);
@@ -1281,6 +1281,16 @@ export class Battle {
     if (autoRes) {
       autoRes.end();
       if (autoRes.update(dt)) this.resize();
+    }
+  }
+
+  // Pose the living and the falling; the fallen, no longer posed, change
+  // only their level of detail with the camera's distance (and their shadow:
+  // none beyond 32 m).
+  animateAgents(dt) {
+    for (const a of this.agents) {
+      if (a.alive || a.fallT < 1) a.animate(dt);
+      else if (a.body && !a.disposed) a.body.updateLod(this.camera, a.pos);
     }
   }
 
@@ -1463,7 +1473,7 @@ export class Battle {
     const n = Math.round(seconds / dt);
     for (let i = 0; i < n && !this.ended; i++) {
       this.step(dt);
-      if (i % 3 === 0) for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(dt * 3);
+      if (i % 3 === 0) this.animateAgents(dt * 3);
     }
   }
 
