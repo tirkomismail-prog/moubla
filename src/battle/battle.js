@@ -1284,13 +1284,14 @@ export class Battle {
     }
   }
 
-  // Pose the living and the falling; the fallen, no longer posed, change
-  // only their level of detail with the camera's distance (and their shadow:
-  // none beyond 32 m).
+  // Pose the living and the falling (to the end of the fall: Agent.settled);
+  // the fallen, no longer posed, change only their level of detail with the
+  // camera's distance (and their shadow: none beyond 32 m).
   animateAgents(dt) {
     for (const a of this.agents) {
-      if (a.alive || a.fallT < 1) a.animate(dt);
-      else if (a.body && !a.disposed) a.body.updateLod(this.camera, a.pos);
+      if (a.disposed) continue;
+      if (a.alive || !a.settled) a.animate(dt);
+      else if (a.body) a.body.updateLod(this.camera, a.pos);
     }
   }
 

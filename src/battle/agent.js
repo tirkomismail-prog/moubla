@@ -6,8 +6,9 @@ import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
-import { SkinnedHuman, charactersReady, itemMaterial, knightArms } from './character.js';
-import { clamp, wrapAngle, approachAngle } from '../core/util.js';
+import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround } from './character.js';
+import { groundFit, fitNormal, layFlat, footprint, lowest, STEEPEST } from './grips.js';
+import { clamp, wrapAngle, approachAngle, smoothstep } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
 
 // colour of the mud and dust on legs and hooves, by the ground fought on
@@ -86,6 +87,45 @@ const tmpQ2 = new THREE.Quaternion();
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
 
+// a fall to the ground takes this long (s)
+const FALL_TIME = 0.8;
+// the ways of lying (character.js LIE) after a fall on the back: on the back
+// or on a side; on the face: on the face or on a side
+const BACK_LIES = [0, 1, 3];
+const FACE_LIES = [2, 3];
+// how far a falling body turns, at most, to fall straight away from the blow
+const FALL_TURN = 0.7;
+// turned farther round in these steps (rad), if he would lie over a drop,
+// up a wall or across a sharp bend of the ground that way (a sample farther
+// off the fitted plane than FALL_BEND m: natural ground stays within 7 cm),
+// or on ground sloping more than FALL_TILT (rad) from where he stood or
+// steeper than any natural ground (grips.js STEEPEST: the banks between the
+// plateau and the ramp); how far from his feet his pelvis lands then (m,
+// about: LIE[].reach)
+const FALL_STEP = 0.35;
+const FALL_BEND = 0.08;
+const FALL_TILT = 0.3;
+const FALL_REACH = 0.45;
+// with his back to a wall (his feet in it as he lies) he lands this much
+// farther from it (m)
+const FALL_PUSH = 0.4;
+// a thing he drops falls to the ground in this long, at least and at most
+// (s); and stays this far above it while it falls (m)
+const DROP_TIME = [0.25, 0.6];
+const DROP_CLEAR = 0.01;
+const F = {
+  q: new THREE.Quaternion(),
+  q2: new THREE.Quaternion(),
+  e: new THREE.Euler(),
+  a: new THREE.Vector3(),
+  b: new THREE.Vector3(),
+  c: new THREE.Vector3(),
+  one: new THREE.Vector3(1, 1, 1),
+  m: new THREE.Matrix4(),
+  m2: new THREE.Matrix4(),
+  fit: {},
+};
+
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 
 let nextAgentId = 1;
@@ -116,6 +156,11 @@ export class Agent {
     this.couchCd = 0;
     this.loaded = true;
     this.fallT = 0;
+    // how he lies once fallen (lieLayout), what he let fall (dropItems), and
+    // whether his fall is over
+    this.lie = null;
+    this.drops = null;
+    this.settled = false;
     this.lastHitBy = null;
     this.kills = 0;
     this.wounded = false;
@@ -550,20 +595,118 @@ export class Agent {
     this.hp = 0;
     this.setAction('dead');
     this.couched = false;
-    this.fallDir = Math.random() < 0.5 ? 1 : -1;
+    // He falls away from the blow (or the last one, or one way or the other
+    // by his id): on his back when it came from the front, on his face from
+    // behind.
+    const from = killer && killer.pos ? killer : this.lastHitBy;
+    const ax = from && from.pos ? this.pos.x - from.pos.x : 0;
+    const az = from && from.pos ? this.pos.z - from.pos.z : 0;
+    const away = Math.hypot(ax, az) > 1e-3;
+    const hash = Math.imul(this.id, 2654435761) >>> 0;
+    const fx = Math.sin(this.yaw);
+    const fz = Math.cos(this.yaw);
+    let back = away ? ax * fx + az * fz < 0 : (hash & 1) === 0;
+    // his head goes away from the blow, the body turning a little to it
+    const ahead = this.yaw + (back ? Math.PI : 0);
+    let head = away ? ahead + clamp(wrapAngle(Math.atan2(ax, az) - ahead), -FALL_TURN, FALL_TURN) : ahead;
     if (this.horse) {
       const h = this.horse;
       h.rider = null;
       this.battle.releaseHorse(h);
       this.horse = null;
-      // fall off the horse to the side
-      const side = this.fallDir;
+      // fall off the horse on the side away from the blow
+      const side = away ? (ax * fz - az * fx >= 0 ? 1 : -1) : back ? 1 : -1;
       this.pos = this.pos.clone();
       this.pos.x += Math.cos(this.yaw) * 0.9 * side;
       this.pos.z -= Math.sin(this.yaw) * 0.9 * side;
       this.pos.y = this.battle.terrain.heightAt(this.pos.x, this.pos.z);
     }
+    // (or farther round, onto ground of his own level; on his back if his
+    // head then goes behind him)
+    const fall = this.fallHeading(head);
+    head = fall.head;
+    back = Math.cos(head - this.yaw) < 0;
+    this.fallDir = back ? 1 : -1;
+    // the way he lies, by his id
+    const lies = back ? BACK_LIES : FACE_LIES;
+    this.lie = this.lieLayout(lies[Math.floor((hash / 4294967296) * lies.length)], hash & 0x100 ? -1 : 1, Math.sin(head), Math.cos(head), fall.push);
     this.battle.onDeath(this, killer, dtype);
+  }
+
+  // The way his head goes as he falls (head, rad, a heading): `head`, or as
+  // little farther round as lets him lie on ground of the level he stood
+  // on, not over a drop, up a wall or across the edge between them (the
+  // siege's plateau, its cliff and its ramp: grips.js groundFit leaves the
+  // first two out, and fits the third badly, or steeply), his feet pushed
+  // off a wall behind them if need be (push, m); the way that comes nearest
+  // if none.
+  fallHeading(head) {
+    const terrain = this.battle.terrain;
+    const heightAt = (x, z) => terrain.heightAt(x, z);
+    const { x, z } = this.pos;
+    // the ground's slope where he stood (right there: he may stand by an
+    // edge; level if no natural ground is so steep)
+    const up = F.b.set(heightAt(x - 0.1, z) - heightAt(x + 0.1, z), 0.2, heightAt(x, z - 0.1) - heightAt(x, z + 0.1)).normalize();
+    if (up.y < Math.cos(STEEPEST)) up.set(0, 1, 0);
+    const best = { head, push: 0 };
+    let worst = Infinity;
+    for (let k = 0; k * FALL_STEP <= Math.PI + 1e-6; k++) {
+      for (const s of k ? [1, -1] : [1]) {
+        const a = head + s * k * FALL_STEP;
+        const dx = Math.sin(a);
+        const dz = Math.cos(a);
+        for (const push of [0, FALL_PUSH]) {
+          const fit = groundFit(heightAt, x + dx * (FALL_REACH + push), z + dz * (FALL_REACH + push), dx, dz, this.pos, F.fit);
+          const n = fitNormal(fit, dx, dz, F.c);
+          const tilt = Math.acos(clamp(n.dot(up), -1, 1));
+          // (how far from all right: samples left out count most)
+          const bad = fit.off + Math.max(0, fit.err - FALL_BEND) + 3 * Math.max(0, tilt - FALL_TILT) + 3 * Math.max(0, Math.acos(n.y) - STEEPEST);
+          if (bad < worst) {
+            best.head = a;
+            best.push = push;
+            worst = bad;
+          }
+          if (!bad) return best;
+          // (pushed, only if his feet alone were in a wall)
+          if (fit.off !== 1 || !fit.feetOff) break;
+        }
+      }
+    }
+    return best;
+  }
+
+  // Where and how he will lie (LIE[variant], mirrored by -1): his own space
+  // laid on the ground, its up (his length) along (dx, dz), the side LIE
+  // names facing the sky, fitted to the ground's slope under him (grips.js
+  // groundFit). The root's rotation and place at the start of the fall and
+  // at its end, and his own space's ground (sky . p = c, `sky` the side up).
+  // `push`: he lands that much farther than LIE's reach.
+  lieLayout(variant, mirror, dx, dz, push = 0) {
+    const L = LIE[variant];
+    const terrain = this.battle.terrain;
+    const rho = (Array.isArray(L.rho) ? L.rho[this.fallDir > 0 ? 0 : 1] : L.rho) * mirror;
+    const sky = new THREE.Vector3(Math.sin(rho), 0, Math.cos(rho));
+    // his pelvis lands `reach` m from his feet; the ground under the body
+    const x = this.pos.x + dx * (L.reach + push);
+    const z = this.pos.z + dz * (L.reach + push);
+    const fit = groundFit((px, pz) => terrain.heightAt(px, pz), x, z, dx, dz, this.pos);
+    const n = fitNormal(fit, dx, dz);
+    const along = new THREE.Vector3(dx, fit.a, dz).normalize();
+    // own (up, sky, up x sky) to the world's (along, n, along x n)
+    F.m.makeBasis(along, n, F.a.crossVectors(along, n));
+    F.m2.makeBasis(tmpV.set(0, 1, 0), sky, F.b.crossVectors(tmpV, sky)).transpose();
+    const q1 = new THREE.Quaternion().setFromRotationMatrix(F.m.multiply(F.m2));
+    // the pelvis lieHeight above the ground under it, `g`
+    const pelvis = new THREE.Vector3(0, this.body ? this.body.t.pelvisY : this.rig.hips.position.y, 0);
+    const hp = lieHeight(rho);
+    const g = new THREE.Vector3(x, fit.y, z);
+    const r1 = F.c.copy(pelvis).addScaledVector(sky, -hp).applyQuaternion(q1).negate().add(g).clone();
+    return {
+      variant, mirror, push, rho, sky, dx, dz, n, g, pelvis, q1, r1,
+      c: sky.dot(pelvis) - hp,
+      q0: new THREE.Quaternion().setFromAxisAngle(tmpV.set(0, 1, 0), this.yaw),
+      r0: this.pos.clone(),
+    };
   }
 
   // ---- per-frame update ------------------------------------------------------------------------
@@ -645,7 +788,7 @@ export class Agent {
   integrate(dt) {
     const terrain = this.battle.terrain;
     if (!this.alive) {
-      this.fallT = Math.min(1, this.fallT + dt * 2.2);
+      this.fallT = Math.min(1, this.fallT + dt / FALL_TIME);
       return;
     }
     if (this.horse) {
@@ -783,6 +926,150 @@ export class Agent {
   animate(dt) {
     this.animateRig(dt);
     if (this.body) this.body.update(this, dt);
+    if (this.alive) return;
+    // a fall: his things let go of as it begins (once his body has worked out
+    // how it will lie), falling to the ground by him; its end, posed as he
+    // lies (once)
+    if (!this.drops && (!this.body || this.body.fallen)) this.dropItems();
+    if (this.drops) this.fallItems();
+    if (this.fallT >= 1) this.settled = true;
+  }
+
+  // The root at the time g (0..1) of his fall: his body tips over to the
+  // frame it lies in faster and faster, as a falling thing does; his pelvis
+  // comes down, on his back first to the ground (he sits down), on his face
+  // first to his knees, and along the ground to where it lies.
+  fallRoot(root, g) {
+    const lie = this.lie;
+    const back = this.fallDir > 0;
+    const tip = back ? Math.pow(g, 2.2) : g * g;
+    const drop = back ? Math.min(1, (g / 0.6) ** 2) : 0.45 * Math.min(1, (g / 0.4) ** 2) + 0.55 * smoothstep(0.4, 1, g);
+    root.quaternion.slerpQuaternions(lie.q0, lie.q1, tip);
+    const p0 = F.a.copy(lie.pelvis).applyQuaternion(lie.q0).add(lie.r0);
+    const p1 = F.b.copy(lie.pelvis).applyQuaternion(lie.q1).add(lie.r1);
+    const p = F.c.lerpVectors(p0, p1, smoothstep(0, 0.8, g));
+    p.y = p0.y + (p1.y - p0.y) * drop;
+    root.position.copy(lie.pelvis).applyQuaternion(root.quaternion).negate().add(p);
+  }
+
+  // The procedural body lying (the low graphics), `w` of the way there: its
+  // torso and head turned as LIE's spine and head, its straight limbs
+  // pointed at where LIE puts the wrists and ankles, their ends on the ground.
+  lieRig(w) {
+    const r = this.rig;
+    const lie = this.lie;
+    const L = LIE[lie.variant];
+    r.torso.rotation.copy(lieTurn(L.spine, lie.mirror * w, F.e));
+    r.neck.rotation.copy(lieTurn(L.head, lie.mirror * w, F.e));
+    if (!lie.rig) {
+      // (once: the limbs' rotations lying)
+      const terrain = this.battle.terrain;
+      const torso = F.q.setFromEuler(lieTurn(L.spine, lie.mirror, F.e));
+      // (the arms from where they were as he died)
+      lie.rig = { from_l: r.armL.quaternion.clone(), from_r: r.armR.quaternion.clone() };
+      for (const [limb, from, len, clear] of [['arm_l', r.armL, 0.6, 0.04], ['arm_r', r.armR, 0.6, 0.04], ['leg_l', r.legL, 0.9, 0.06], ['leg_r', r.legR, 0.9, 0.06]]) {
+        const leg = limb[0] === 'l';
+        // its root in his own space
+        const root = F.a.copy(from.position);
+        if (!leg) root.applyQuaternion(torso);
+        root.add(r.hips.position);
+        const spec = lieTarget(lie, limb, terrain, F.b);
+        const end = F.c.subVectors(F.b, root).setLength(len).add(root);
+        if (spec.ground !== undefined) onGround(end, clear, lie, terrain);
+        const d = end.sub(root).normalize();
+        if (leg) lie.rig[limb] = [Math.atan2(-d.z, -d.y), Math.asin(clamp(d.x, -1, 1))];
+        else lie.rig[limb] = armQuat([d.x, d.y, d.z], [0, 0, 1], new THREE.Quaternion()).premultiply(F.q2.copy(torso).invert());
+      }
+    }
+    r.legL.rotation.set(lie.rig.leg_l[0] * w, 0, lie.rig.leg_l[1] * w);
+    r.legR.rotation.set(lie.rig.leg_r[0] * w, 0, lie.rig.leg_r[1] * w);
+    r.armL.quaternion.slerpQuaternions(lie.rig.from_l, lie.rig.arm_l, w);
+    r.armR.quaternion.slerpQuaternions(lie.rig.from_r, lie.rig.arm_r, w);
+  }
+
+  // As his fall begins, the weapon he held and his shield (and what he
+  // carried on his back) are let go of: out of his hands and his rig into
+  // the world, to fall to where they will lie, flat on the ground by him
+  // (grips.js layFlat), clear of his body as it will lie and of each other.
+  dropItems() {
+    const terrain = this.battle.terrain;
+    const heightAt = (x, z) => terrain.heightAt(x, z);
+    // where they are now
+    this.rig.root.updateMatrixWorld(true);
+    const held = [];
+    for (const h of [this.weaponMesh, this.shieldMesh, this.backMesh]) {
+      const model = h && h.userData.prop;
+      if (!model) continue;
+      if (!model.geo.boundingBox) model.geo.computeBoundingBox();
+      const m = h.matrixWorld.clone();
+      if (h.userData.space) m.premultiply(h.userData.space.matrixWorld);
+      held.push([h, model.geo.boundingBox, m]);
+    }
+    const body = this.lyingPoints();
+    const items = [];
+    const list = held.map(([h, box, from]) => {
+      const to = new THREE.Matrix4();
+      const clear = layFlat(heightAt, box, from, body, to, h === this.shieldMesh, this.lie, items);
+      footprint(box, to, items);
+      this.battle.props.toWorld(h, from);
+      // its box's centre and its turn, where it was let go and where it lies
+      const centre = box.getCenter(new THREE.Vector3());
+      const d = { h, box, centre, clear, t: 0, g0: this.fallT };
+      d.c0 = centre.clone().applyMatrix4(from);
+      d.c1 = centre.clone().applyMatrix4(to);
+      d.q0 = h.quaternion.clone();
+      d.q1 = new THREE.Quaternion().setFromRotationMatrix(to);
+      // (as long as it takes to fall that far, over before his fall is)
+      d.time = clamp(Math.sqrt((2 * Math.max(0, d.c0.y - d.c1.y)) / 9.8), DROP_TIME[0], Math.min(DROP_TIME[1], (1 - d.g0) * FALL_TIME));
+      return d;
+    });
+    this.drops = { list, heightAt };
+  }
+
+  // Where his body will lie on the ground: x, z of his feet (between them)
+  // and his head (his length), then of the rest of him (his bones, or the
+  // parts of the low graphics' rig, posed so a moment).
+  lyingPoints() {
+    const lie = this.lie;
+    const pts = [];
+    if (this.body) {
+      const o = this.body.object;
+      F.m.compose(lie.r1, lie.q1, F.one).multiply(F.m2.compose(o.position, o.quaternion, o.scale));
+      return this.body.lyingPoints(F.m, pts);
+    }
+    const r = this.rig;
+    r.root.position.copy(lie.r1);
+    r.root.quaternion.copy(lie.q1);
+    this.lieRig(1);
+    r.root.updateMatrixWorld(true);
+    const add = (v) => pts.push(v.x, v.z);
+    add(r.legL.localToWorld(tmpV.set(0, -0.9, 0)).add(r.legR.localToWorld(tmpV2.set(0, -0.9, 0))).multiplyScalar(0.5));
+    for (const o of [r.neck, r.hips, r.torso, r.armL, r.armR, r.handL, r.handR]) add(o.getWorldPosition(tmpV));
+    for (const leg of [r.legL, r.legR]) for (const y of [-0.45, -0.9]) add(leg.localToWorld(tmpV.set(0, y, 0)));
+    this.fallRoot(r.root, this.fallT);
+    this.lieRig(ease(this.fallT));
+    return pts;
+  }
+
+  // The things he let go of, falling: down faster and faster from where he
+  // let go of them to where they lie (dropItems), turning over as they go,
+  // never into the ground; by the time into his fall (paused, they stay).
+  fallItems() {
+    const { list, heightAt } = this.drops;
+    for (const d of list) {
+      if (d.t >= 1) continue;
+      const t = clamp(((this.fallT - d.g0) * FALL_TIME) / d.time, 0, 1);
+      d.t = t;
+      const h = d.h;
+      h.quaternion.slerpQuaternions(d.q0, d.q1, t);
+      const c = F.a.lerpVectors(d.c0, d.c1, t);
+      c.y = d.c0.y + (d.c1.y - d.c0.y) * t * t;
+      h.position.copy(d.centre).applyQuaternion(h.quaternion).negate().add(c);
+      if (t < 1) {
+        h.updateMatrix();
+        h.position.y += Math.max(0, DROP_CLEAR - lowest(heightAt, d.box, h.matrix));
+      }
+    }
   }
 
   // Pose the (procedural) rig; a skinned body then follows it.
@@ -790,14 +1077,9 @@ export class Agent {
     const r = this.rig;
     const root = r.root;
     if (!this.alive) {
-      const f = ease(this.fallT);
-      root.position.set(this.pos.x, this.pos.y + 0.12 * f, this.pos.z);
-      root.rotation.y = this.yaw;
-      root.rotation.x = -HALF_PI * f * (this.fallDir > 0 ? 1 : -0.95);
-      root.rotation.z = 0;
-      r.legL.rotation.set(0, 0, 0);
-      r.legR.rotation.set(0, 0, 0.1);
-      r.armR.quaternion.slerp(POSE.lowered.q, Math.min(1, dt * 5));
+      this.fallRoot(root, this.fallT);
+      // (the realistic body bends itself: SkinnedHuman.fall)
+      if (!this.body) this.lieRig(ease(this.fallT));
       return;
     }
     let bob = 0;

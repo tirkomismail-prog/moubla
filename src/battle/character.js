@@ -175,6 +175,9 @@ function prepare(gltf) {
   t.shoulder = { l: wpos(bones.upperarm_l), r: wpos(bones.upperarm_r) };
   t.reach = t.limbs.arm_r.a + t.limbs.arm_r.b + bones.middle_01_r.position.length() * 0.9;
   t.pelvisY = wpos(bones.pelvis).y;
+  // the rest pose of the bones a fall moves: a lying pose is built from it
+  t.fallRest = FALL_BONES.map((n) => bones[n].quaternion.clone());
+  t.pelvisRest = bones.pelvis.position.clone();
   t.headRestQ = bones.head.getWorldQuaternion(new THREE.Quaternion());
   t.headRestInv = new THREE.Matrix4().copy(bones.head.matrixWorld).invert();
   // garments (Piece_<name>_LOD<n>): joined with the head and hands of each
@@ -871,6 +874,103 @@ const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
 const LOD_DIST = [10, 20, 32];
 const POSE_DIST = [17, 45];
 
+// ---------------------------------------------------------------------------
+// The fallen. Agent.lieLayout lays the frame of the soldier's own space on
+// the ground (his length along it, the side LIE[].rho names to the sky);
+// SkinnedHuman.fall bends the body in it to one of these poses, blended from
+// the pose he died in while the frame tips over.
+// ---------------------------------------------------------------------------
+
+// the bones a fall moves: the trunk, the arms, the legs
+const FALL_BONES = ['pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'head',
+  'clavicle_l', 'upperarm_l', 'lowerarm_l', 'hand_l', 'clavicle_r', 'upperarm_r', 'lowerarm_r', 'hand_r',
+  'thigh_l', 'calf_l', 'foot_l', 'ball_l', 'thigh_r', 'calf_r', 'foot_r', 'ball_r'];
+const TRUNK = 6;
+const LEGS = 14;
+// the bones things he drops are laid clear of (the feet and the head first:
+// the body's length)
+const CLEAR_BONES = ['foot_l', 'foot_r', 'head', 'pelvis', 'spine_02', 'spine_03', 'neck_01', 'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r',
+  'hand_l', 'hand_r', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'ball_l', 'ball_r'];
+// how far a forearm turns on its length from the rest pose, how far down a
+// hand on the ground may point (rad)
+const FOREARM_TURN = 1.75;
+const HAND_TILT = 0.45;
+
+// The ways of lying, in the soldier's own space (x his left, y up his body,
+// z forward), the right and left as given for `mirror` 1 (-1 swaps them):
+// - rho: his roll about his length, 0 on the back, PI on the face (a side:
+//   one after a fall on the back, one after a fall on the face);
+// - reach: how far from his feet his pelvis lands (m);
+// - spine, head: bend forward, turn left, lean left (rad), over the three
+//   spine bones and over the neck and head;
+// - arm_l .. leg_r: where the wrist or ankle goes (`at`; with `ground`, on
+//   the ground under it, that high above it), where the elbow or knee
+//   points (`pole`, from the shoulder or hip), a hand on the ground with its
+//   palm up (1) or down (-1), a foot pointed by `point` (rad) or set flat on
+//   its sole.
+export const LIE = [
+  // on the back, the arms out, the right knee fallen out
+  {
+    rho: 0, reach: 0.45, spine: [-0.06, 0, 0.06], head: [-0.4, 0.45, 0.1],
+    arm_l: { at: [0.62, 1.38, 0], pole: [0.1, -1, -0.4], ground: 0.04, palm: 1 },
+    arm_r: { at: [-0.42, 0.98, 0], pole: [-1, 0, -0.4], ground: 0.04, palm: -1 },
+    leg_l: { at: [0.26, 0.11, 0], pole: [0.6, 0, 1], ground: 0.075, point: 0.4 },
+    leg_r: { at: [-0.25, 0.14, 0], pole: [-1, 0, 0.6], ground: 0.075, point: 0.5 },
+  },
+  // on the back, the right knee up, the left arm across the chest
+  {
+    rho: 0, reach: 0.4, spine: [0, 0.1, -0.05], head: [-0.35, -0.5, -0.1],
+    arm_l: { at: [-0.19, 1.08, 0.08], pole: [0.6, -0.2, 0.6] },
+    arm_r: { at: [-0.6, 1.22, 0], pole: [-0.3, -1, -0.4], ground: 0.04, palm: 1 },
+    leg_l: { at: [0.24, 0.08, 0], pole: [0.6, 0, 1], ground: 0.075, point: 0.45 },
+    leg_r: { at: [-0.12, 0.4, 0], pole: [0.25, 0.3, 1], ground: 0.085, flat: true },
+  },
+  // on the face, the head turned, the left knee drawn up to the side
+  {
+    rho: Math.PI, reach: 0.6, spine: [0, 0, 0.1], head: [0.25, 1.15, 0.2],
+    arm_l: { at: [0.3, 1.62, 0], pole: [1, -0.3, 0.5], ground: 0.04, palm: -1 },
+    arm_r: { at: [-0.26, 0.98, 0], pole: [-1, 0, -0.5], ground: 0.04, palm: 1 },
+    leg_l: { at: [0.2, 0.32, 0], pole: [1, 0.3, 0.3], ground: 0.06, point: 0.6 },
+    leg_r: { at: [-0.17, 0.1, 0], pole: [0, 0, 1], ground: 0.06, point: 1.2 },
+  },
+  // on the right side (rolled a little from the back, or from the face), the
+  // knees bent, the lower arm forward by the head, the upper one before the
+  // chest
+  {
+    rho: [1.4, 1.8], reach: 0.4, spine: [0.15, 0, 0], head: [0.15, -0.2, -0.6],
+    arm_l: { at: [-0.2, 1.25, 0.28], pole: [0.8, -0.6, 0.2], ground: 0.04, palm: 1 },
+    arm_r: { at: [-0.2, 1.62, 0.35], pole: [0.2, -0.4, 1], ground: 0.04, palm: -1 },
+    leg_l: { at: [-0.1, 0.45, 0.35], pole: [-0.5, 0, 1], ground: 0.055, point: 0.5 },
+    leg_r: { at: [-0.2, 0.2, 0.25], pole: [0, 0, 1], ground: 0.055, point: 0.5 },
+  },
+];
+
+// A LIE's spine or head turn (bend forward, turn left, lean left) as Euler
+// angles in the soldier's own space, mirrored by the sign of k, times |k|.
+export function lieTurn(a, k, out = new THREE.Euler()) {
+  return out.set(a[0] * Math.abs(k), a[1] * k, -a[2] * k, 'YXZ');
+}
+
+// Where the wrist or ankle of `limb` ('arm_l' .. 'leg_r', his own side) goes
+// as he lies as `lie`, in his own space (`out`), on the ground under it or
+// not as LIE gives it; the LIE spec it comes from.
+export function lieTarget(lie, limb, terrain, out) {
+  const m = lie.mirror;
+  const s = limb.endsWith('_l') ? 'l' : 'r';
+  // (mirrored: this side as the other side's given)
+  const spec = LIE[lie.variant][limb.slice(0, -1) + (m > 0 ? s : s === 'l' ? 'r' : 'l')];
+  out.set(spec.at[0] * m, spec.at[1], spec.at[2]);
+  if (spec.ground !== undefined) onGround(out, spec.ground, lie, terrain);
+  return spec;
+}
+
+// How high the pelvis lies over the ground (m) rolled by rho: its bone is
+// nearer the back than the belly, half the hips' width from either side.
+export function lieHeight(rho) {
+  const c = Math.cos(rho);
+  return Math.hypot(0.2 * Math.sin(rho), (c >= 0 ? 0.14 : 0.17) * c);
+}
+
 export class SkinnedHuman {
   // `props` draws the helmet (see props.js)
   constructor(spec, props) {
@@ -1038,9 +1138,12 @@ export class SkinnedHuman {
     // animation level of detail: distant soldiers are posed less often
     this.pending += dt;
     const every = d2 < POSE_DIST[0] ** 2 ? 1 : d2 < POSE_DIST[1] ** 2 ? 2 : 4;
-    if (dt > 0 && this.frameNo++ % every !== 0) return;
+    // (a fall's first pose and its last, always: the first works out how he
+    // will lie, and after the last he is not posed again)
+    const must = !agent.alive && (!this.fallen || agent.fallT >= 1);
+    if (dt > 0 && !must && this.frameNo++ % every !== 0) return;
     // paused: the pose stays (nothing moves)
-    if (dt === 0 && this.posedOnce) return;
+    if (dt === 0 && this.posedOnce && !must) return;
     this.posedOnce = true;
     dt = this.pending;
     this.pending = 0;
@@ -1062,6 +1165,12 @@ export class SkinnedHuman {
   pose(agent, dt) {
     const r = agent.rig;
     const b = this.bones;
+    if (!agent.alive) {
+      // (the clips stop where he died)
+      this.fall(agent);
+      this.fingers();
+      return;
+    }
     // The bones turned below on top of the clips are put back as the clips
     // left them first: the mixer only sets a bone whose clip value changed,
     // and the turns would otherwise add up.
@@ -1072,25 +1181,23 @@ export class SkinnedHuman {
     b.pelvis.updateWorldMatrix(true, false);
     const rootQ = r.root.getWorldQuaternion(U.rootQ);
 
-    if (agent.horse && agent.alive) this.ride(rootQ, agent.horse.rig, U.toLocal);
+    if (agent.horse) this.ride(rootQ, agent.horse.rig, U.toLocal);
 
     // hips turn towards the walking direction; the torso follows the aim
     if (Math.abs(this.hipYaw) > 1e-3) rotateWorld(b.pelvis, worldRot(rootQ, U.a.setFromAxisAngle(Y, this.hipYaw), U.inc));
-    if (agent.alive) {
-      const torsoQ = U.a.copy(r.torso.quaternion).premultiply(U.b.setFromAxisAngle(Y, -this.hipYaw));
-      const step = U.c.identity().slerp(torsoQ, 1 / 3);
-      const inc = worldRot(rootQ, step, U.inc);
-      rotateWorld(b.spine_01, inc);
-      rotateWorld(b.spine_02, inc);
-      rotateWorld(b.spine_03, inc);
-      // look up and down
-      const torsoWorld = U.d.copy(rootQ).multiply(r.torso.quaternion);
-      const half = U.c.identity().slerp(r.neck.quaternion, 0.5);
-      const neckInc = worldRot(torsoWorld, half, U.inc);
-      rotateWorld(b.neck_01, neckInc);
-      rotateWorld(b.head, neckInc);
-      this.arms(agent, rootQ);
-    }
+    const torsoQ = U.a.copy(r.torso.quaternion).premultiply(U.b.setFromAxisAngle(Y, -this.hipYaw));
+    const step = U.c.identity().slerp(torsoQ, 1 / 3);
+    const inc = worldRot(rootQ, step, U.inc);
+    rotateWorld(b.spine_01, inc);
+    rotateWorld(b.spine_02, inc);
+    rotateWorld(b.spine_03, inc);
+    // look up and down
+    const torsoWorld = U.d.copy(rootQ).multiply(r.torso.quaternion);
+    const half = U.c.identity().slerp(r.neck.quaternion, 0.5);
+    const neckInc = worldRot(torsoWorld, half, U.inc);
+    rotateWorld(b.neck_01, neckInc);
+    rotateWorld(b.head, neckInc);
+    this.arms(agent, rootQ);
     this.fingers();
   }
 
@@ -1099,7 +1206,7 @@ export class SkinnedHuman {
     const t = this.t;
     let sp = 0;
     let rel = 0;
-    if (agent.alive && !agent.horse) {
+    if (!agent.horse) {
       sp = Math.hypot(agent.vel.x, agent.vel.z);
       rel = wrapAngle(Math.atan2(agent.vel.x, agent.vel.z) - agent.yaw);
     }
@@ -1233,6 +1340,165 @@ export class SkinnedHuman {
       for (const name in pose) b[name].quaternion.copy(pose[name]);
     }
   }
+
+  // ---- the fall ------------------------------------------------------------------------
+
+  // A fall at agent.fallT (0..1), in the frame Agent.fallRoot tips over: the
+  // trunk and the arms turn from the pose he died in to the lying one (the
+  // arms a little later); his feet stay where they stood a moment as his
+  // knees give, then go where they lie, never under the ground (held there
+  // in the world until the frame lies too: the lying legs are solved for its
+  // end).
+  fall(agent) {
+    if (!this.fallen) this.layDown(agent);
+    const f = this.fallen;
+    const b = this.bones;
+    const g = agent.fallT;
+    const wt = smoothstep(0, 0.9, g);
+    const wa = smoothstep(0.1, 1, g);
+    const wl = smoothstep(agent.fallDir > 0 ? 0.4 : 0.3, 0.95, g);
+    for (let i = 0; i < LEGS; i++) f.bones[i].quaternion.slerpQuaternions(f.from[i], f.to[i], i < TRUNK ? wt : wa);
+    b.pelvis.position.lerpVectors(f.pelvisFrom, this.t.pelvisRest, wt);
+    if (g >= 1) {
+      for (let i = LEGS; i < FALL_BONES.length; i++) f.bones[i].quaternion.copy(f.to[i]);
+    } else {
+      const terrain = agent.battle.terrain;
+      const toLocalQ = U.c.copy(U.q).invert();
+      for (let k = 0; k < 2; k++) {
+        const s = k ? 'r' : 'l';
+        // the foot as it stood on the ground (in the world), turning to how
+        // it lies; the ankle from where it stood to where it lies, as high as
+        // keeps it and the toes (as the foot turns) out of the ground
+        const footQ = U.d.copy(toLocalQ).multiply(f.feetQFrom[k]).slerp(f.feetQTo[k], wl);
+        const toe = U.v4.copy(b[`ball_${s}`].position).applyQuaternion(footQ).applyQuaternion(U.q);
+        const foot = U.v1.lerpVectors(f.feetFrom[k], f.feetTo[k], wl);
+        foot.y = Math.max(foot.y, terrain.heightAt(foot.x, foot.z) + 0.06, terrain.heightAt(foot.x + toe.x, foot.z + toe.z) + 0.02 - toe.y);
+        foot.applyMatrix4(U.toLocal);
+        const hip = b[`thigh_${s}`].getWorldPosition(U.v2);
+        const pole = U.v3.lerpVectors(f.polesFrom[k], f.polesTo[k], wl).add(hip);
+        solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.t.limbs[`leg_${s}`], foot, pole);
+        setWorldQuat(b[`foot_${s}`], footQ);
+        const i = LEGS + 3 + 4 * k;
+        f.bones[i].quaternion.slerpQuaternions(f.from[i], f.to[i], wl);
+      }
+    }
+  }
+
+  // The pose he will lie in, once, as the fall begins: the rest pose bent to
+  // agent.lie's (LIE), its wrists and ankles on the ground under them. Kept
+  // as the bones' rotations, with those he falls from.
+  layDown(agent) {
+    const lie = agent.lie;
+    const L = LIE[lie.variant];
+    const m = lie.mirror;
+    const b = this.bones;
+    const t = this.t;
+    // his hands let go (Agent.dropItems lets fall what they held)
+    this.handPose.l = this.handPose.r = 'relaxed';
+    const bones = FALL_BONES.map((n) => b[n]);
+    const from = bones.map((o) => o.quaternion.clone());
+    const pelvisFrom = b.pelvis.position.clone();
+    // where his feet stood, and where his knees pointed
+    const feetFrom = ['l', 'r'].map((s) => b[`foot_${s}`].getWorldPosition(new THREE.Vector3()).applyQuaternion(lie.q0).add(lie.r0));
+    const feetQFrom = ['l', 'r'].map((s) => b[`foot_${s}`].getWorldQuaternion(new THREE.Quaternion()).premultiply(lie.q0));
+    const polesFrom = [new THREE.Vector3(0.2, 0, 1), new THREE.Vector3(-0.2, 0, 1)];
+    bones.forEach((o, i) => o.quaternion.copy(t.fallRest[i]));
+    b.pelvis.position.copy(t.pelvisRest);
+    this.space.updateMatrixWorld(true);
+    // the trunk: over the spine, then the neck and the head
+    const inc = (a, share) => U.a.setFromEuler(lieTurn(a, m * share, U.e));
+    for (const n of ['spine_01', 'spine_02', 'spine_03']) rotateWorld(b[n], inc(L.spine, 1 / 3));
+    for (const n of ['neck_01', 'head']) rotateWorld(b[n], inc(L.head, 1 / 2));
+    const terrain = agent.battle.terrain;
+    const feetTo = [];
+    const feetQTo = [];
+    const polesTo = [];
+    for (const s of ['l', 'r']) {
+      for (const limb of ['arm', 'leg']) {
+        const [upper, lower, end] = limb === 'arm' ? [`upperarm_${s}`, `lowerarm_${s}`, `hand_${s}`] : [`thigh_${s}`, `calf_${s}`, `foot_${s}`];
+        const target = new THREE.Vector3();
+        const spec = lieTarget(lie, `${limb}_${s}`, terrain, target);
+        const root = b[upper].getWorldPosition(new THREE.Vector3());
+        const pole = new THREE.Vector3(spec.pole[0] * m, spec.pole[1], spec.pole[2]);
+        solveLimb(b[upper], b[lower], b[end], t.limbs[`${limb}_${s}`], target, pole.clone().add(root));
+        if (limb === 'arm') {
+          if (spec.palm) this.handFlat(s, spec.palm, lie.sky);
+          continue;
+        }
+        feetTo.push(target.clone().applyQuaternion(lie.q1).add(lie.r1));
+        polesTo.push(pole);
+        const foot = b[end];
+        if (spec.flat) {
+          // the sole on the ground, the toes away from the head
+          aim(foot, b[`ball_${s}`].position, U.v1.copy(target).addScaledVector(Y, -0.13).addScaledVector(lie.sky, -0.06));
+        } else {
+          // pointed: turned towards the line of the shin
+          const ankle = U.v1.setFromMatrixPosition(foot.matrixWorld);
+          const shin = U.v2.copy(ankle).sub(U.v3.setFromMatrixPosition(b[lower].matrixWorld));
+          const toes = U.v3.setFromMatrixPosition(b[`ball_${s}`].matrixWorld).sub(ankle);
+          rotateWorld(foot, U.a.setFromAxisAngle(toes.cross(shin).normalize(), spec.point));
+        }
+        feetQTo.push(foot.getWorldQuaternion(new THREE.Quaternion()));
+      }
+    }
+    const to = bones.map((o) => o.quaternion.clone());
+    // where his bones will lie, in his own space
+    this.space.updateMatrixWorld(true);
+    const lying = CLEAR_BONES.map((n) => new THREE.Vector3().setFromMatrixPosition(b[n].matrixWorld));
+    bones.forEach((o, i) => o.quaternion.copy(from[i]));
+    b.pelvis.position.copy(pelvisFrom);
+    this.space.updateMatrixWorld(true);
+    this.fallen = { bones, from, to, pelvisFrom, feetFrom, feetQFrom, feetTo, feetQTo, polesFrom, polesTo, lying };
+  }
+
+  // Where his body will lie on the ground (once layDown has worked it out),
+  // `m` the world matrix of his space then: x, z of his feet (between them)
+  // and his head, then of the rest of his bones, pushed onto `out`.
+  lyingPoints(m, out) {
+    const p = this.fallen.lying;
+    U.v1.lerpVectors(p[0], p[1], 0.5).applyMatrix4(m);
+    out.push(U.v1.x, U.v1.z);
+    for (let i = 2; i < p.length; i++) {
+      U.v1.copy(p[i]).applyMatrix4(m);
+      out.push(U.v1.x, U.v1.z);
+    }
+    return out;
+  }
+
+  // A hand on the ground: along it the way the forearm points, the palm up
+  // (1) or down (-1), or the other way if the forearm would have to turn
+  // too far for it; `sky` the side of the soldier's space facing up. (The
+  // forearm turns, not the wrist: the hand keeps its rest twist on it.)
+  handFlat(s, palm, sky) {
+    const b = this.bones;
+    const hand = b[`hand_${s}`];
+    const lower = b[`lowerarm_${s}`];
+    const rest = this.t.fallRest;
+    const iHand = FALL_BONES.indexOf(`hand_${s}`);
+    const lowerQ = H.lower.copy(lower.quaternion);
+    for (const p of [palm, -palm]) {
+      lower.quaternion.copy(lowerQ);
+      refresh(lower);
+      // (the hand's own matrix is not brought up to date by the IK)
+      const wrist = U.v1.copy(hand.position).applyMatrix4(lower.matrixWorld);
+      const axis = U.v2.subVectors(wrist, U.v3.setFromMatrixPosition(lower.matrixWorld)).normalize();
+      // (down a little with a forearm coming down to it: the knuckles still
+      // clear of the ground)
+      const tilt = Math.min(HAND_TILT, Math.max(0, -Math.asin(clamp(axis.dot(sky), -1, 1))));
+      const len = U.v3.copy(axis).addScaledVector(sky, -axis.dot(sky)).normalize().multiplyScalar(Math.cos(tilt)).addScaledVector(sky, -Math.sin(tilt));
+      // (the palm, len x knuck on the left hand and knuck x len on the right,
+      // towards `up`)
+      const up = H.palm.copy(sky).multiplyScalar(p);
+      const knuck = (s === 'r' ? H.knuck.crossVectors(len, up) : H.knuck.crossVectors(up, len)).normalize();
+      const q = H.q.setFromRotationMatrix(handBasis(len, knuck, H.m)).multiply(H.inv.copy(this.t.hands[s].basisQ).invert());
+      setWorldQuat(hand, q);
+      // its twist on the forearm, given to the forearm
+      rotateWorld(lower, U.b.setFromAxisAngle(axis, twistY(U.a.copy(rest[iHand]).invert().multiply(hand.quaternion))));
+      setWorldQuat(hand, q);
+      // how far the forearm turned from its rest
+      if (Math.abs(twistY(U.a.copy(rest[iHand - 1]).invert().multiply(lower.quaternion))) < FOREARM_TURN) return;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,15 +1514,16 @@ const scratch = (vs, qs, extra = {}) => {
   for (const n of qs) o[n] = new THREE.Quaternion();
   return o;
 };
-const U = scratch(['v1', 'v2', 'v3', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1) });
+const U = scratch(['v1', 'v2', 'v3', 'v4', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1), e: new THREE.Euler() });
 const A = scratch(['wristP', 'pos', 'dir', 'hang'], ['wristQ', 'q', 'q2']);
-const H = scratch(['len', 'knuck', 'palm', 'wrist', 'shoulder', 'pole'], ['q', 'inv'], { m: new THREE.Matrix4() });
+const H = scratch(['len', 'knuck', 'palm', 'wrist', 'shoulder', 'pole'], ['q', 'inv', 'lower'], { m: new THREE.Matrix4() });
 const WR = scratch([], ['inv']);
 const WQ = scratch(['p', 's'], []);
 const RW = scratch([], ['p', 'inv']);
 const SQ = scratch([], ['p']);
 const AI = scratch(['from', 'pos', 'to'], ['q', 'r']);
 const SL = scratch(['S', 'dir', 'p', 'E', 'T', 'n', 'h', 'axis', 'tmp'], ['q', 'r']);
+const OG = scratch(['w'], []);
 const HB = scratch(['v'], []);
 
 // a rotation given in the frame `frameQ` (e.g. the soldier's root) as a world rotation
@@ -1284,6 +1551,11 @@ function refresh(bone) {
 // quaternion is no rotation and scales the hand and what it holds).
 function handBasis(len, knuck, out) {
   return out.makeBasis(len, knuck, HB.v.crossVectors(len, knuck));
+}
+
+// the turn (rad, -PI..PI) of a rotation about its local y (a bone's length)
+function twistY(q) {
+  return 2 * Math.atan2(q.w < 0 ? -q.y : q.y, Math.abs(q.w));
 }
 
 // rotate a bone by the world rotation R about its own pivot
@@ -1343,4 +1615,17 @@ function solveLimb(upper, lower, end, info, target, pole) {
     rotateWorld(upper, SL.r.setFromAxisAngle(axis, ang));
   }
   aim(lower, info.endDir, T);
+}
+
+// Put a point of the soldier's space (lying as `lie`) `clear` m above the
+// ground: on the plane he lies on, then by as much as the ground under it is
+// above or below that plane (a little).
+export function onGround(p, clear, lie, terrain) {
+  const sky = lie.sky;
+  p.addScaledVector(sky, lie.c + clear - sky.dot(p));
+  const w = OG.w.copy(p).applyQuaternion(lie.q1).add(lie.r1);
+  const n = lie.n;
+  const plane = lie.g.y - (n.x * (w.x - lie.g.x) + n.z * (w.z - lie.g.z)) / n.y;
+  const d = clamp(terrain.heightAt(w.x, w.z) - plane, -0.15, 0.25);
+  p.addScaledVector(sky, d * n.y);
 }

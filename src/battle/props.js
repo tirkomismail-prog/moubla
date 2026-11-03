@@ -42,6 +42,14 @@ export class Props {
     return holder;
   }
 
+  // Move a holder out of its rig or skeleton into the world, at the world
+  // matrix `m` (an item a fallen soldier dropped).
+  toWorld(holder, m) {
+    this.scene.add(holder);
+    m.decompose(holder.position, holder.quaternion, holder.scale);
+    holder.userData.space = null;
+  }
+
   remove(holder) {
     if (holder.parent) holder.parent.remove(holder);
     const model = holder.userData.prop;
