@@ -9,7 +9,8 @@
 // are skipped (near ones with a margin: their shadows may fall into it).
 // Shields painted with their bearers' arms (geometry userData.coats) give
 // each instance its coat: the holder's userData.coat, in the instance colour
-// (character.js itemMaterial reads it).
+// (character.js itemMaterial reads it). A hidden holder (visible false) is
+// not drawn; a model whose geometry has userData.noShadow casts none.
 import * as THREE from 'three';
 import { material } from './models.js';
 
@@ -43,11 +44,14 @@ export class Props {
   }
 
   // Move a holder out of its rig or skeleton into the world, at the world
-  // matrix `m` (an item a fallen soldier dropped).
+  // matrix `m` (an item a fallen soldier dropped), with the holders it
+  // carries (a bow's string).
   toWorld(holder, m) {
     this.scene.add(holder);
     m.decompose(holder.position, holder.quaternion, holder.scale);
-    holder.userData.space = null;
+    holder.traverse((o) => {
+      if (o.userData.prop || o === holder) o.userData.space = null;
+    });
   }
 
   remove(holder) {
@@ -80,7 +84,7 @@ export class Props {
       m.instanceColor.setUsage(THREE.DynamicDrawUsage);
     }
     m.frustumCulled = false;
-    m.castShadow = shadow;
+    m.castShadow = shadow && !model.geo.userData.noShadow;
     m.receiveShadow = true;
     m.matrixAutoUpdate = false;
     this.scene.add(m);
@@ -99,6 +103,7 @@ export class Props {
       let n = 0;
       let f = 0;
       for (const h of model.holders) {
+        if (!h.visible) continue;
         // held in a skeleton's own space (ownSpaceSkeleton): into the world
         const space = h.userData.space;
         const e = space ? _w.multiplyMatrices(space.matrixWorld, h.matrixWorld).elements : h.matrixWorld.elements;

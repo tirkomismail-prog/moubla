@@ -345,4 +345,122 @@ export function footprint(box, matrix, out) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// The second hand on a held weapon
+// ---------------------------------------------------------------------------
+
+// how far a hand round a handle slants along it, at most (rad): reaching
+// along a haft, the hand points partly along it and the haft lies across
+// the palm at a slant
+const HAND_SLANT = 0.5;
+const G = { n: new THREE.Vector3(), o: new THREE.Vector3(), c: 0, d: 0 };
+
+// The shoulder's foot on a weapon's axis (the line through `p` along the
+// unit `dir`): how far along it (G.c) and the unit way from the shoulder to
+// it, square to the axis (G.n); the shoulder's distance from it (G.d).
+function foot(shoulder, p, dir) {
+  const o = G.o.subVectors(shoulder, p);
+  G.c = o.dot(dir);
+  const n = G.n.copy(o).addScaledVector(dir, -G.c).negate();
+  G.d = n.length();
+  if (G.d > 1e-6) n.divideScalar(G.d);
+  else {
+    // (on the axis: any way square to it)
+    n.set(Math.abs(dir.x) > 0.9 ? 0 : 1, Math.abs(dir.x) > 0.9 ? 1 : 0, 0);
+    n.addScaledVector(dir, -n.dot(dir)).normalize();
+  }
+}
+
+// How far the hand slants (rad, HAND_SLANT at most) at s m along the axis,
+// seen from a shoulder d m off it with its foot at c: half the angle it
+// reaches along the axis at.
+const slant = (s, c, d) => clamp(0.5 * Math.atan2(s - c, d), -HAND_SLANT, HAND_SLANT);
+
+// A left hand round a weapon's axis (the line through `p` along the unit
+// `dir`) at `s` m along it, reached from `shoulder`: its length (len, wrist to
+// knuckles) square to the axis, away from the shoulder, slanted along the
+// axis (slant); its knuckle line (knuck, little finger to index) along the
+// axis so, the index towards +dir; its palm (palm = len x knuck) square to
+// both. Its grip point (grip) on the axis, its wrist (wrist) `back` m behind
+// that along its length and `side` m off it, away from the palm (a hand's
+// grip point: character.js t.hands). Into `out` ({grip, wrist, len, knuck,
+// palm}: vectors).
+export function handOnAxis(shoulder, p, dir, s, back, side, out) {
+  foot(shoulder, p, dir);
+  const a = slant(s, G.c, G.d);
+  out.grip.copy(p).addScaledVector(dir, s);
+  out.len.copy(G.n).multiplyScalar(Math.cos(a)).addScaledVector(dir, Math.sin(a));
+  out.knuck.copy(G.n).multiplyScalar(-Math.sin(a)).addScaledVector(dir, Math.cos(a));
+  out.palm.crossVectors(out.len, out.knuck);
+  out.wrist.copy(out.grip).addScaledVector(out.len, -back).addScaledVector(out.palm, -side);
+  return out;
+}
+
+// The distance (squared) from the shoulder of the wrist of a hand on the
+// axis at s (handOnAxis), the shoulder's foot as G has it.
+function wristFar(s, back, side) {
+  const a = slant(s, G.c, G.d);
+  return (G.d - back * Math.cos(a)) ** 2 + (s - G.c - back * Math.sin(a)) ** 2 + side * side;
+}
+
+// Where along a weapon's axis (as handOnAxis) the other hand takes it: the
+// point of [from, to] (m along it) nearest `want` whose wrist (handOnAxis)
+// is within `reach` of the shoulder; NaN if none is (the hand then lets go).
+export function secondGrip(shoulder, p, dir, from, to, want, reach, back = 0, side = 0) {
+  foot(shoulder, p, dir);
+  const r2 = reach * reach;
+  const w = clamp(want, from, to);
+  if (wristFar(w, back, side) <= r2) return w;
+  // (nearest the shoulder: out of reach there, out of reach everywhere)
+  let near = clamp(G.c, from, to);
+  if (wristFar(near, back, side) > r2) return NaN;
+  // the edge of the reach between there and `want`
+  let off = w;
+  for (let i = 0; i < 24; i++) {
+    const m = (near + off) / 2;
+    if (wristFar(m, back, side) <= r2) near = m;
+    else off = m;
+  }
+  return near;
+}
+
+// As secondGrip for an arm that does not bend (the low graphics' straight
+// arm, made a little shorter or longer if need be): the point of [from, to]
+// nearest `want` between `min` and `max` m from the shoulder; NaN if there
+// is none.
+export function rigidGrip(shoulder, p, dir, from, to, want, min, max) {
+  foot(shoulder, p, dir);
+  const { c, d } = G;
+  if (d > max) return NaN;
+  // (within max of the shoulder: c +- far; beyond min: outside c +- near)
+  const far = Math.sqrt(max * max - d * d);
+  const near = d < min ? Math.sqrt(min * min - d * d) : 0;
+  let best = NaN;
+  for (let k = -1; k <= 1; k += 2) {
+    const lo = Math.max(from, k < 0 ? c - far : c + near);
+    const hi = Math.min(to, k < 0 ? c - near : c + far);
+    const s = clamp(want, lo, hi);
+    if (lo <= hi && !(Math.abs(s - want) >= Math.abs(best - want))) best = s;
+  }
+  return best;
+}
+
+// Where the second (left) hand takes a two-handed weapon, along its axis
+// from the right hand's grip (m, + towards its point): [want, from, to], the
+// first of them it reaches (secondGrip). A spear or a fork ahead of the
+// right hand; a sword's long grip and a great axe's haft at their end,
+// behind it; a crossbow under its stock, ahead of the trigger.
+export const SECOND = {
+  spear: [[0.4, 0.12, 0.9]],
+  greatsword: [[-0.13, -0.17, -0.1]],
+  greataxe: [[-0.12, -0.15, -0.1]],
+  crossbow: [[0.3, 0.12, 0.42]],
+};
+
+// The second hand's places on weapon `w` (an item), or null: it has none.
+export function secondRanges(w) {
+  if (w.cls === 'spear' || w.cls === 'crossbow') return SECOND[w.cls];
+  return w.twoHanded ? SECOND[w.model] || SECOND.greatsword : null;
+}
+
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));

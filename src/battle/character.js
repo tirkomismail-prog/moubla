@@ -7,7 +7,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { helmetGeo, setTileIndex } from './models.js';
+import { helmetGeo, setTileIndex, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
+import { handOnAxis, secondGrip, secondRanges } from './grips.js';
 import { bytesOf, decodeLayers, decodeTiles, deco, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { JERKIN, SABLE, TINCTURES, UNDYED, lightness } from '../data/dyes.js';
 import { horseTextures, loadHorse } from './horse.js';
@@ -162,7 +163,9 @@ function prepare(gltf) {
     const wy = len.clone().negate();
     const wx = new THREE.Vector3().crossVectors(wy, knuck);
     const gripQ = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(wx, wy, knuck));
-    t.hands[s] = { len, knuck, palm, basisQ: new THREE.Quaternion().setFromRotationMatrix(basis), grip, gripQ };
+    // (the grip point `back` along the hand's length from the wrist and
+    // `side` towards its palm: grips.js handOnAxis)
+    t.hands[s] = { len, knuck, palm, basisQ: new THREE.Quaternion().setFromRotationMatrix(basis), grip, gripQ, back: grip.dot(len), side: grip.dot(palm) };
     t.limbs[`arm_${s}`] = limbInfo(bones[`upperarm_${s}`], bones[`lowerarm_${s}`], hand, new THREE.Vector3(1, 0, 0));
     t.limbs[`leg_${s}`] = limbInfo(bones[`thigh_${s}`], bones[`calf_${s}`], bones[`foot_${s}`], new THREE.Vector3(1, 0, 0));
     t.hands[s].fist = fingerPose(bones, s, t.hands[s], 1);
@@ -280,6 +283,25 @@ const THUMB = [0.5, 0.6, 0.5];
 const HILTS = new Set(['sword', 'sword_long', 'sabre', 'cleaver', 'greatsword']);
 // how much of a fist each finger of a hand at rest is
 const RELAXED = { index: 0.25, middle: 0.35, ring: 0.45, pinky: 0.55, thumb: 0.3 };
+// The archer's anchor: where his drawing hand holds the string at full
+// draw, in the head bone's space: a finger's breadth (2.5 cm) out from the
+// right side of his jaw (the skin there: JAW_SKIN), halfway from its angle
+// to the corner of his mouth. How far from it he draws the string at most
+// (to the arrow's rest: the arrow's head just past the bow), and holds the
+// bow as he nocks the arrow (his drawing hand reaches the string there; he
+// pushes the bow out as he draws); his drawing elbow bends towards a point
+// this far behind his shoulder along the arrow and up (m).
+export const JAW_SKIN = new THREE.Vector3(-0.06, -0.085, 0.003);
+const JAW = JAW_SKIN.clone().add(new THREE.Vector3(-0.025, 0, 0));
+const DRAW = 0.74;
+const NOCK_REST = 0.4;
+const DRAW_POLE = [0.6, 0.3];
+// a bow is held turned about its length (its string towards the archer)
+const FLIP = new THREE.Quaternion(0, 0, 1, 0);
+// an arm reaches this share of its length (the IK straightens it at 0.999)
+const REACH = 0.99;
+// how fast the second hand takes a two-handed weapon and lets go of it (1/s)
+const SECOND_EASE = 12;
 // handle radii (m) the hands close round (models.js: sword grips 16-18 mm,
 // axes, spears, maces and bows 20-24)
 const HANDLES = { hilt: 0.016, haft: 0.02 };
@@ -1052,9 +1074,19 @@ export class SkinnedHuman {
       g.position.copy(t.hands[s].grip);
       g.quaternion.copy(t.hands[s].gripQ);
       this.bones[`hand_${s}`].add(g);
+      g.updateMatrix();
       this.grip[s] = g;
     }
     this.handPose = { l: 'relaxed', r: 'relaxed' };
+    // the arms' bones from the spine out (arms() works out their world
+    // matrices), and each arm's upper, lower and hand
+    this.armChain = ['l', 'r'].flatMap((s) => [`clavicle_${s}`, `upperarm_${s}`, `lowerarm_${s}`, `hand_${s}`].map((n) => this.bones[n]));
+    this.armL = this.armChain.slice(1, 4);
+    this.armR = this.armChain.slice(5, 8);
+    // how far the second hand is on a two-handed weapon (0: hanging), and
+    // where along it (secondHand)
+    this.second = 0;
+    this.secondAt = 0;
   }
 
   setLod(level) {
@@ -1108,8 +1140,9 @@ export class SkinnedHuman {
     const hipY = rig.hips.position.y;
     rig.armR.position.set(t.shoulder.r.x, t.shoulder.r.y - hipY, t.shoulder.r.z);
     rig.armL.position.set(t.shoulder.l.x, t.shoulder.l.y - hipY, t.shoulder.l.z);
-    rig.handR.position.y = -t.reach * 0.96;
-    rig.handL.position.y = -t.reach * 0.96;
+    rig.armLen = t.reach * 0.96;
+    rig.handR.position.y = -rig.armLen;
+    rig.handL.position.y = -rig.armLen;
   }
 
   attach(obj, side) {
@@ -1181,11 +1214,12 @@ export class SkinnedHuman {
     b.pelvis.updateWorldMatrix(true, false);
     const rootQ = r.root.getWorldQuaternion(U.rootQ);
 
+    // hips turn towards the walking direction (and an archer's in the
+    // saddle towards his aim, Agent.seatTurn); the torso follows the aim
+    const hipYaw = this.hipYaw + (agent.seatTurn || 0);
+    if (Math.abs(hipYaw) > 1e-3) rotateWorld(b.pelvis, worldRot(rootQ, U.a.setFromAxisAngle(Y, hipYaw), U.inc));
     if (agent.horse) this.ride(rootQ, agent.horse.rig, U.toLocal);
-
-    // hips turn towards the walking direction; the torso follows the aim
-    if (Math.abs(this.hipYaw) > 1e-3) rotateWorld(b.pelvis, worldRot(rootQ, U.a.setFromAxisAngle(Y, this.hipYaw), U.inc));
-    const torsoQ = U.a.copy(r.torso.quaternion).premultiply(U.b.setFromAxisAngle(Y, -this.hipYaw));
+    const torsoQ = U.a.copy(r.torso.quaternion).premultiply(U.b.setFromAxisAngle(Y, -hipYaw));
     const step = U.c.identity().slerp(torsoQ, 1 / 3);
     const inc = worldRot(rootQ, step, U.inc);
     rotateWorld(b.spine_01, inc);
@@ -1197,7 +1231,7 @@ export class SkinnedHuman {
     const neckInc = worldRot(torsoWorld, half, U.inc);
     rotateWorld(b.neck_01, neckInc);
     rotateWorld(b.head, neckInc);
-    this.arms(agent, rootQ);
+    this.arms(agent, rootQ, dt);
     this.fingers();
   }
 
@@ -1208,7 +1242,7 @@ export class SkinnedHuman {
     let rel = 0;
     if (!agent.horse) {
       sp = Math.hypot(agent.vel.x, agent.vel.z);
-      rel = wrapAngle(Math.atan2(agent.vel.x, agent.vel.z) - agent.yaw);
+      rel = wrapAngle(Math.atan2(agent.vel.x, agent.vel.z) - (agent.bodyYaw ?? agent.yaw));
     }
     const moving = smoothstep(0.15, 0.7, sp);
     const backward = Math.abs(rel) > 1.95;
@@ -1257,22 +1291,40 @@ export class SkinnedHuman {
     }
   }
 
-  arms(agent, rootQ) {
+  arms(agent, rootQ, dt) {
     const r = agent.rig;
     const w = agent.weapon;
-    // right hand: the weapon grip of the pose rig
-    const wristQ = r.wristR.getWorldQuaternion(A.wristQ);
-    const wristP = r.wristR.getWorldPosition(A.wristP);
+    // the world matrices of the rig's arms and hands, and of the clips' arms
+    // on the turned spine, worked out once for what follows (placeWrist
+    // keeps an arm's up to date)
+    r.wristR.updateWorldMatrix(true, false);
+    r.armL.updateWorldMatrix(false, false);
+    r.handL.updateWorldMatrix(false, false);
+    for (const bone of this.armChain) refresh(bone);
+    if (w.cls === 'bow') {
+      this.archer(agent, rootQ);
+      return;
+    }
+    // right hand: the weapon grip of the pose rig (moved with his shoulder
+    // as the clips sway his body)
+    const wristQ = worldQuat(r.wristR, A.wristQ);
+    const wristP = A.wristP.setFromMatrixPosition(r.wristR.matrixWorld).add(this.sway(agent, 'r', A.pos));
     this.placeHand('r', wristP, wristQ, rootQ);
+    // (a pole stood on the ground: its butt there from where the hand is)
+    const ground = agent.horse ? 0 : agent._pose.ground;
+    let slide = 0;
+    if (ground) {
+      const p = A.pos.copy(this.t.hands.r.grip).applyMatrix4(this.bones.hand_r.matrixWorld);
+      const up = A.dir.set(0, 0, 1).applyQuaternion(worldQuat(this.bones.hand_r, A.q).multiply(this.t.hands.r.gripQ)).y;
+      slide = ground * agent.slideFor(p.y, up);
+    }
+    agent.weaponMesh.position.z = -slide;
     // (round the weapon's handle: a sword's hilt or a haft)
     const handle = HILTS.has(w.model) ? 'hilt' : 'haft';
     this.handPose.r = handle;
     // left hand
     const sh = agent.activeShield();
-    if (w.cls === 'bow') {
-      this.placeHand('l', r.handL.getWorldPosition(A.pos), r.handL.getWorldQuaternion(A.q), rootQ);
-      this.handPose.l = 'haft';
-    } else if (sh && agent.shieldMesh) {
+    if (sh && agent.shieldMesh) {
       agent.shieldMesh.updateWorldMatrix(true, false);
       const grip = agent.shieldMesh.localToWorld(A.pos.set(0, 0, -0.05));
       // hold the shield's handle: knuckles along the shield's up axis
@@ -1281,28 +1333,169 @@ export class SkinnedHuman {
       this.handPose.l = 'hilt';
     } else if (w.lance && agent.horse) {
       // reins in the left hand
-      this.placeHand('l', r.handL.getWorldPosition(A.pos), r.handL.getWorldQuaternion(A.q), rootQ);
+      this.placeHand('l', A.pos.setFromMatrixPosition(r.handL.matrixWorld).add(this.sway(agent, 'l', A.dir)), worldQuat(r.handL, A.q), rootQ);
       this.handPose.l = 'fist';
-    } else if (w.twoHanded || w.cls === 'spear' || w.cls === 'crossbow') {
-      const dir = A.dir.set(0, 0, 1).applyQuaternion(wristQ);
-      const along = w.cls === 'spear' ? 0.42 : w.cls === 'crossbow' ? 0.34 : -0.13;
-      this.placeHand('l', A.pos.copy(wristP).addScaledVector(dir, along), wristQ, rootQ);
-      this.handPose.l = handle;
+    } else if (secondRanges(w)) {
+      this.secondHand(agent, rootQ, dt, handle);
     } else {
-      // a free hand hangs by the side when standing and swings with the
-      // captured walk when moving
-      const idleW = this.actions.idle ? this.actions.idle.weight : 0;
-      if (idleW > 0.02) {
-        const b = this.bones;
-        const wrist = b.hand_l.getWorldPosition(A.pos);
-        const shoulder = b.upperarm_l.getWorldPosition(A.dir);
-        wrist.lerp(A.hang.set(0.08, -0.55, 0.035).applyQuaternion(rootQ).add(shoulder), idleW);
-        const hangQ = this.handWorld('l', rootQ, A.q2);
-        const q = worldQuat(b.hand_l, A.q).slerp(hangQ, idleW);
-        this.placeWrist('l', wrist, q, rootQ);
-      }
-      this.handPose.l = 'relaxed';
+      this.freeHand('l', rootQ);
     }
+  }
+
+  // How far the clips have moved his shoulder `s` from the pose rig's (they
+  // sway his body as he stands, the rig stays put): into `out`. (Their world
+  // matrices as arms() has worked them out.)
+  sway(agent, s, out) {
+    const r = agent.rig;
+    out.setFromMatrixPosition((s === 'l' ? this.bones.upperarm_l : this.bones.upperarm_r).matrixWorld);
+    return out.sub(A.sway.setFromMatrixPosition((s === 'l' ? r.armL : r.armR).matrixWorld));
+  }
+
+  // A free hand: by his side standing, swinging with the captured walk when
+  // moving.
+  freeHand(s, rootQ) {
+    if (this.hang(s, rootQ, A.pos, A.q)) this.placeWrist(s, A.pos, A.q, rootQ);
+    this.handPose[s] = 'relaxed';
+  }
+
+  // Where a free hand is (its wrist into `wrist`, its world rotation into
+  // `q`): as the clips put it, drawn towards hanging by his side as much as
+  // he stands (the idle clip's weight). False if just as the clips put it.
+  hang(s, rootQ, wrist, q) {
+    const b = this.bones;
+    const hand = s === 'l' ? b.hand_l : b.hand_r;
+    wrist.setFromMatrixPosition(hand.matrixWorld);
+    worldQuat(hand, q);
+    const idleW = this.actions.idle ? this.actions.idle.weight : 0;
+    if (idleW <= 0.02) return false;
+    const shoulder = A.dir.setFromMatrixPosition((s === 'l' ? b.upperarm_l : b.upperarm_r).matrixWorld);
+    wrist.lerp(A.hang.set(s === 'l' ? 0.08 : -0.08, -0.55, 0.035).applyQuaternion(rootQ).add(shoulder), idleW);
+    q.slerp(this.handWorld(s, rootQ, A.q2), idleW);
+    return true;
+  }
+
+  // The second (left) hand on a two-handed weapon (grips.js SECOND): round
+  // its handle where it reaches it (secondGrip, on the axis of the weapon as
+  // the right hand holds it), else, or while the weapon rests (the pose's
+  // `free`), hanging; eased from one to the other.
+  secondHand(agent, rootQ, dt, handle) {
+    const b = this.bones;
+    const t = this.t;
+    const hr = t.hands.r;
+    const hl = t.hands.l;
+    // the weapon's axis: through the right hand's grip, along the held item
+    const p = S2.p.copy(hr.grip).applyMatrix4(b.hand_r.matrixWorld);
+    const dir = S2.dir.set(0, 0, 1).applyQuaternion(worldQuat(b.hand_r, S2.q).multiply(hr.gripQ));
+    const shoulder = S2.sh.setFromMatrixPosition(b.upperarm_l.matrixWorld);
+    const arm = t.limbs.arm_l;
+    let s = NaN;
+    if (agent._pose.free < 0.5) {
+      for (const [want, from, to] of secondRanges(agent.weapon)) {
+        s = secondGrip(shoulder, p, dir, from, to, want, (arm.a + arm.b) * REACH, hl.back, hl.side);
+        if (!Number.isNaN(s)) break;
+      }
+    }
+    const on = !Number.isNaN(s);
+    if (on) this.secondAt = s;
+    this.second += ((on ? 1 : 0) - this.second) * Math.min(1, dt * SECOND_EASE);
+    // (hanging, or on the handle, or between)
+    const hanging = this.second < 0.999 && this.hang('l', rootQ, S2.w, S2.q2);
+    if (this.second < 0.01) {
+      if (hanging) this.placeWrist('l', S2.w, S2.q2, rootQ);
+      this.handPose.l = 'relaxed';
+      return;
+    }
+    const h = handOnAxis(shoulder, p, dir, this.secondAt, hl.back, hl.side, S2.h);
+    const q = this.handFrame('l', h.len, h.knuck, S2.q3);
+    if (this.second < 0.999) this.placeWrist('l', S2.w.lerp(h.wrist, this.second), S2.q2.slerp(q, this.second), rootQ);
+    else this.placeWrist('l', h.wrist, q, rootQ);
+    this.handPose.l = this.second > 0.5 ? handle : 'relaxed';
+  }
+
+  // The archer (Agent.drawPose): his bow arm from hanging to straight at
+  // the target, the bow upright (canted), the arrow's rest on its hand on
+  // the line from the anchor by his jaw (JAW) to the target, as far out as
+  // the arm reaches (DRAW at most); his drawing hand from hanging to the
+  // string, drawing it from the bow to the jaw, the elbow up behind; the
+  // string and the nocked arrow to where that hand holds it.
+  archer(agent, rootQ) {
+    const b = this.bones;
+    const t = this.t;
+    const r = agent.rig;
+    const d = agent._draw;
+    const hold = d.raise;
+    // the bow lowered in his left hand as the rig holds it, the right hand
+    // free (at rest)
+    const pos = AR.p.setFromMatrixPosition(r.handL.matrixWorld).add(this.sway(agent, 'l', AR.v));
+    const q = worldQuat(r.handL, AR.q2).multiply(AR.q.setFromAxisAngle(X, BOW_LOWER));
+    this.handPose.l = 'haft';
+    if (hold < 0.001) {
+      this.placeHand('l', pos, q, rootQ);
+      this.freeHand('r', rootQ);
+      agent.drawString(null, false);
+      return;
+    }
+    // the way to the target, up (the bow's, canted to his right), in his
+    // own space
+    const toOwn = AR.q.copy(U.q).invert();
+    const T = AR.T.set(Math.sin(agent.aimYaw) * Math.cos(agent.aimPitch), Math.sin(agent.aimPitch), Math.cos(agent.aimYaw) * Math.cos(agent.aimPitch)).applyQuaternion(toOwn);
+    const up = AR.up.set(0, 1, 0).applyQuaternion(toOwn);
+    up.addScaledVector(T, -up.dot(T)).normalize();
+    const right = AR.right.crossVectors(T, up);
+    up.multiplyScalar(Math.cos(BOW_CANT)).addScaledVector(right, Math.sin(BOW_CANT));
+    // the frame the hands hold the bow and the string in (the item up, the
+    // hands' length towards the target), and the bow's
+    const aimQ = AR.aimQ.setFromRotationMatrix(AR.m.makeBasis(AR.x.crossVectors(AR.y.copy(T).negate(), up), AR.y, up));
+    const bowQ = AR.bowQ.copy(aimQ).multiply(FLIP);
+    // the arrow's rest out from the jaw along the way to the target, as far
+    // as the bow arm reaches: the bow's grip, and the left wrist, so far back
+    const jaw = AR.jaw.copy(JAW).applyMatrix4(b.head.matrixWorld);
+    const gripOff = AR.g.copy(t.hands.l.grip).applyQuaternion(this.handWorld('l', aimQ, AR.hq));
+    const restOff = AR.ro.copy(ARROW_REST).applyQuaternion(bowQ);
+    const arm = t.limbs.arm_l;
+    const reach = (arm.a + arm.b) * REACH;
+    const v = AR.v.copy(jaw).sub(restOff).sub(gripOff).sub(AR.s.setFromMatrixPosition(b.upperarm_l.matrixWorld));
+    const vt = v.dot(T);
+    const disc = vt * vt - v.lengthSq() + reach * reach;
+    const full = Math.min(DRAW, disc > 0 ? Math.sqrt(disc) - vt : -vt);
+    // (nearer as he nocks, NOCK_REST, pushed out as he draws)
+    const draw = Math.min(full, NOCK_REST + (full - NOCK_REST) * d.pull);
+    const rest = AR.rest.copy(jaw).addScaledVector(T, draw);
+    const grip = AR.grip.copy(rest).sub(restOff);
+    // the bow hand raised
+    this.placeHand('l', pos.lerp(grip, hold), q.slerp(aimQ, hold), rootQ);
+    // the drawing hand: from hanging to the string at its nocking point,
+    // drawing it to the jaw
+    const handR = this.handWorld('r', aimQ, AR.hr);
+    const at = AR.at.copy(STRING_NOCK).applyQuaternion(bowQ).add(grip).lerp(jaw, d.pull);
+    const wrist = AR.w.copy(t.hands.r.grip).applyQuaternion(handR).negate().add(at);
+    const hanging = this.hang('r', rootQ, AR.wh, AR.qh);
+    if (hold > 0.001 || hanging) {
+      AR.wh.lerp(wrist, hold);
+      AR.qh.slerp(handR, hold);
+      // (the elbow down by his side hanging, up behind drawing)
+      const shoulder = AR.s.setFromMatrixPosition(b.upperarm_r.matrixWorld);
+      const pole = AR.pole.set(-0.55, -0.55, -0.45).applyQuaternion(rootQ).add(shoulder);
+      pole.lerp(AR.pole2.copy(shoulder).addScaledVector(T, -DRAW_POLE[0]).addScaledVector(up, DRAW_POLE[1]), hold);
+      this.placeWrist('r', AR.wh, AR.qh, rootQ, pole);
+    }
+    this.handPose.r = hold > 0.5 ? 'hilt' : 'relaxed';
+    // the string to the hand and the arrow on it, in the bow's own space
+    // (while an arrow is on it)
+    if (!d.nocked) {
+      agent.drawString(null, false);
+      return;
+    }
+    const bowM = AR.bm.multiplyMatrices(b.hand_l.matrixWorld, this.grip.l.matrix).multiply(agent.weaponMesh.matrix).invert();
+    const meet = AR.meet.copy(t.hands.r.grip).applyMatrix4(b.hand_r.matrixWorld).applyMatrix4(bowM);
+    agent.drawString(meet, true);
+  }
+
+  // The world rotation of hand `s` whose length (wrist to knuckles) and
+  // knuckle line (little finger to index) are `len` and `knuck` (unit,
+  // square to each other).
+  handFrame(s, len, knuck, out) {
+    return out.setFromRotationMatrix(handBasis(len, knuck, H.m)).multiply(H.inv.copy(this.t.hands[s].basisQ).invert());
   }
 
   // World orientation of hand `s` holding an item whose frame is `q` (item
@@ -1314,23 +1507,27 @@ export class SkinnedHuman {
     return out.setFromRotationMatrix(handBasis(len, knuck, H.m)).multiply(H.inv.copy(hand.basisQ).invert());
   }
 
-  placeWrist(s, wrist, handWorldQ, rootQ) {
+  // The arm's elbow bends towards `pole` (a point; by default down, out and
+  // back from the shoulder). (The arm's world matrices as arms() has worked
+  // them out.)
+  placeWrist(s, wrist, handWorldQ, rootQ, pole = null) {
     const b = this.bones;
     const side = s === 'l' ? 1 : -1;
-    const shoulder = b[`upperarm_${s}`].getWorldPosition(H.shoulder);
-    const pole = H.pole.set(side * 0.55, -0.55, -0.45).applyQuaternion(rootQ).add(shoulder);
-    solveLimb(b[`upperarm_${s}`], b[`lowerarm_${s}`], b[`hand_${s}`], this.t.limbs[`arm_${s}`], wrist, pole);
-    setWorldQuat(b[`hand_${s}`], handWorldQ);
+    const [upper, lower, hand] = s === 'l' ? this.armL : this.armR;
+    const shoulder = H.shoulder.setFromMatrixPosition(upper.matrixWorld);
+    if (!pole) pole = H.pole.set(side * 0.55, -0.55, -0.45).applyQuaternion(rootQ).add(shoulder);
+    solveLimb(upper, lower, hand, s === 'l' ? this.t.limbs.arm_l : this.t.limbs.arm_r, wrist, pole, true);
+    setWorldQuat(hand, handWorldQ);
   }
 
   // Put hand `s` so that its grip sits at `pos` with the held item oriented
   // like the pose rig's `q` (item along +Z, the arm along -Y).
-  placeHand(s, pos, q, rootQ) {
+  placeHand(s, pos, q, rootQ, pole = null) {
     const handWorld = this.handWorld(s, q, H.q);
     // wrist position = grip minus the grip offset
     const wrist = H.wrist.copy(this.t.hands[s].grip).applyQuaternion(handWorld);
     wrist.subVectors(pos, wrist);
-    this.placeWrist(s, wrist, handWorld, rootQ);
+    this.placeWrist(s, wrist, handWorld, rootQ, pole);
   }
 
   fingers() {
@@ -1515,7 +1712,10 @@ const scratch = (vs, qs, extra = {}) => {
   return o;
 };
 const U = scratch(['v1', 'v2', 'v3', 'v4', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1), e: new THREE.Euler() });
-const A = scratch(['wristP', 'pos', 'dir', 'hang'], ['wristQ', 'q', 'q2']);
+const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway'], ['wristQ', 'q', 'q2']);
+const S2 = scratch(['p', 'dir', 'sh', 'w'], ['q', 'q2', 'q3'], { h: scratch(['grip', 'wrist', 'len', 'knuck', 'palm'], []) });
+const AR = scratch(['T', 'up', 'right', 'x', 'y', 'jaw', 'g', 'ro', 'v', 's', 'rest', 'grip', 'p', 'at', 'w', 'wh', 'pole', 'pole2', 'meet'],
+  ['q', 'aimQ', 'bowQ', 'hq', 'hr', 'q2', 'qh'], { m: new THREE.Matrix4(), bm: new THREE.Matrix4() });
 const H = scratch(['len', 'knuck', 'palm', 'wrist', 'shoulder', 'pole'], ['q', 'inv', 'lower'], { m: new THREE.Matrix4() });
 const WR = scratch([], ['inv']);
 const WQ = scratch(['p', 's'], []);
@@ -1585,8 +1785,9 @@ function aim(bone, localDir, target) {
 
 // Two-bone IK: put the end of the limb at `target`, bending in the plane that
 // contains `pole` and keeping the middle joint a hinge.
-function solveLimb(upper, lower, end, info, target, pole) {
-  upper.updateWorldMatrix(true, false);
+function solveLimb(upper, lower, end, info, target, pole, fresh = false) {
+  // (`fresh`: the upper bone's world matrix is up to date)
+  if (!fresh) upper.updateWorldMatrix(true, false);
   const S = SL.S.setFromMatrixPosition(upper.matrixWorld);
   const { a, b } = info;
   const dir = SL.dir.subVectors(target, S);

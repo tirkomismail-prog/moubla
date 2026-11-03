@@ -5,6 +5,10 @@ import { wrapAngle, clamp } from '../core/util.js';
 import { requiredBlock } from './combat.js';
 
 const BLOCK_DIRS = ['left', 'right', 'up', 'down'];
+// a horse archer shoots at a target no farther to his right than this (rad)
+// from the horse's way: beyond it his hips and spine cannot turn him
+// side-on to it (agent.js SEAT_TURN, SPINE_TURN)
+const BOW_RIGHT = 0.25;
 
 function angleTo(a, x, z) {
   return Math.atan2(x - a.pos.x, z - a.pos.z);
@@ -408,10 +412,14 @@ function cavalryCharge(battle, a, t, dist) {
 function horseArcher(battle, a, t, dist) {
   const h = a.horse;
   const toT = Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z);
+  // (an archer circles with the target on his left, his bow side: he can
+  // turn side-on to it only there or ahead, agent.js SIDE)
+  const bow = a.weapon.cls === 'bow';
+  const strafe = bow ? -1 : a.ai.strafe || 1;
   let want;
-  if (dist < 18) want = toT + Math.PI * 0.8 * (a.ai.strafe || 1);
+  if (dist < 18) want = toT + Math.PI * 0.8 * strafe;
   else if (dist > 42) want = toT;
-  else want = toT + (Math.PI / 2) * (a.ai.strafe || 1);
+  else want = toT + (Math.PI / 2) * strafe;
   const wp = battle.terrain.waypoint(a.pos.x, a.pos.z, t.pos.x, t.pos.z);
   if (wp) want = Math.atan2(wp[0] - a.pos.x, wp[1] - a.pos.z);
   // do not ride off the map
@@ -422,8 +430,10 @@ function horseArcher(battle, a, t, dist) {
   a.ride.throttle = 0.8;
   avoidObstacles(battle, a, Math.sin(h.yaw), Math.cos(h.yaw));
   a.aimYaw = toT;
-  if (Math.abs(wrapAngle(toT - h.yaw)) < 2.3) rangedAttack(battle, a, t, dist);
-  else if (a.action.s === 'aim' && a.action.t > 1.5) a.setAction('idle');
+  const rel = wrapAngle(toT - h.yaw);
+  if (rel < 2.3 && rel > (bow ? -BOW_RIGHT : -2.3)) rangedAttack(battle, a, t, dist);
+  // (out of his way he lowers his weapon after a while, a bow at once)
+  else if ((a.action.s === 'aim' && a.action.t > 1.5) || (bow && (a.action.s === 'draw' || a.action.s === 'aim'))) a.setAction('idle');
 }
 
 function rangedAttack(battle, a, t, dist) {

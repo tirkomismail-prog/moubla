@@ -3,11 +3,11 @@
 import * as THREE from 'three';
 import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
-import { buildHuman, buildHorse, weaponGeo, shieldGeo, armQuat, pickSkin, pickHair } from './models.js';
+import { buildHuman, buildHorse, weaponGeo, shieldGeo, arrowGeo, stringGeo, bowNock, armQuat, pickSkin, pickHair, ARROW_NOCK, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround } from './character.js';
-import { groundFit, fitNormal, layFlat, footprint, lowest, STEEPEST } from './grips.js';
+import { groundFit, fitNormal, layFlat, footprint, lowest, rigidGrip, secondRanges, STEEPEST } from './grips.js';
 import { clamp, wrapAngle, approachAngle, smoothstep } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
 
@@ -39,42 +39,218 @@ function P(arm, blade, twist = 0, pitch = 0) {
   return { q: armQuat([d.x, d.y, d.z], [zp.x, zp.y, zp.z]), wrist, twist, pitch };
 }
 
-const POSE = {
-  idle: P([-0.15, -1, 0.25], [-0.05, 0.45, 1]),
-  idlePole: P([-0.2, -1, 0.15], [0, 0.12, 1]),
-  idleLance: P([-0.2, -1, 0.15], [0, 1, 0.25]),
-  idleTwo: P([-0.05, -0.75, 0.6], [0.15, 1, 0.45]),
-  couch: P([-0.28, -0.96, -0.1], [0, 0.02, 1]),
-  lowered: P([-0.12, -1, 0.05], [0, -0.3, 1]),
+// The right arm's poses of the pose rig (the realistic body's right hand
+// goes where the rig's does). Each gives
+// - `arm`: a straight arm that way; or `hand`: the hand there (m, in the
+//   torso's space: x his left, y up from his hips, z forward): the
+//   realistic body bends its elbow to put it there, the low graphics'
+//   straight arm points at it (or `low`: that way);
+// - `blade`: the way the held item points; `twist`, `pitch`: the torso's
+//   turn and bend;
+// - `ground`: a pole stood on the ground: it slides down in the hand till
+//   its butt is there (Agent.groundSlide);
+// - `free`: the second hand rests (lets go of a two-handed weapon).
+// poseTable builds them for a rig's shoulder and arm.
+const ONE = {
+  // the blade forward and down, the arm by the side
+  idle: { arm: [-0.15, -1, 0.22], blade: [-0.06, -0.6, 1] },
   ready: {
-    right: P([-0.9, 0.35, -0.3], [-0.4, 0.5, -0.8], -0.7, 0),
-    left: P([0.7, 0.45, 0.1], [0.5, 0.4, -0.8], 0.6, 0),
-    overhead: P([-0.25, 1, -0.15], [0, 0.2, -1], -0.1, -0.15),
-    thrust: P([-0.35, -0.9, -0.25], [0, 0.05, 1], -0.35, 0),
+    right: { arm: [-0.9, 0.35, -0.3], blade: [-0.4, 0.5, -0.8], twist: -0.7 },
+    left: { arm: [0.7, 0.45, 0.1], blade: [0.5, 0.4, -0.8], twist: 0.6 },
+    overhead: { arm: [-0.25, 1, -0.15], blade: [0, 0.2, -1], twist: -0.1, pitch: -0.15 },
+    thrust: { arm: [-0.35, -0.9, -0.25], blade: [0, 0.05, 1], twist: -0.35 },
   },
   strike: {
-    right: P([0.75, -0.05, 0.65], [1, 0.05, 0.35], 0.6, 0.05),
-    left: P([-0.8, -0.05, 0.55], [-1, 0.05, 0.3], -0.6, 0.05),
-    overhead: P([-0.1, -0.35, 1], [0, -0.6, 1], 0, 0.28),
-    thrust: P([-0.1, 0, 1], [0, -0.02, 1], 0.25, 0.1),
+    right: { arm: [0.75, -0.05, 0.65], blade: [1, 0.05, 0.35], twist: 0.6, pitch: 0.05 },
+    left: { arm: [-0.8, -0.05, 0.55], blade: [-1, 0.05, 0.3], twist: -0.6, pitch: 0.05 },
+    overhead: { arm: [-0.1, -0.35, 1], blade: [0, -0.6, 1], pitch: 0.28 },
+    thrust: { arm: [-0.1, 0, 1], blade: [0, -0.02, 1], twist: 0.25, pitch: 0.1 },
   },
   block: {
-    left: P([0.3, -0.2, 0.8], [0.1, 1, 0.1]),
-    right: P([-0.7, -0.2, 0.6], [-0.1, 1, 0.1]),
-    up: P([-0.2, 0.5, 0.8], [1, 0.1, 0]),
-    down: P([-0.1, -0.5, 0.8], [0.7, 0.6, 0.2]),
+    left: { arm: [0.3, -0.2, 0.8], blade: [0.1, 1, 0.1] },
+    right: { arm: [-0.7, -0.2, 0.6], blade: [-0.1, 1, 0.1] },
+    up: { arm: [-0.2, 0.5, 0.8], blade: [1, 0.1, 0] },
+    down: { arm: [-0.1, -0.5, 0.8], blade: [0.7, 0.6, 0.2] },
   },
-  bowRest: P([0.05, -0.1, 1], [0, 1, 0]),
-  bowDraw: P([-0.6, 0.12, -0.3], [0, 1, 0]),
-  xbow: P([-0.12, -0.2, 1], [0, 0, 1]),
-  xbowReload: P([-0.1, -1, 0.35], [0, -0.8, 0.6]),
 };
+// A spear or a fork: upright by the right foot at rest; in a fight held low
+// at the hip and thrust, or overhand, the second hand ahead of the right
+// (grips.js SECOND) where it reaches. (Held at the hip, the right hand stays
+// out by his side, its butt end crossing behind it outside his hip, not
+// through his belly.)
+const POLE = {
+  idle: { hand: [-0.35, 0.28, 0.13], blade: [-0.06, 1, 0.05], ground: 1, free: 1 },
+  ready: {
+    thrust: { hand: [-0.27, 0.22, 0.16], blade: [0.3, 0.1, 1], twist: -0.3 },
+    overhead: { hand: [-0.24, 0.82, 0], blade: [0.1, -0.22, 1], twist: -0.2 },
+  },
+  strike: {
+    thrust: { hand: [-0.25, 0.3, 0.36], blade: [0.22, 0.03, 1], twist: -0.2, pitch: 0.12 },
+    overhead: { hand: [-0.16, 0.5, 0.36], blade: [0.06, -0.4, 1], twist: 0.25, pitch: 0.15 },
+  },
+  block: {
+    left: { hand: [0, 0.2, 0.36], blade: [0.25, 1, 0.1] },
+    right: { hand: [-0.2, 0.18, 0.38], blade: [-0.15, 1, 0.1] },
+    up: { hand: [-0.25, 0.78, 0.3], blade: [1, 0.05, 0.1] },
+    down: { hand: [-0.12, 0.12, 0.38], blade: [0.55, -0.45, 0.7] },
+  },
+};
+// A two-handed sword or axe, both hands on its grip (grips.js SECOND): at
+// rest point down before him, carried on the right shoulder when he moves;
+// cocked over a shoulder or overhead, swept across, thrust from the right
+// hip (its pommel by the hip, not in his belly).
+const TWO = {
+  idle: { hand: [-0.08, 0.3, 0.36], blade: [0, -1, 0.45] },
+  carry: { hand: [-0.2, 0.26, 0.26], blade: [0.05, 0.78, -0.62], free: 1 },
+  ready: {
+    right: { hand: [-0.16, 0.6, 0.3], blade: [-0.3, 0.55, -0.78], twist: -0.6 },
+    left: { hand: [0.12, 0.58, 0.28], blade: [0.3, 0.55, -0.78], twist: 0.5 },
+    overhead: { hand: [-0.04, 0.88, 0.2], blade: [0, 0.6, -0.8], pitch: -0.12 },
+    thrust: { hand: [-0.25, 0.24, 0.3], blade: [0.25, 0.35, 1], twist: -0.3 },
+  },
+  strike: {
+    right: { hand: [0.08, 0.25, 0.42], blade: [0.8, -0.1, 0.6], twist: 0.55 },
+    left: { hand: [-0.2, 0.25, 0.4], blade: [-0.8, -0.1, 0.6], twist: -0.5 },
+    overhead: { hand: [-0.05, 0.22, 0.45], blade: [0, -0.45, 1], pitch: 0.25 },
+    thrust: { hand: [-0.06, 0.36, 0.52], blade: [0.05, 0.02, 1], twist: 0.2, pitch: 0.1 },
+  },
+  block: {
+    left: { hand: [0.1, 0.3, 0.38], blade: [0.15, 1, 0.12] },
+    right: { hand: [-0.16, 0.36, 0.4], blade: [-0.15, 1, 0.12] },
+    up: { hand: [0.14, 0.82, 0.3], blade: [-1, 0.12, 0.15] },
+    down: { hand: [-0.08, 0.2, 0.4], blade: [-0.45, -0.8, 0.4] },
+  },
+};
+const OTHER = {
+  // a one-handed weapon on a horse, and javelins or throwing axes at rest:
+  // held up, a little forward, clear of the horse's neck and head and of his
+  // own legs (ONE.idle's would go down into them)
+  upright: { hand: [-0.33, 0.32, 0.16], blade: [0.06, 1, 0.35] },
+  // a lance on foot stood on the ground by the right foot; upright or
+  // couched on a horse
+  idleLance: { hand: [-0.35, 0.28, 0.13], blade: [-0.06, 1, 0.08], ground: 1 },
+  rideLance: { arm: [-0.2, -1, 0.15], blade: [0, 1, 0.25] },
+  couch: { arm: [-0.28, -0.96, -0.1], blade: [0, 0.02, 1] },
+  // a crossbow: aimed with its butt at the cheek, the second hand under its
+  // stock; spanned bent over it; carried at the hip
+  xbow: { hand: [-0.12, 0.55, 0.28], blade: [0, 0, 1], low: [-0.12, -0.2, 1] },
+  xbowReload: { hand: [-0.08, 0.27, 0.3], blade: [0, -0.55, 0.83], pitch: 0.3, low: [-0.1, -1, 0.35] },
+  xbowRest: { hand: [-0.22, 0.12, 0.2], blade: [0.1, -0.4, 1], free: 1, low: [-0.12, -1, 0.3] },
+  // the drawing arm of an archer at rest (Agent.archerRig draws it)
+  bowRest: { arm: [-0.12, -1, 0.05], blade: [0, -0.3, 1] },
+};
+
+// The poses of the specs above for a rig whose right shoulder is at
+// `shoulder` (torso space) with an arm `len` long, that bends (the realistic
+// body) or not: {q, wrist, ext (the hand's distance from the shoulder, of
+// len), twist, pitch, ground, free}, in the specs' shape.
+const poseTables = new Map();
+function poseTable(shoulder, len, bends) {
+  const key = `${shoulder.x},${shoulder.y},${shoulder.z},${len},${bends}`;
+  let table = poseTables.get(key);
+  if (table) return table;
+  const arm = new THREE.Vector3();
+  const build = (spec) => {
+    if (!spec.blade) return Object.fromEntries(Object.entries(spec).map(([k, v]) => [k, build(v)]));
+    let ext = 1;
+    if (spec.low && !bends) arm.fromArray(spec.low);
+    else if (spec.hand) {
+      arm.fromArray(spec.hand).sub(shoulder);
+      if (bends) ext = Math.min(1, arm.length() / len);
+    } else arm.fromArray(spec.arm);
+    const p = P([arm.x, arm.y, arm.z], spec.blade, spec.twist, spec.pitch);
+    return { ...p, ext, ground: spec.ground || 0, free: spec.free || 0 };
+  };
+  table = { one: build(ONE), pole: build(POLE), two: build(TWO), ...build(OTHER) };
+  poseTables.set(key, table);
+  return table;
+}
+
+// `out` a pose `t` of the way from `p0` to `p1`.
+function blendPose(out, p0, p1, t) {
+  out.q.copy(p0.q).slerp(p1.q, t);
+  out.wrist = p0.wrist + (p1.wrist - p0.wrist) * t;
+  out.twist = p0.twist + (p1.twist - p0.twist) * t;
+  out.pitch = p0.pitch + (p1.pitch - p0.pitch) * t;
+  out.ext = p0.ext + (p1.ext - p0.ext) * t;
+  out.ground = p0.ground + (p1.ground - p0.ground) * t;
+  out.free = p0.free + (p1.free - p0.free) * t;
+}
+
+// The left arm of the low graphics' rig: hanging free, holding a bow
+// lowered (it points forward and down), holding the reins.
 const LEFT = {
   free: Q([0.15, -1, 0.1], [0, 0, 1]),
-  bow: P([0.02, 0, 1], [0, 1, 0]).q,
-  xbow: Q([-0.25, -0.15, 1], [0, 1, 0]),
+  bowRest: Q([0.3, -1, 0.3], [0, -0.4, 1]),
   lance: Q([0.2, -0.9, 0.3], [0, 0, 1]),
 };
+
+// The archer (Agent.drawPose): his chest turns this far from the target,
+// to his right (rad; side-on: his bow arm's shoulder towards it), his feet
+// this far of it on foot (the rest is his spine's). On a horse his hips
+// turn in the saddle this share of it, at most SEAT_TURN, his spine the
+// rest, at most SPINE_TURN (a man's spine turns 45-50 degrees): no farther
+// from the horse's way (he cannot turn side-on to a target much to his
+// right: ai.js keeps it on his left). He leans away from the target (rad,
+// of his aim's pitch) to aim up. How fast he raises and lowers the bow and
+// draws (1/s), and turns side-on and back (1/s, eased: a turn takes
+// 1/SIDE_RATE s); how long he keeps his stance after a shot (s), if he does
+// not move off, to draw again.
+const SIDE = -1.36;
+const FEET_TURN = -0.95;
+const SEAT_SHARE = 0.4;
+const SEAT_TURN = 0.5;
+const SPINE_TURN = 0.8;
+const LEAN = 0.6;
+const DRAW_EASE = 14;
+const SIDE_RATE = 2.5;
+const STANCE_HOLD = 1.5;
+// He raises the bow over this share of his draw; the arrow is on the string
+// once his drawing hand is there (it is this share of the way from hanging),
+// and then he draws.
+const DRAW_RAISE = 0.35;
+const NOCK_AT = 0.99;
+// (the low graphics' drawing hand takes the string from this share of the
+// way to his jaw: archerRig)
+const LOW_TAKE = 0.85;
+// The anchor of the low graphics' archer: the drawing hand by the right of
+// his jaw (models.js headGeo, in the neck's space).
+const JAW_LOW = new THREE.Vector3(-0.105, 0.12, 0.04);
+// where a pole's butt stands, above the ground (m); it slides down in the
+// hand to stand there as it comes upright, from and to how far it rises a
+// metre along it (Agent.slideFor)
+const BUTT_CLEAR = 0.03;
+const SLIDE_UP = [0.9, 0.97];
+// the low graphics' straight left arm takes a two-handed weapon this much
+// shorter or longer than it is, at most (of its length)
+const LOW_REACH = [0.85, 1.1];
+
+const Z = new THREE.Vector3(0, 0, 1);
+// an archer's way to his target in his torso's space (animateRig)
+const AIM = new THREE.Vector3();
+const SG = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+
+// A bowstring's holder (models.js stringGeo) spanning from `a` to `b` (in its
+// parent's space).
+function span(h, a, b) {
+  const d = SG.d.subVectors(b, a);
+  const len = d.length();
+  h.position.copy(a);
+  h.quaternion.setFromUnitVectors(Z, d.divideScalar(len || 1));
+  h.scale.set(1, 1, Math.max(len, 1e-3));
+}
+// Turn a part of a rig (its rotation, or its quaternion to `q`) only if that
+// changes it: each turn works out the other of the two (three.js keeps them
+// in step), most of the cost of posing a rig, and a man standing or holding
+// a guard keeps most of his.
+function turnTo(o, x, y, z) {
+  const e = o.rotation;
+  if (e.x !== x || e.y !== y || e.z !== z) e.set(x, y, z);
+}
+function quatTo(o, q) {
+  if (!o.quaternion.equals(q)) o.quaternion.copy(q);
+}
+
 const SHIELD_POSE = {
   idle: { pos: new THREE.Vector3(0.33, 0.1, 0.18), rotY: 1.0, rotX: 0 },
   block: { pos: new THREE.Vector3(0.06, 0.4, 0.45), rotY: 0.05, rotX: -0.08 },
@@ -305,8 +481,18 @@ export class Agent {
     }
     this.rig.root.rotation.order = 'YXZ';
     this.rig.torso.rotation.order = 'YXZ';
+    this.rig.neck.rotation.order = 'YXZ';
     battle.scene.add(this.rig.root);
     this.colors = colors;
+    // (what setupMeshes and animate set, the same for every soldier from
+    // the start: a bow's string and arrow, the way his body faces)
+    this.weaponMesh = this.shieldMesh = this.backMesh = null;
+    this.strings = this.nocked = this.backStrings = null;
+    this.stringStraight = false;
+    this.stringAt = new THREE.Vector3();
+    this.bodyYaw = this.yaw;
+    this.seatTurn = 0;
+    this._pose = this._poses = this._draw = this._idle = null;
     this.setupMeshes();
     this.walkPhase = Math.random() * 6;
     this.animate(0);
@@ -384,7 +570,7 @@ export class Agent {
   setupMeshes() {
     const r = this.rig;
     const props = this.battle.props;
-    for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh]) if (m) props.remove(m);
+    for (const m of this.carried()) props.remove(m);
     // realistic soldiers carry textured items
     const mat = this.body ? itemMaterial() : null;
     const w = this.weapon;
@@ -392,6 +578,17 @@ export class Agent {
     if (this.body) this.body.attach(this.weaponMesh, w.cls === 'bow' ? 'l' : 'r');
     else if (w.cls === 'bow') r.handL.add(this.weaponMesh);
     else r.wristR.add(this.weaponMesh);
+    this.strings = this.nocked = null;
+    if (w.cls === 'bow') {
+      // its string towards the archer; the string and the arrow on it drawn
+      // with the bow (drawString)
+      this.weaponMesh.rotation.z = Math.PI;
+      this.weaponMesh.updateMatrix();
+      this.strings = this.stringBow(this.weaponMesh, mat);
+      this.nocked = this.carry(this.weaponMesh, arrowGeo('arrow'), mat);
+      this.stringStraight = false;
+      this.drawString(null, false);
+    }
     if (this.shield) {
       const it = ITEMS[this.shield];
       // (a knight's heater painted with his arms: one model for all, the arms
@@ -403,12 +600,37 @@ export class Agent {
     }
     // show an inactive bow / crossbow on the back
     const other = this.weapons.find((id, i) => i !== this.wi && (ITEMS[id].cls === 'bow' || ITEMS[id].cls === 'crossbow'));
+    this.backStrings = null;
     if (other) {
-      this.backMesh = props.add(weaponGeo(ITEMS[other].model), mat);
+      const model = ITEMS[other].model;
+      this.backMesh = props.add(weaponGeo(model), mat);
       this.backMesh.rotation.set(0, HALF_PI, 0.6);
       this.backMesh.position.set(0, 0, -0.04);
       r.backMount.add(this.backMesh);
+      if (ITEMS[other].cls === 'bow') {
+        this.backStrings = this.stringBow(this.backMesh, mat);
+        for (const [k, h] of [[1, this.backStrings[0]], [-1, this.backStrings[1]]]) span(h, bowNock(model, k, SG.b), STRING_NOCK);
+      }
     } else this.backMesh = null;
+  }
+
+  // A carried item of `geo` held by the holder `parent` (in its space).
+  carry(parent, geo, mat) {
+    const h = this.battle.props.add(geo, mat);
+    parent.add(h);
+    h.userData.space = parent.userData.space;
+    return h;
+  }
+
+  // The two stretches of a bow's string (models.js stringGeo), from its
+  // nocks to where they meet (drawString).
+  stringBow(bow, mat) {
+    return [this.carry(bow, stringGeo(), mat), this.carry(bow, stringGeo(), mat)];
+  }
+
+  // The holders of what he carries (props.js).
+  carried() {
+    return [this.weaponMesh, this.shieldMesh, this.backMesh, this.nocked, ...(this.strings || []), ...(this.backStrings || [])].filter(Boolean);
   }
 
   // ---- actions ----------------------------------------------------------------------------
@@ -543,6 +765,8 @@ export class Agent {
     if ((this.ammo[id] || 0) <= 0) return;
     this.ammo[id]--;
     this.battle.fireProjectile(this, w, dirOverride);
+    // (the arrow flies: off the string at once, not when he is next posed)
+    this.drawString(null, false);
     if (w.cls === 'crossbow') this.loaded = false;
     this.setAction('recover', 0.35);
   }
@@ -595,6 +819,11 @@ export class Agent {
     this.hp = 0;
     this.setAction('dead');
     this.couched = false;
+    // (the string let go, the arrow on it gone)
+    this.drawString(null, false);
+    // (he falls from the way his body faces: an archer's feet may be turned
+    // side-on, animateRig)
+    if (!this.horse) this.yaw = this.bodyYaw;
     // He falls away from the blow (or the last one, or one way or the other
     // by his id): on his back when it came from the front, on his face from
     // behind.
@@ -862,64 +1091,81 @@ export class Agent {
 
   // ---- animation ---------------------------------------------------------------------------------
 
+  // The pose table of this soldier's rig (poseTable): its right shoulder
+  // and arm, bending if he has a realistic body.
+  poses() {
+    const r = this.rig;
+    return this._poses || (this._poses = poseTable(r.armR.position, r.armLen, !!this.body));
+  }
+
   rightPose(out) {
     const a = this.action;
     const w = this.weapon;
-    const idle = w.lance ? (this.couched ? POSE.couch : POSE.idleLance) : w.cls === 'spear' ? POSE.idlePole : w.twoHanded ? POSE.idleTwo : POSE.idle;
-    const lerpPose = (p0, p1, t) => {
-      out.q.copy(p0.q).slerp(p1.q, t);
-      out.wrist = p0.wrist + (p1.wrist - p0.wrist) * t;
-      out.twist = (p0.twist || 0) + ((p1.twist || 0) - (p0.twist || 0)) * t;
-      out.pitch = (p0.pitch || 0) + ((p1.pitch || 0) - (p0.pitch || 0)) * t;
-    };
+    const tab = this.poses();
+    const set = w.cls === 'spear' ? tab.pole : w.twoHanded ? tab.two : tab.one;
+    let idle = set.idle;
+    if (w.lance) idle = this.couched ? tab.couch : this.horse ? tab.rideLance : tab.idleLance;
+    else if (set === tab.one && (this.horse || w.cls === 'throw')) idle = tab.upright;
+    else if (w.twoHanded) {
+      // (point down at rest, on the shoulder on the move or on a horse)
+      const sp = this.horse ? 9 : Math.hypot(this.vel.x, this.vel.z);
+      idle = this._idle || (this._idle = { q: new THREE.Quaternion() });
+      blendPose(idle, set.idle, set.carry, smoothstep(0.4, 1.4, sp));
+    }
     if (w.cls === 'bow') {
-      if (a.s === 'draw') lerpPose(POSE.bowRest, POSE.bowDraw, ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
-      else if (a.s === 'aim') lerpPose(POSE.bowDraw, POSE.bowDraw, 0);
-      else lerpPose(POSE.bowRest, POSE.lowered, a.s === 'recover' ? Math.min(1, a.t / 0.35) : 1);
+      blendPose(out, tab.bowRest, tab.bowRest, 0);
       return;
     }
     if (w.cls === 'crossbow') {
-      if (a.s === 'reload') lerpPose(POSE.xbowReload, POSE.xbowReload, 0);
-      else if (a.s === 'aim' || a.s === 'recover') lerpPose(POSE.xbow, POSE.xbow, 0);
-      else lerpPose(POSE.xbowReload, POSE.xbow, 0.4);
+      if (a.s === 'reload') blendPose(out, tab.xbowReload, tab.xbowReload, 0);
+      else if (a.s === 'aim' || a.s === 'recover') blendPose(out, tab.xbow, tab.xbow, 0);
+      else blendPose(out, tab.xbowRest, tab.xbowRest, 0);
       return;
     }
     if (w.cls === 'throw') {
-      if (a.s === 'draw') lerpPose(POSE.idle, POSE.ready.overhead, ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
-      else if (a.s === 'aim') lerpPose(POSE.ready.overhead, POSE.ready.overhead, 0);
-      else if (a.s === 'recover') lerpPose(POSE.strike.overhead, POSE.idle, Math.min(1, a.t / 0.35));
-      else lerpPose(POSE.idle, POSE.idle, 0);
+      if (a.s === 'draw') blendPose(out, idle, set.ready.overhead, ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
+      else if (a.s === 'aim') blendPose(out, set.ready.overhead, set.ready.overhead, 0);
+      else if (a.s === 'recover') blendPose(out, set.strike.overhead, idle, Math.min(1, a.t / 0.35));
+      else blendPose(out, idle, idle, 0);
       return;
     }
-    const dir = a.dir || 'right';
+    const dir = set.ready[a.dir] ? a.dir : w.cls === 'spear' ? 'thrust' : 'right';
+    const p = Math.min(1, a.t / Math.max(0.01, a.dur));
     switch (a.s) {
       case 'windup':
-        lerpPose(idle, POSE.ready[dir], ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
+        blendPose(out, idle, set.ready[dir], ease(p));
+        // (a pole stood on the ground lifted off it first)
+        out.ground = idle.ground * (1 - smoothstep(0, 0.25, p));
         break;
       case 'hold':
-        lerpPose(POSE.ready[dir], POSE.ready[dir], 0);
+        blendPose(out, set.ready[dir], set.ready[dir], 0);
         out.twist += Math.sin(a.t * 30) * 0.01;
         break;
       case 'swing':
-        lerpPose(POSE.ready[dir], POSE.strike[dir], ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
+        blendPose(out, set.ready[dir], set.strike[dir], ease(p));
         break;
       case 'recover':
-        lerpPose(POSE.strike[dir], idle, ease(Math.min(1, a.t / Math.max(0.01, a.dur))));
+        // (a pole drawn back to its guard first, then stood on the ground:
+        // its butt end not swept through him)
+        if (w.cls !== 'spear') blendPose(out, set.strike[dir], idle, ease(p));
+        else if (p < 0.5) blendPose(out, set.strike[dir], set.ready[dir], ease(2 * p));
+        else blendPose(out, set.ready[dir], idle, ease(2 * p - 1));
+        out.ground = idle.ground * smoothstep(0.6, 1, p);
         break;
       case 'bounce':
-        lerpPose(POSE.ready[dir] || idle, idle, Math.min(1, a.t / Math.max(0.01, a.dur)));
+        blendPose(out, set.ready[dir], idle, p);
         out.pitch -= 0.15 * (1 - a.t / a.dur);
         break;
       case 'block':
-        if (this.activeShield()) lerpPose(idle, idle, 0);
-        else lerpPose(idle, POSE.block[a.blockDir || 'up'], Math.min(1, a.t / T.blockRaise));
+        if (this.activeShield()) blendPose(out, idle, idle, 0);
+        else blendPose(out, idle, set.block[a.blockDir || 'up'], Math.min(1, a.t / T.blockRaise));
         break;
       case 'stun':
-        lerpPose(idle, idle, 0);
+        blendPose(out, idle, idle, 0);
         out.pitch = -0.2 * (1 - a.t / Math.max(0.01, a.dur));
         break;
       default:
-        lerpPose(idle, idle, 0);
+        blendPose(out, idle, idle, 0);
     }
   }
 
@@ -952,21 +1198,28 @@ export class Agent {
     root.position.copy(lie.pelvis).applyQuaternion(root.quaternion).negate().add(p);
   }
 
-  // The procedural body lying (the low graphics), `w` of the way there: its
-  // torso and head turned as LIE's spine and head, its straight limbs
-  // pointed at where LIE puts the wrists and ankles, their ends on the ground.
+  // The procedural body lying (the low graphics), `w` of the way there from
+  // how he stood as he died: its torso and head turned as LIE's spine and
+  // head, its straight limbs pointed at where LIE puts the wrists and
+  // ankles, their ends on the ground (an arm drawn shorter or longer, to a
+  // bowstring or a haft, back to its length).
   lieRig(w) {
     const r = this.rig;
     const lie = this.lie;
     const L = LIE[lie.variant];
-    r.torso.rotation.copy(lieTurn(L.spine, lie.mirror * w, F.e));
-    r.neck.rotation.copy(lieTurn(L.head, lie.mirror * w, F.e));
     if (!lie.rig) {
       // (once: the limbs' rotations lying)
       const terrain = this.battle.terrain;
       const torso = F.q.setFromEuler(lieTurn(L.spine, lie.mirror, F.e));
-      // (the arms from where they were as he died)
-      lie.rig = { from_l: r.armL.quaternion.clone(), from_r: r.armR.quaternion.clone() };
+      // (the torso, neck and arms from where they were as he died)
+      lie.rig = {
+        from_t: r.torso.quaternion.clone(),
+        from_n: r.neck.quaternion.clone(),
+        from_l: r.armL.quaternion.clone(),
+        from_r: r.armR.quaternion.clone(),
+        scale_l: r.armL.scale.y,
+        scale_r: r.armR.scale.y,
+      };
       for (const [limb, from, len, clear] of [['arm_l', r.armL, 0.6, 0.04], ['arm_r', r.armR, 0.6, 0.04], ['leg_l', r.legL, 0.9, 0.06], ['leg_r', r.legR, 0.9, 0.06]]) {
         const leg = limb[0] === 'l';
         // its root in his own space
@@ -981,10 +1234,15 @@ export class Agent {
         else lie.rig[limb] = armQuat([d.x, d.y, d.z], [0, 0, 1], new THREE.Quaternion()).premultiply(F.q2.copy(torso).invert());
       }
     }
-    r.legL.rotation.set(lie.rig.leg_l[0] * w, 0, lie.rig.leg_l[1] * w);
-    r.legR.rotation.set(lie.rig.leg_r[0] * w, 0, lie.rig.leg_r[1] * w);
-    r.armL.quaternion.slerpQuaternions(lie.rig.from_l, lie.rig.arm_l, w);
-    r.armR.quaternion.slerpQuaternions(lie.rig.from_r, lie.rig.arm_r, w);
+    const k = lie.rig;
+    r.torso.quaternion.slerpQuaternions(k.from_t, F.q.setFromEuler(lieTurn(L.spine, lie.mirror * w, F.e)), w);
+    r.neck.quaternion.slerpQuaternions(k.from_n, F.q.setFromEuler(lieTurn(L.head, lie.mirror * w, F.e)), w);
+    r.legL.rotation.set(k.leg_l[0] * w, 0, k.leg_l[1] * w);
+    r.legR.rotation.set(k.leg_r[0] * w, 0, k.leg_r[1] * w);
+    r.armL.quaternion.slerpQuaternions(k.from_l, k.arm_l, w);
+    r.armR.quaternion.slerpQuaternions(k.from_r, k.arm_r, w);
+    r.armL.scale.y = k.scale_l + (1 - k.scale_l) * w;
+    r.armR.scale.y = k.scale_r + (1 - k.scale_r) * w;
   }
 
   // As his fall begins, the weapon he held and his shield (and what he
@@ -1082,8 +1340,14 @@ export class Agent {
       if (!this.body) this.lieRig(ease(this.fallT));
       return;
     }
+    const w = this.weapon;
+    const bow = w.cls === 'bow';
+    const draw = this.drawPose(dt);
     let bob = 0;
     let twistBase;
+    // the way his body faces (on foot an archer turns his feet as he raises
+    // the bow)
+    let bodyYaw;
     if (this.horse) {
       const h = this.horse;
       const hr = h.rig;
@@ -1111,50 +1375,77 @@ export class Agent {
         root.rotation.set(0, h.yaw, 0);
       }
       r.hips.position.y = 0.92;
-      r.legL.rotation.set(-1.15, 0, 0.42);
-      r.legR.rotation.set(-1.15, 0, -0.42);
+      turnTo(r.legL, -1.15, 0, 0.42);
+      turnTo(r.legR, -1.15, 0, -0.42);
+      bodyYaw = h.yaw;
       twistBase = clamp(wrapAngle(this.aimYaw - h.yaw), -1.5, 1.5);
     } else {
+      bodyYaw = this.yaw + FEET_TURN * draw.side;
       root.position.copy(this.pos);
-      root.rotation.set(0, this.yaw, 0);
+      turnTo(root, 0, bodyYaw, 0);
       const sp = Math.hypot(this.vel.x, this.vel.z);
       this.walkPhase += sp * dt * 2.4;
       const amp = Math.min(0.75, sp * 0.18);
       // walking backwards / sideways: swing legs relative to motion
       const moveYaw = Math.atan2(this.vel.x, this.vel.z);
-      const rel = wrapAngle(moveYaw - this.yaw);
+      const rel = wrapAngle(moveYaw - bodyYaw);
       const fwd = Math.cos(rel);
       const side = Math.sin(rel);
       const s = Math.sin(this.walkPhase);
-      r.legL.rotation.set(s * amp * fwd, 0, s * amp * side * 0.5);
-      r.legR.rotation.set(-s * amp * fwd, 0, -s * amp * side * 0.5);
+      turnTo(r.legL, s * amp * fwd, 0, s * amp * side * 0.5);
+      turnTo(r.legR, -s * amp * fwd, 0, -s * amp * side * 0.5);
       r.hips.position.y = 0.92 - Math.abs(Math.cos(this.walkPhase)) * 0.035 * amp;
-      twistBase = clamp(wrapAngle(this.aimYaw - this.yaw), -1.2, 1.2);
+      twistBase = clamp(wrapAngle(this.aimYaw - bodyYaw), -1.2, 1.2);
     }
+    this.bodyYaw = bodyYaw;
 
-    const pose = this._pose || (this._pose = { q: new THREE.Quaternion(), wrist: 0, twist: 0, pitch: 0 });
+    const pose = this._pose || (this._pose = { q: new THREE.Quaternion(), wrist: 0, twist: 0, pitch: 0, ext: 1, ground: 0, free: 0 });
     this.rightPose(pose);
     const ranged = this.isRanged();
-    r.torso.rotation.y = twistBase + pose.twist;
-    r.torso.rotation.x = pose.pitch - this.aimPitch * (ranged ? 0.75 : 0.3);
+    let turn = twistBase + pose.twist;
+    // an archer turns side-on to the target (on a horse as far as his hips
+    // in the saddle and his spine let him: the hips their share, and what the
+    // spine cannot take)
+    if (bow) {
+      const aim = this.horse ? wrapAngle(this.aimYaw - bodyYaw) : twistBase;
+      const most = this.horse ? SEAT_TURN + SPINE_TURN : Infinity;
+      turn += (clamp(aim + SIDE, -most, most) - turn) * draw.side;
+    }
+    const seat = Math.min(SEAT_TURN, Math.max(Math.abs(turn) * SEAT_SHARE, Math.abs(turn) - SPINE_TURN));
+    this.seatTurn = this.horse && bow ? Math.sign(turn) * seat * draw.side : 0;
+    // (and leans away from it to aim up)
+    turnTo(r.torso, pose.pitch - this.aimPitch * (ranged ? 0.75 : 0.3) * (1 - draw.side), turn, this.aimPitch * LEAN * draw.side);
     // the head turns to the foe he means to fight (while fighting the torso
     // already turns that way), not further than over a shoulder. Where he
     // looks is eased relative to the body, which turns smoothly, not to the
     // torso, which turns at once to a new aim.
-    let look = r.torso.rotation.y;
+    let look = turn;
     const foe = !this.isPlayer && this.ai.target;
     if (foe && foe.alive && foe.pos.distanceToSquared(this.pos) < LOOK_DIST * LOOK_DIST) {
-      look = wrapAngle(Math.atan2(foe.pos.x - this.pos.x, foe.pos.z - this.pos.z) - (this.horse ? this.horse.yaw : this.yaw));
+      look = wrapAngle(Math.atan2(foe.pos.x - this.pos.x, foe.pos.z - this.pos.z) - bodyYaw);
     }
     this.look += wrapAngle(look - this.look) * Math.min(1, dt * 3);
-    this.lookYaw = clamp(wrapAngle(this.look - r.torso.rotation.y), -1.1, 1.1);
-    r.neck.rotation.order = 'YXZ';
-    r.neck.rotation.set(-this.aimPitch * 0.35, this.lookYaw, 0);
-    r.armR.quaternion.copy(pose.q);
-    r.wristR.rotation.x = pose.wrist;
+    this.lookYaw = clamp(wrapAngle(this.look - turn), -1.1, 1.1);
+    // (an archer looks along his arrow, archerRig)
+    let nx = -this.aimPitch * 0.35;
+    let ny = this.lookYaw;
+    const toAim = bow && draw.raise >= 1e-3 && this.aimInTorso(AIM);
+    if (toAim && draw.side > 0) {
+      nx += (-Math.asin(clamp(toAim.y, -1, 1)) - nx) * draw.side;
+      ny += (Math.atan2(toAim.x, toAim.z) - ny) * draw.side;
+    }
+    turnTo(r.neck, nx, ny, 0);
+    quatTo(r.armR, pose.q);
+    r.armR.scale.y = 1;
+    r.armL.scale.y = 1;
+    turnTo(r.wristR, pose.wrist, 0, 0);
+    // (the realistic body's hand nearer the shoulder: its elbow bends)
+    r.handR.position.y = -r.armLen * (this.body ? pose.ext : 1);
+    // a pole stood on the ground slides down in the hand (the realistic
+    // body's as it poses its hand: SkinnedHuman.arms)
+    if (!bow && !this.body) this.weaponMesh.position.z = pose.ground && !this.horse ? -pose.ground * this.groundSlide() : 0;
 
     // left arm / shield
-    const w = this.weapon;
     const sh = this.activeShield();
     if (this.shieldMesh) {
       let sp;
@@ -1167,28 +1458,181 @@ export class Agent {
       m.rotation.y += (sp.rotY - m.rotation.y) * k;
       m.rotation.x += (sp.rotX - m.rotation.x) * k;
     }
-    if (w.cls === 'bow') {
-      r.armL.quaternion.copy(LEFT.bow);
-    } else if (w.cls === 'crossbow') {
-      r.armL.quaternion.copy(LEFT.xbow);
+    if (bow) {
+      this.archerRig(draw);
     } else if (sh) {
       // point the left arm at the shield grip
       tmpV.copy(r.shieldMount.position).sub(r.armL.position);
       armQuat([tmpV.x, tmpV.y, tmpV.z], [0, 0, 1], tmpQ);
-      r.armL.quaternion.copy(tmpQ);
-    } else if (w.twoHanded || w.cls === 'spear') {
-      // left hand follows the right hand
-      tmpV2.copy(r.handR.position).applyQuaternion(pose.q).add(r.armR.position);
-      if (pose.wrist) tmpV2.addScaledVector(tmpV.set(0, 0, 0.25).applyQuaternion(pose.q), 0);
-      tmpV.copy(tmpV2).sub(r.armL.position);
-      armQuat([tmpV.x, tmpV.y, tmpV.z], [0, 0, 1], tmpQ);
-      r.armL.quaternion.copy(tmpQ);
+      quatTo(r.armL, tmpQ);
     } else if (w.lance && this.horse) {
-      r.armL.quaternion.copy(LEFT.lance);
-    } else {
-      tmpQ2.copy(LEFT.free);
-      r.armL.quaternion.copy(tmpQ2);
+      quatTo(r.armL, LEFT.lance);
+    } else if (this.body || !secondRanges(w) || pose.free > 0.5 || !this.secondRig()) {
+      // (the realistic body places its second hand itself)
+      quatTo(r.armL, LEFT.free);
     }
+  }
+
+  // How far the archer has raised his bow (raise), drawn its string (pull:
+  // 0 at the bow, 1 at his jaw) and turned side-on (side), eased towards
+  // where his action puts them; whether an arrow is on the string (nocked:
+  // drawing and aiming, from when his drawing hand has the string until he
+  // shoots). He stays side-on between shots while he stands (STANCE_HOLD).
+  drawPose(dt) {
+    const d = this._draw || (this._draw = { raise: 0, pull: 0, side: 0, turn: 0, stance: 0, nocked: false });
+    const a = this.action;
+    const bow = this.weapon.cls === 'bow';
+    const drawing = bow && (a.s === 'draw' || a.s === 'aim');
+    const k = Math.min(1, dt * DRAW_EASE);
+    let raise = 0;
+    let pull = 0;
+    if (bow) {
+      if (a.s === 'draw') {
+        const p = a.t / Math.max(0.01, a.dur);
+        raise = smoothstep(0, DRAW_RAISE, p);
+        pull = smoothstep(0.3, 1, p);
+      } else if (a.s === 'aim') {
+        raise = 1;
+        pull = 1;
+      } else if (a.s === 'recover') {
+        // (the string let go, the hand stays back as the bow comes down)
+        raise = 1 - smoothstep(0.3, 1, a.t / Math.max(0.01, a.dur));
+        pull = 1;
+      }
+    }
+    d.raise += (raise - d.raise) * k;
+    d.nocked = drawing && d.raise >= NOCK_AT;
+    // (he draws once the arrow is on the string)
+    if (a.s === 'draw' && !d.nocked) pull = 0;
+    d.pull += (pull - d.pull) * k;
+    if (drawing || (bow && a.s === 'recover')) d.stance = STANCE_HOLD;
+    else d.stance = bow && (this.horse || this.vel.lengthSq() < 1) ? Math.max(0, d.stance - dt) : 0;
+    // (turning at a steady rate, smoothly started and ended)
+    d.turn = clamp(d.turn + (d.stance > 0 ? dt : -dt) * SIDE_RATE, 0, 1);
+    d.side = smoothstep(0, 1, d.turn);
+    return d;
+  }
+
+  // The unit way to his target (aimYaw, aimPitch) in the torso's space.
+  aimInTorso(out) {
+    const r = this.rig;
+    out.set(Math.sin(this.aimYaw) * Math.cos(this.aimPitch), Math.sin(this.aimPitch), Math.cos(this.aimYaw) * Math.cos(this.aimPitch));
+    return out.applyQuaternion(tmpQ.copy(r.root.quaternion).multiply(r.torso.quaternion).invert());
+  }
+
+  // The archer's arms on the pose rig (drawPose): he looks along the arrow,
+  // his bow arm from hanging to straight at the target, the bow upright
+  // (canted); his drawing arm (the low graphics' straight one, made shorter
+  // or longer) from hanging to the string at its nocking point, drawing it
+  // to the anchor by his jaw, and the string to his hand. (The realistic
+  // body places its hands itself: SkinnedHuman.archer.)
+  archerRig(d) {
+    const r = this.rig;
+    if (d.raise < 1e-3) {
+      // (at rest: the bow lowered)
+      quatTo(r.armL, LEFT.bowRest);
+      if (this.body) return;
+      turnTo(this.weaponMesh, BOW_LOWER, 0, Math.PI);
+      this.drawString(null, false);
+      return;
+    }
+    // (the way to the target in the torso's space: animateRig)
+    const T = AIM;
+    // the bow upright, its top canted to his right
+    const up = F.b.set(0, 1, 0).addScaledVector(T, -T.y).normalize();
+    const right = F.c.crossVectors(T, up);
+    up.multiplyScalar(Math.cos(BOW_CANT)).addScaledVector(right, Math.sin(BOW_CANT));
+    armQuat([T.x, T.y, T.z], [up.x, up.y, up.z], F.q);
+    quatTo(r.armL, F.q2.copy(LEFT.bowRest).slerp(F.q, d.raise));
+    if (this.body) return;
+    // (lowered, the bow points down ahead)
+    const bow = this.weaponMesh;
+    turnTo(bow, BOW_LOWER * (1 - d.raise), 0, Math.PI);
+    // the anchor by his jaw (once the neck's turn is in its quaternion): the
+    // drawing hand goes there (the straight arm, made shorter, cannot reach
+    // the string by the bow first)
+    const jaw = F.c.copy(JAW_LOW).applyQuaternion(r.neck.quaternion).add(r.neck.position).sub(r.armR.position);
+    const len = jaw.length();
+    armQuat([jaw.x, jaw.y, jaw.z], [0, 0, 1], F.q);
+    quatTo(r.armR, F.q2.copy(r.armR.quaternion).slerp(F.q, d.raise));
+    r.armR.scale.y = 1 + (len / r.armLen - 1) * d.raise;
+    // the string to the hand, in the bow's space: taken as the hand comes,
+    // the arrow on it once the hand is there (nocked)
+    const take = d.nocked ? 1 : smoothstep(LOW_TAKE, NOCK_AT, d.raise);
+    if (!(take > 0) || !(this.action.s === 'draw' || this.action.s === 'aim')) {
+      this.drawString(null, false);
+      return;
+    }
+    const hand = F.b.set(0, -r.armLen * r.armR.scale.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position);
+    hand.sub(r.armL.position).applyQuaternion(F.q.copy(r.armL.quaternion).invert()).sub(r.handL.position).sub(bow.position);
+    this.drawString(hand.applyQuaternion(F.q.copy(bow.quaternion).invert()).lerp(STRING_NOCK, 1 - take), d.nocked);
+  }
+
+  // The held bow's string drawn to `meet` (in the bow's own space; null:
+  // straight between its nocks) and the nocked arrow on it there, through
+  // its rest on the bow hand (shown only while `nocked`).
+  drawString(meet, nocked) {
+    if (!this.strings) return;
+    // (as it is: straight, or drawn to where it is with the arrow as it is)
+    const at = this.stringAt;
+    if (meet ? !this.stringStraight && this.nocked.visible === nocked && meet.distanceToSquared(at) < 1e-8 : this.stringStraight && !nocked) return;
+    this.stringStraight = !meet;
+    at.copy(meet || STRING_NOCK);
+    const model = this.weapon.model;
+    span(this.strings[0], bowNock(model, 1, SG.b), at);
+    span(this.strings[1], bowNock(model, -1, SG.b), at);
+    const arrow = this.nocked;
+    arrow.visible = nocked;
+    if (nocked) {
+      const dir = SG.b.subVectors(ARROW_REST, at).normalize();
+      arrow.quaternion.setFromUnitVectors(Z, dir);
+      arrow.position.copy(at).addScaledVector(dir, ARROW_NOCK.arrow);
+    }
+  }
+
+  // The low graphics' second hand on a two-handed weapon (grips.js SECOND):
+  // the straight left arm at a point of its axis about its length away
+  // (LOW_REACH: the arm made that much shorter or longer). False if there is
+  // none.
+  secondRig() {
+    const r = this.rig;
+    // the weapon's axis in the torso's space: from the wrist along the held item
+    const p = F.a.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position);
+    const dir = F.b.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(r.armR.quaternion);
+    let s = NaN;
+    for (const [want, from, to] of secondRanges(this.weapon)) {
+      s = rigidGrip(r.armL.position, p, dir, from, to, want, r.armLen * LOW_REACH[0], r.armLen * LOW_REACH[1]);
+      if (!Number.isNaN(s)) break;
+    }
+    if (Number.isNaN(s)) return false;
+    p.addScaledVector(dir, s).sub(r.armL.position);
+    armQuat([p.x, p.y, p.z], [dir.x, dir.y, dir.z], tmpQ);
+    quatTo(r.armL, tmpQ);
+    r.armL.scale.y = p.length() / r.armLen;
+    return true;
+  }
+
+  // How far a held pole slides down in the hand (up if less than 0) for its
+  // butt to stand on the ground (m): the hand's height over his feet, the
+  // pole's slope.
+  groundSlide() {
+    const r = this.rig;
+    const hand = tmpV.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position).applyQuaternion(r.torso.quaternion);
+    const q = tmpQ.copy(r.torso.quaternion).multiply(r.armR.quaternion);
+    const up = tmpV2.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(q).y;
+    return this.slideFor(r.hips.position.y + hand.y, up);
+  }
+
+  // As groundSlide, the hand `y` m over his feet, the pole rising `up` m a
+  // metre along it (the realistic body's hand is where the clips sway it to:
+  // SkinnedHuman.arms). (It slides down only as it comes upright, SLIDE_UP:
+  // not swept along through him, its butt far behind the hand, as he raises
+  // it or levels it.)
+  slideFor(y, up) {
+    const geo = this.weaponMesh.userData.prop && this.weaponMesh.userData.prop.geo;
+    if (!geo || up <= SLIDE_UP[0]) return 0;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    return smoothstep(SLIDE_UP[0], SLIDE_UP[1], up) * ((y - BUTT_CLEAR) / up + geo.boundingBox.min.z);
   }
 
   // Head position (for camera, projectiles and hit tests).
@@ -1201,7 +1645,7 @@ export class Agent {
   dispose() {
     this.disposed = true;
     const scene = this.battle.scene;
-    for (const m of [this.weaponMesh, this.shieldMesh, this.backMesh, this.body && this.body.helmet]) if (m) this.battle.props.remove(m);
+    for (const m of [...this.carried(), this.body && this.body.helmet]) if (m) this.battle.props.remove(m);
     for (const root of [this.rig.root, this.horse && this.horse.rig.root]) {
       if (!root) continue;
       scene.remove(root);

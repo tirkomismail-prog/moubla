@@ -509,7 +509,9 @@ export function buildHuman(spec) {
   backMount.position.set(0, 0.35, -0.16);
   torso.add(backMount);
   if (show) rigidSkin(root, parts, `human:${key.join('|')}`, HUMAN_SPHERE);
-  return { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount };
+  // (armLen: from the shoulder to the hand; character.js fitDriver sets the
+  // realistic body's)
+  return { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount, armLen: 0.6 };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,14 +624,15 @@ export function weaponGeo(model) {
       case 'bow':
       case 'bow_short':
       case 'bow_long': {
-        const L = model === 'bow_long' ? 0.8 : model === 'bow_short' ? 0.5 : 0.62;
+        // (without its string: props of stringGeo, drawn to the drawing
+        // hand, see bowNock)
+        const L = BOW_LIMB[model];
         const col = model === 'bow_short' ? '#6b3a1a' : WOOD;
         b.cyl(0.02, 0.02, 0.16, 8, DARK_LEATHER, [0, 0, 0], TIP);
         for (const k of [1, -1]) {
           b.limb([0, 0, 0.06 * k], [0, -0.035, (L * 0.55 + 0.06) * k], 0.02, 0.016, 6, col);
-          b.limb([0, -0.035, (L * 0.55 + 0.06) * k], [0, -0.13, (L + 0.06) * k], 0.016, 0.01, 6, col);
+          b.limb([0, -0.035, (L * 0.55 + 0.06) * k], [0, -BOW_BRACE, (L + 0.06) * k], 0.016, 0.01, 6, col);
         }
-        b.box(0.004, 0.004, L * 2 + 0.12, '#dddddd', [0, -0.13, 0]);
         break;
       }
       case 'crossbow':
@@ -648,6 +651,42 @@ export function weaponGeo(model) {
     return b.build();
   });
 }
+
+// A bow's limbs (from the grip, m), and how far its string stands behind
+// the grip (the brace height: the limbs' tips, the nocks, are that far back,
+// -Y). The bow is held with -Y towards the archer, +Z up.
+const BOW_LIMB = { bow: 0.62, bow_short: 0.5, bow_long: 0.8 };
+export const BOW_BRACE = 0.13;
+
+// The upper (k = 1) or lower (k = -1) nock of a bow model, where its string
+// is tied, in its own space.
+export function bowNock(model, k, out = new THREE.Vector3()) {
+  return out.set(0, -BOW_BRACE, (BOW_LIMB[model] + 0.06) * k);
+}
+
+// The nocking point of a braced bow's string, and the arrow's rest on the
+// bow hand (on the knuckle of its index finger, on the left of the bow: the
+// archer's right is +X), in the bow's own space.
+export const STRING_NOCK = new THREE.Vector3(0, -BOW_BRACE, 0.06);
+// a bow held lowered (by the hanging arm) points this far down; drawn, its
+// top is canted to the archer's right (rad)
+export const BOW_LOWER = 0.6;
+export const BOW_CANT = 0.15;
+export const ARROW_REST = new THREE.Vector3(-0.026, 0, 0.06);
+
+// A bowstring (a stretch of it): unit length along +Z from the origin, to be
+// scaled along Z to the length it spans (props.js draws it instanced).
+export function stringGeo() {
+  return cached('string', () => {
+    const g = new GeoBuilder().box(0.004, 0.004, 1, '#dddddd', [0, 0, 0.5]).build();
+    // (too thin for a shadow)
+    g.userData.noShadow = true;
+    return g;
+  });
+}
+
+// how far behind an arrow's tip its nock is, from its origin (arrowGeo)
+export const ARROW_NOCK = { arrow: 0.73, bolt: 0.37 };
 
 // Arrows and bolts pointing along +Z (the tip a little ahead of the origin).
 export function arrowGeo(kind) {

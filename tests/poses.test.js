@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { groundFit, fitNormal, layFlat, footprint, lowest } from '../src/battle/grips.js';
+import { groundFit, fitNormal, layFlat, footprint, lowest, handOnAxis, secondGrip, rigidGrip } from '../src/battle/grips.js';
 
 // a plane rising `deg` degrees towards the heading `dir` (rad, from +z towards +x)
 const plane = (deg, dir, h0 = 3) => {
@@ -165,5 +165,74 @@ test('a weapon and a shield dropped by the same body do not lie through each oth
       p.set(items[i], heightAt(items[i], items[i + 1]) + 0.03, items[i + 1]).applyMatrix4(inv);
       assert.ok(Math.hypot(p.x, p.y) > 0.33, `axe at ${items[i]}, ${items[i + 1]} under the shield`);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The second hand on a held weapon (grips.js secondGrip, handOnAxis)
+// ---------------------------------------------------------------------------
+
+// the realistic body's left arm (character.js t.limbs.arm_l a + b) and its
+// hand's grip point behind and beside the wrist (t.hands.l.grip)
+const ARM = 0.512;
+const BACK = 0.09;
+const SIDE = 0.028;
+const hand = () => ({ grip: new THREE.Vector3(), wrist: new THREE.Vector3(), len: new THREE.Vector3(), knuck: new THREE.Vector3(), palm: new THREE.Vector3() });
+const SHOULDER = new THREE.Vector3(0.184, 1.386, 0.02);
+const offAxis = (q, p, dir) => q.clone().sub(p).addScaledVector(dir, -q.clone().sub(p).dot(dir)).length();
+
+test('the second hand takes the haft where it is wanted, on the axis, its wrist within reach', () => {
+  // a spear held low at the right hip, pointing forward (and a little up)
+  const p = new THREE.Vector3(-0.1, 1.05, 0.15);
+  const dir = new THREE.Vector3(0, 0.15, 1).normalize();
+  const s = secondGrip(SHOULDER, p, dir, 0.12, 0.95, 0.2, ARM, BACK, SIDE);
+  assert.equal(s, 0.2);
+  const h = handOnAxis(SHOULDER, p, dir, s, BACK, SIDE, hand());
+  assert.ok(offAxis(h.grip, p, dir) < 1e-9);
+  assert.ok(h.wrist.distanceTo(SHOULDER) <= ARM, `wrist ${h.wrist.distanceTo(SHOULDER)} from the shoulder`);
+  // its frame: unit and square; the knuckles along the haft (slanted a little at most),
+  // the index towards the point, the hand reaching away from the shoulder
+  for (const v of [h.len, h.knuck, h.palm]) assert.ok(Math.abs(v.length() - 1) < 1e-9);
+  assert.ok(Math.abs(h.len.dot(h.knuck)) < 1e-9 && Math.abs(h.palm.dot(h.len)) < 1e-9 && Math.abs(h.palm.dot(h.knuck)) < 1e-9);
+  assert.ok(h.knuck.dot(dir) > Math.cos(0.5) - 1e-9);
+  assert.ok(h.len.dot(h.grip.clone().sub(SHOULDER)) > 0);
+  // the grip point: `BACK` along the hand from the wrist and `SIDE` towards the palm
+  const g = h.wrist.clone().addScaledVector(h.len, BACK).addScaledVector(h.palm, SIDE);
+  assert.ok(g.distanceTo(h.grip) < 1e-9);
+});
+
+test('out of reach where it is wanted, the second hand takes the nearest point it reaches', () => {
+  // a spear thrust forward at shoulder height from the right shoulder
+  const p = new THREE.Vector3(-0.18, 1.35, 0.6);
+  const dir = new THREE.Vector3(0, 0, 1);
+  // forward of the right hand it is out of reach; behind it, it reaches
+  assert.ok(Number.isNaN(secondGrip(SHOULDER, p, dir, 0.12, 0.95, 0.45, ARM, BACK, SIDE)));
+  const s = secondGrip(SHOULDER, p, dir, -0.5, -0.05, -0.05, ARM, BACK, SIDE);
+  assert.ok(s < -0.05 && s > -0.5, `s ${s}`);
+  const h = handOnAxis(SHOULDER, p, dir, s, BACK, SIDE, hand());
+  assert.ok(Math.abs(h.wrist.distanceTo(SHOULDER) - ARM) < 1e-4, `at the edge of the reach: ${h.wrist.distanceTo(SHOULDER)}`);
+  // a haft wholly beyond reach: none
+  assert.ok(Number.isNaN(secondGrip(SHOULDER, new THREE.Vector3(-1.2, 1.3, 0.5), dir, -0.5, 1, 0.3, ARM, BACK, SIDE)));
+});
+
+test('a straight arm (the low graphics) takes the haft within its lengths, or not at all', () => {
+  const shoulder = new THREE.Vector3(0.28, 1.45, 0);
+  const p = new THREE.Vector3(-0.1, 1.2, 0.35);
+  const dir = new THREE.Vector3(0.2, 0.1, 1).normalize();
+  const at = (s) => p.clone().addScaledVector(dir, s).distanceTo(shoulder);
+  // exactly its length
+  const s = rigidGrip(shoulder, p, dir, -0.5, 1, 0.3, 0.6, 0.6);
+  assert.ok(!Number.isNaN(s));
+  assert.ok(Math.abs(at(s) - 0.6) < 1e-9);
+  assert.ok(Number.isNaN(rigidGrip(shoulder, p, dir, -0.5, 1, 0.3, 0.2, 0.2)));
+  // (and only within [from, to])
+  const t = rigidGrip(shoulder, p, dir, -0.5, s - 0.01, 0.3, 0.6, 0.6);
+  assert.ok(Number.isNaN(t) || t <= s - 0.01);
+  // within a range of lengths: where wanted if it lies so, else the nearest point that does
+  for (const want of [-0.4, 0, 0.3, 0.8]) {
+    const u = rigidGrip(shoulder, p, dir, -0.5, 1, want, 0.5, 0.66);
+    assert.ok(!Number.isNaN(u) && at(u) >= 0.5 - 1e-9 && at(u) <= 0.66 + 1e-9, `${want}: ${u} at ${at(u)}`);
+    if (at(want) >= 0.5 && at(want) <= 0.66) assert.ok(Math.abs(u - want) < 1e-9);
+    for (let v = -0.5; v <= 1; v += 0.01) if (at(v) >= 0.5 && at(v) <= 0.66) assert.ok(Math.abs(v - want) >= Math.abs(u - want) - 1e-9);
   }
 });
