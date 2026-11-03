@@ -8,7 +8,7 @@ const BLOCK_DIRS = ['left', 'right', 'up', 'down'];
 // a horse archer shoots at a target no farther to his right than this (rad)
 // from the horse's way: beyond it his hips and spine cannot turn him
 // side-on to it (agent.js SEAT_TURN, SPINE_TURN)
-const BOW_RIGHT = 0.25;
+const BOW_RIGHT = 0.2;
 
 function angleTo(a, x, z) {
   return Math.atan2(x - a.pos.x, z - a.pos.z);

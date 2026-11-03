@@ -73,13 +73,14 @@ const ONE = {
     down: { arm: [-0.1, -0.5, 0.8], blade: [0.7, 0.6, 0.2] },
   },
 };
-// A spear or a fork: upright by the right foot at rest; in a fight held low
-// at the hip and thrust, or overhand, the second hand ahead of the right
-// (grips.js SECOND) where it reaches. (Held at the hip, the right hand stays
-// out by his side, its butt end crossing behind it outside his hip, not
-// through his belly.)
+// A spear or a fork: upright by the right foot at rest (its butt a little
+// ahead of the foot and out, clear of a long coat's skirt as he shifts his
+// weight); in a fight held low at the hip and thrust, or overhand, the second
+// hand ahead of the right (grips.js SECOND) where it reaches. (Held at the
+// hip, the right hand stays out by his side, its butt end crossing behind it
+// outside his hip, not through his belly.)
 const POLE = {
-  idle: { hand: [-0.35, 0.28, 0.13], blade: [-0.06, 1, 0.05], ground: 1, free: 1 },
+  idle: { hand: [-0.36, 0.28, 0.18], blade: [0.017, 1, -0.05], ground: 1, free: 1 },
   ready: {
     thrust: { hand: [-0.27, 0.22, 0.16], blade: [0.3, 0.1, 1], twist: -0.3 },
     overhead: { hand: [-0.24, 0.82, 0], blade: [0.1, -0.22, 1], twist: -0.2 },
@@ -128,7 +129,7 @@ const OTHER = {
   upright: { hand: [-0.33, 0.32, 0.16], blade: [0.06, 1, 0.35] },
   // a lance on foot stood on the ground by the right foot; upright or
   // couched on a horse
-  idleLance: { hand: [-0.35, 0.28, 0.13], blade: [-0.06, 1, 0.08], ground: 1 },
+  idleLance: { hand: [-0.36, 0.28, 0.18], blade: [0.017, 1, -0.04], ground: 1 },
   rideLance: { arm: [-0.2, -1, 0.15], blade: [0, 1, 0.25] },
   couch: { arm: [-0.28, -0.96, -0.1], blade: [0, 0.02, 1] },
   // a crossbow: aimed with its butt at the cheek, the second hand under its
@@ -1145,12 +1146,13 @@ export class Agent {
         blendPose(out, set.ready[dir], set.strike[dir], ease(p));
         break;
       case 'recover':
-        // (a pole drawn back to its guard first, then stood on the ground:
-        // its butt end not swept through him)
+        // (a pole drawn back to its guard first, then brought upright and
+        // only then slid down to stand on the ground: its butt end not swept
+        // through him or the skirt of his coat)
         if (w.cls !== 'spear') blendPose(out, set.strike[dir], idle, ease(p));
         else if (p < 0.5) blendPose(out, set.strike[dir], set.ready[dir], ease(2 * p));
         else blendPose(out, set.ready[dir], idle, ease(2 * p - 1));
-        out.ground = idle.ground * smoothstep(0.6, 1, p);
+        out.ground = idle.ground * smoothstep(0.85, 1, p);
         break;
       case 'bounce':
         blendPose(out, set.ready[dir], idle, p);
@@ -1630,9 +1632,16 @@ export class Agent {
   // it or levels it.)
   slideFor(y, up) {
     const geo = this.weaponMesh.userData.prop && this.weaponMesh.userData.prop.geo;
-    if (!geo || up <= SLIDE_UP[0]) return 0;
+    const k = this.planted(up);
+    if (!geo || k <= 0) return 0;
     if (!geo.boundingBox) geo.computeBoundingBox();
-    return smoothstep(SLIDE_UP[0], SLIDE_UP[1], up) * ((y - BUTT_CLEAR) / up + geo.boundingBox.min.z);
+    return k * ((y - BUTT_CLEAR) / up + geo.boundingBox.min.z);
+  }
+
+  // How much a pole rising `up` m a metre along it stands on the ground (0..1,
+  // SLIDE_UP), if its pose stands it there.
+  planted(up) {
+    return smoothstep(SLIDE_UP[0], SLIDE_UP[1], up);
   }
 
   // Head position (for camera, projectiles and hit tests).

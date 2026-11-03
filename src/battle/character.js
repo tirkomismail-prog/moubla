@@ -1306,12 +1306,15 @@ export class SkinnedHuman {
       return;
     }
     // right hand: the weapon grip of the pose rig (moved with his shoulder
-    // as the clips sway his body)
+    // as the clips sway his body; a pole stood on the ground turned about
+    // its butt to follow it there)
     const wristQ = worldQuat(r.wristR, A.wristQ);
-    const wristP = A.wristP.setFromMatrixPosition(r.wristR.matrixWorld).add(this.sway(agent, 'r', A.pos));
-    this.placeHand('r', wristP, wristQ, rootQ);
-    // (a pole stood on the ground: its butt there from where the hand is)
+    const wristP = A.wristP.setFromMatrixPosition(r.wristR.matrixWorld);
+    const sway = this.sway(agent, 'r', A.pos);
     const ground = agent.horse ? 0 : agent._pose.ground;
+    if (ground) this.pivot(agent, wristP, wristQ, sway, ground);
+    this.placeHand('r', wristP.add(sway), wristQ, rootQ);
+    // (a pole stood on the ground: its butt there from where the hand is)
     let slide = 0;
     if (ground) {
       const p = A.pos.copy(this.t.hands.r.grip).applyMatrix4(this.bones.hand_r.matrixWorld);
@@ -1349,6 +1352,20 @@ export class SkinnedHuman {
     const r = agent.rig;
     out.setFromMatrixPosition((s === 'l' ? this.bones.upperarm_l : this.bones.upperarm_r).matrixWorld);
     return out.sub(A.sway.setFromMatrixPosition((s === 'l' ? r.armL : r.armR).matrixWorld));
+  }
+
+  // A pole stood on the ground (`ground` of the way: Agent.planted), held at
+  // `wrist` turned `q` as the rig holds it, turned about the point of the
+  // ground its axis meets (in his own space, the ground at his feet) so that
+  // it is held at `wrist` + `sway` instead: its butt stays where it stands as
+  // the clips sway his body.
+  pivot(agent, wrist, q, sway, ground) {
+    const d0 = A.d0.set(0, 0, 1).applyQuaternion(q);
+    const w = ground * agent.planted(d0.y);
+    if (w <= 0) return;
+    const butt = A.butt.copy(wrist).addScaledVector(d0, -wrist.y / d0.y);
+    const d1 = A.d1.copy(wrist).add(sway).sub(butt).normalize();
+    q.premultiply(A.qp.identity().slerp(A.qp2.setFromUnitVectors(d0, d1), w));
   }
 
   // A free hand: by his side standing, swinging with the captured walk when
@@ -1712,7 +1729,7 @@ const scratch = (vs, qs, extra = {}) => {
   return o;
 };
 const U = scratch(['v1', 'v2', 'v3', 'v4', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1), e: new THREE.Euler() });
-const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway'], ['wristQ', 'q', 'q2']);
+const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway', 'd0', 'd1', 'butt'], ['wristQ', 'q', 'q2', 'qp', 'qp2']);
 const S2 = scratch(['p', 'dir', 'sh', 'w'], ['q', 'q2', 'q3'], { h: scratch(['grip', 'wrist', 'len', 'knuck', 'palm'], []) });
 const AR = scratch(['T', 'up', 'right', 'x', 'y', 'jaw', 'g', 'ro', 'v', 's', 'rest', 'grip', 'p', 'at', 'w', 'wh', 'pole', 'pole2', 'meet'],
   ['q', 'aimQ', 'bowQ', 'hq', 'hr', 'q2', 'qh'], { m: new THREE.Matrix4(), bm: new THREE.Matrix4() });
