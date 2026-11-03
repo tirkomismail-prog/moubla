@@ -1256,7 +1256,10 @@ export class Battle {
     }
     if (this.ended) return; // disposed inside step()
     this.updateCamera(dt);
+    // (the processor's time of posing the soldiers: the benchmark reports it)
+    const t0 = performance.now();
     for (const a of this.agents) if (a.alive || a.fallT < 1) a.animate(this.paused ? 0 : dt);
+    this.animMs = performance.now() - t0;
     if (!this.paused) {
       this.fx.update(dt);
       this.terrain.update(this.time, this.camera);

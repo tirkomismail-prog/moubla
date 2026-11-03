@@ -1,7 +1,10 @@
 // Performance benchmark (bench.html): a fixed field battle of ~150 soldiers
 // and ~50 horses, filmed by an orbiting camera, at several graphics presets
-// and internal resolutions. Reports frame times, draw calls and triangles as
-// a table and as JSON to send back to the developer.
+// and internal resolutions, and from behind a soldier in the fight as the
+// player sees it. Reports frame times, draw calls and triangles as a table
+// and as JSON to send back to the developer.
+// bench.html?parts: only the breakdown of the medium preset;
+// bench.html?corpses: the same battle with half the soldiers fallen.
 import * as THREE from 'three';
 import { mulberry32 } from './core/rng.js';
 import { AutoResolution } from './battle/autores.js';
@@ -269,6 +272,10 @@ function measure(game, seconds, timeGpu = true) {
     const battle = game.battle;
     const frames = [];
     const cpu = [];
+    const anim = [];
+    // how many soldiers (living, fallen) are at each level of detail, summed
+    // over the frames
+    const lods = { alive: [0, 0, 0, 0], dead: [0, 0, 0, 0] };
     let calls = 0;
     let tris = 0;
     let n = 0;
@@ -285,6 +292,8 @@ function measure(game, seconds, timeGpu = true) {
       origFrame(dt);
       if (gpu) gpu.end();
       cpu.push(performance.now() - t0);
+      if (battle.animMs != null) anim.push(battle.animMs);
+      for (const a of battle.agents) if (a.body && a.body.lodLevel >= 0) lods[a.alive ? 'alive' : 'dead'][a.body.lodLevel]++;
       calls += info.render.calls;
       tris += info.render.triangles;
       n++;
@@ -323,12 +332,16 @@ function measure(game, seconds, timeGpu = true) {
           p90: +percentile(sorted, 0.9).toFixed(1),
           p99: +percentile(sorted, 0.99).toFixed(1),
           cpuP50: +percentile(cpuSorted, 0.5).toFixed(1),
+          // (of it: posing the soldiers, battle.js frame)
+          animMs: anim.length ? +percentile([...anim].sort((a, b) => a - b), 0.5).toFixed(2) : null,
           gpuP50: gpu && gpu.times.length ? +percentile([...gpu.times].sort((a, b) => a - b), 0.5).toFixed(1) : null,
           calls: Math.round(calls / Math.max(1, n)),
           triangles: Math.round(tris / Math.max(1, n)),
           realistic: !!battle.agents.find((a) => a.body),
           agents: battle.agents.filter((a) => a.alive).length,
           horses: battle.agents.filter((a) => a.alive && a.horse).length,
+          fallen: battle.agents.filter((a) => !a.alive).length,
+          lods: { alive: lods.alive.map((k) => +(k / Math.max(1, n)).toFixed(1)), dead: lods.dead.map((k) => +(k / Math.max(1, n)).toFixed(1)) },
         });
       }
     };
@@ -366,6 +379,41 @@ function orbit(battle) {
   return () => clearInterval(timer);
 }
 
+// The camera as the player's (battle.js updateCamera): 3.1 m behind a foot
+// soldier, 2 m up, a little to his right, looking the way he faces; on the
+// living foot soldier nearest the middle of the armies (picked again when
+// he falls). The soldiers up close at their full level of detail.
+function closeView(battle) {
+  let who = battle.benchClose;
+  if (!who || !who.alive) {
+    const alive = battle.agents.filter((a) => a.alive);
+    if (!alive.length) return;
+    const cx = alive.reduce((s, a) => s + a.pos.x, 0) / alive.length;
+    const cz = alive.reduce((s, a) => s + a.pos.z, 0) / alive.length;
+    let best = Infinity;
+    for (const a of alive) {
+      const d = Math.hypot(a.pos.x - cx, a.pos.z - cz);
+      if (!a.horse && !a.isPlayer && d < best) {
+        best = d;
+        who = a;
+      }
+    }
+    battle.benchClose = who;
+  }
+  if (!who) return;
+  const fx = Math.sin(who.yaw);
+  const fz = Math.cos(who.yaw);
+  const y = battle.terrain.heightAt(who.pos.x, who.pos.z);
+  battle.debugCam = { x: who.pos.x - fx * 3.1 - fz * 0.45, y: y + 2, z: who.pos.z - fz * 3.1 + fx * 0.45, tx: who.pos.x + fx * 4, ty: y + 1.2, tz: who.pos.z + fz * 4 };
+}
+
+function follow(battle) {
+  battle.benchClose = null;
+  closeView(battle);
+  const timer = setInterval(() => battle.agents && closeView(battle), 33);
+  return () => clearInterval(timer);
+}
+
 // The GPU time of each part on still frames: the battle paused, the camera
 // at a few fixed places, each part left out in turn, round after round (slow
 // drift, heat and clocks, falls on all parts alike). Exact where the
@@ -397,14 +445,17 @@ function stillGpu(battle, n, skip = STILL.settle) {
   });
 }
 
-export async function stillBreakdown(battle, show) {
+// (`parts`: their names in STILL_PARTS, 'base' first; `views`: what puts the
+// camera at each place)
+const ORBIT_VIEWS = Array.from({ length: STILL.views }, (_, v) => (battle) => viewAt(battle, 0.4 + (v / STILL.views) * Math.PI * 2));
+export async function stillBreakdown(battle, show, { parts = Object.keys(STILL_PARTS), views = ORBIT_VIEWS } = {}) {
   if (!gpuTimer(battle.renderer)) return null;
-  const names = Object.keys(STILL_PARTS);
+  const names = parts;
   const times = Object.fromEntries(names.map((name) => [name, []]));
   battle.paused = true;
   for (let r = 0; r < STILL.rounds; r++) {
-    for (let v = 0; v < STILL.views; v++) {
-      viewAt(battle, 0.4 + (v / STILL.views) * Math.PI * 2);
+    for (let v = 0; v < views.length; v++) {
+      views[v](battle);
       // (the new view settles first: shadows, levels of detail, sorting)
       await stillGpu(battle, 0, STILL.settle * 4);
       // everything at the start and again at the end of the view; the
@@ -413,11 +464,11 @@ export async function stillBreakdown(battle, show) {
       const order = names.slice(1);
       if (r % 2) order.reverse();
       for (const name of ['base', ...order, 'base']) {
-        show(`Нерухомі кадри (${r * STILL.views + v + 1} з ${STILL.rounds * STILL.views}): ${PART_NAMES[name]}…`);
+        show(`Нерухомі кадри (${r * views.length + v + 1} з ${STILL.rounds * views.length}): ${PART_NAMES[name]}…`);
         const restore = STILL_PARTS[name](battle);
         const t = await stillGpu(battle, STILL.frames);
         restore();
-        if (times[name].length > r * STILL.views + v) {
+        if (times[name].length > r * views.length + v) {
           const first = times.base[times.base.length - 1];
           times.base[times.base.length - 1] = first != null && t != null ? (first + t) / 2 : first ?? t;
         } else times[name].push(t);
@@ -437,7 +488,7 @@ export async function stillBreakdown(battle, show) {
   return out;
 }
 
-async function startBattle(game, preset) {
+async function startBattle(game, preset, fallen = false) {
   if (game.battle) {
     game.battle.finish('retreat');
     await wait(300);
@@ -464,16 +515,42 @@ async function startBattle(game, preset) {
   }
   // bring the armies into contact before measuring
   b.debugSimulate(9);
+  // bench.html?corpses: every second soldier falls, the camera behind a
+  // soldier in the middle of the fight as when the player fights there (the
+  // fallen near him fall up close), and lies there
+  if (fallen) {
+    closeView(b);
+    b.updateCamera(0);
+    b.camera.updateMatrixWorld();
+    b.agents.forEach((a, i) => i % 2 && !a.isPlayer && a.die(null, 'cut'));
+    b.debugSimulate(3);
+  }
   return b;
+}
+
+// From behind a soldier in the fight: the moving battle, then still frames
+// with `parts` left out
+const CLOSE_PARTS = ['base', 'noSoldiers', 'soldiersNoDeco'];
+async function closeCase(game, battle, show, parts) {
+  const unfollow = follow(battle);
+  show('ближній вид, як у гравця…');
+  await wait(WARMUP * 1000);
+  const row = await measure(game, MEASURE);
+  unfollow();
+  const still = await stillBreakdown(battle, (text) => show(`ближній вид. ${text}`), { parts, views: [closeView] });
+  return { row, still };
 }
 
 export async function runBenchmark(game) {
   // bench.html?parts: only the breakdown of the medium preset
   const partsOnly = /[?&]parts\b/.test(location.search);
-  const presets = partsOnly ? [BREAKDOWN.preset] : PRESETS;
-  const heights = partsOnly ? [] : HEIGHTS;
+  // bench.html?corpses: the medium preset with half the soldiers fallen
+  const corpsesOnly = /[?&]corpses\b/.test(location.search);
+  const presets = partsOnly || corpsesOnly ? [BREAKDOWN.preset] : PRESETS;
+  const heights = partsOnly || corpsesOnly ? [] : HEIGHTS;
   const out = panel();
-  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 3 : 6} хвилин. Підключіть зарядку.`;
+  const show = (text) => (out.innerHTML = `<b>Бенчмарк битви</b><br>${text}`);
+  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 4 : corpsesOnly ? 2 : 7} хвилин. Підключіть зарядку.`;
   // a tab opened in the background does not draw: start once it is shown
   while (document.hidden) await wait(250);
   await game.charactersLoading;
@@ -483,8 +560,9 @@ export async function runBenchmark(game) {
   const calib = [calibrate()];
   const breakdown = {};
   let still = null;
+  let stillClose = null;
   for (const preset of presets) {
-    const battle = await startBattle(game, preset);
+    const battle = await startBattle(game, preset, corpsesOnly);
     const stop = orbit(battle);
     if (!device) {
       device = {
@@ -507,7 +585,7 @@ export async function runBenchmark(game) {
     }
     // the medium preset as it is played: the window's own resolution, lowered
     // by the automatic resolution when the frames take too long
-    if (preset === BREAKDOWN.preset && !partsOnly) {
+    if (preset === BREAKDOWN.preset && !partsOnly && !corpsesOnly) {
       battle.setRenderHeight(null);
       battle.autoRes = new AutoResolution(battle.renderer);
       battle.resize();
@@ -518,7 +596,14 @@ export async function runBenchmark(game) {
       battle.autoRes.dispose();
       battle.autoRes = null;
     }
-    if (preset === BREAKDOWN.preset) {
+    if (preset === BREAKDOWN.preset && corpsesOnly) {
+      battle.setRenderHeight(BREAKDOWN.height);
+      show(`Графіка: ${preset}, ${BREAKDOWN.height}p, половина воїнів полягла…`);
+      await wait(WARMUP * 1000);
+      results.push({ preset, height: BREAKDOWN.height, ...(await measure(game, MEASURE)) });
+      stop();
+      still = await stillBreakdown(battle, show, { parts: ['base', 'noSoldiers'] });
+    } else if (preset === BREAKDOWN.preset) {
       battle.setRenderHeight(BREAKDOWN.height);
       for (const [name, off] of Object.entries(PARTS)) {
         out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${PART_NAMES[name]}…`;
@@ -531,7 +616,14 @@ export async function runBenchmark(game) {
         breakdown[name] = { fps: r.fps, p50: r.p50, p90: r.p90, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
       }
       stop();
-      still = await stillBreakdown(battle, (text) => (out.innerHTML = `<b>Бенчмарк битви</b><br>${text}`));
+      still = await stillBreakdown(battle, show);
+    }
+    // up close, as the player sees the fight (last: the measurements before
+    // it stay comparable with earlier runs)
+    if (preset === BREAKDOWN.preset) {
+      const close = await closeCase(game, battle, show, corpsesOnly ? ['base', 'noSoldiers'] : CLOSE_PARTS);
+      results.push({ preset, height: BREAKDOWN.height, view: 'close', ...close.row });
+      stillClose = close.still;
     }
     stop();
   }
@@ -539,34 +631,40 @@ export async function runBenchmark(game) {
   if (game.battle) game.battle.setRenderHeight(null);
   // calibMs: the processor test before and after the run (lower is faster)
   // still: GPU ms of still frames per part left out, and what that saves
-  const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, results, breakdown, still };
+  // (stillClose: the same from behind a soldier in the fight); results:
+  // animMs the CPU ms of posing, lods how many soldiers (living, fallen) at
+  // each level of detail; fallen: half the soldiers fallen (?corpses)
+  const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, fallen: corpsesOnly, results, breakdown, still, stillClose };
   const rows = results
-    .map((r) => `<tr><td>${r.preset}</td><td>${r.height === 'auto' ? `авто ×${r.scale}` : `${r.height}p`}</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
+    .map((r) => `<tr><td>${r.preset}</td><td>${r.height === 'auto' ? `авто ×${r.scale}` : `${r.height}p`}${r.view === 'close' ? ', ближче' : ''}</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.animMs ?? '–'}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   const breakdownRows = Object.entries(breakdown)
     .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td><b>${r.fps}</b></td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
-  const stillRows = Object.entries(still || {})
+  const stillRows = (parts) => Object.entries(parts || {})
     .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td>${r.gpu}</td><td><b>${name === 'base' ? '' : r.saves}</b></td></tr>`)
     .join('');
+  const stillTable = (parts, title) => parts ? `<small>${title}</small>
+    <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>GPU, мс</th><th>економія, мс</th></tr>
+      ${stillRows(parts)}
+    </table>` : '';
   // the processor slower at the end than at the start: it got hot
   const hot = calib[1] > calib[0] * 1.25;
   out.innerHTML = `<b>Готово.</b> Скопіюйте JSON нижче й надішліть його.<br>
     <small>Версія ${BUILD}; ${device.gpu}; тест процесора: ${calib.join(' / ')} мс${hot ? ' — <b>під кінець процесор сповільнився (перегрів чи режим економії): числа занижені</b>' : ''}</small>
+    ${corpsesOnly ? '<br><small>Половина воїнів полягла (bench.html?corpses).</small>' : ''}
     <table style="border-collapse:collapse;margin:8px 0;width:100%" cellpadding="3">
-      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>пози, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
       ${rows}
     </table>
-    <small>Середня графіка, ${BREAKDOWN.height}p, без однієї частини:</small>
+    ${breakdownRows ? `<small>Середня графіка, ${BREAKDOWN.height}p, без однієї частини:</small>
     <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
       <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>FPS</th><th>CPU, мс</th><th>GPU, мс</th><th>трикутники</th></tr>
       ${breakdownRows}
-    </table>
-    ${still ? `<small>Нерухомі кадри, ${BREAKDOWN.height}p: GPU без однієї частини і скільки це економить:</small>
-    <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
-      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>GPU, мс</th><th>економія, мс</th></tr>
-      ${stillRows}
     </table>` : ''}
+    ${stillTable(still, `Нерухомі кадри, ${BREAKDOWN.height}p: GPU без однієї частини і скільки це економить:`)}
+    ${stillTable(stillClose, `Те саме з-за спини воїна в бою, як у гравця:`)}
     <textarea readonly style="width:100%;height:140px;font:12px monospace">${JSON.stringify(report)}</textarea>
     <button id="bench-copy" style="margin-top:6px;padding:6px 14px">Копіювати JSON</button>`;
   const ta = out.querySelector('textarea');
