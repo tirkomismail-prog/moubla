@@ -127,9 +127,14 @@ const tmpS = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
+// (the colour of a role's vertices till they are painted, GeoBuilder)
+const UNPAINTED = '#808080';
 
 export class GeoBuilder {
-  constructor() {
+  // roles: names that `add` takes for a colour, to be given one later
+  // (painted): their vertices are grey till then and keep their role (1 +
+  // its index, 0 for a colour's; build: userData.role)
+  constructor(roles = null) {
     this.pos = [];
     this.nrm = [];
     this.col = [];
@@ -137,6 +142,8 @@ export class GeoBuilder {
     this.uv = [];
     this.tile = [];
     this.tint = [];
+    this.roles = roles;
+    this.role = [];
   }
 
   // `r` is an Euler triple or a quaternion. `surface`: [tileable material,
@@ -149,7 +156,8 @@ export class GeoBuilder {
     else tmpQ.setFromEuler(tmpE.set(r[0], r[1], r[2]));
     tmpM.compose(tmpV.set(p[0], p[1], p[2]), tmpQ, tmpS.set(s[0], s[1], s[2]));
     g.applyMatrix4(tmpM);
-    const c = new THREE.Color(color);
+    const role = this.roles ? this.roles.indexOf(color) + 1 : 0;
+    const c = new THREE.Color(role ? UNPAINTED : color);
     const surf = surface || SURFACE[color];
     const metal = surf && surf[2] === 'coat' ? -1 : METAL[color] || 0;
     const tile = surf && surf[0] in tileIndex ? tileIndex[surf[0]] : -1;
@@ -165,6 +173,7 @@ export class GeoBuilder {
       this.uv.push(_uv[0], _uv[1]);
       this.tile.push(tile);
       this.tint.push(tint.r, tint.g, tint.b);
+      if (this.roles) this.role.push(role);
     }
     return this;
   }
@@ -219,8 +228,29 @@ export class GeoBuilder {
     g.setAttribute('_tile', new THREE.Float32BufferAttribute(this.tile, 1));
     g.setAttribute('tint', new THREE.Float32BufferAttribute(this.tint, 3));
     g.computeBoundingSphere();
+    if (this.roles) g.userData.role = Uint8Array.from(this.role);
     return g;
   }
+}
+
+// A geometry like `geo`, sharing its buffers but its colours: those of the
+// vertices with a role (`role`: each vertex's, GeoBuilder) are `paints`'
+// (THREE.Colors, one per role, in its order).
+function painted(geo, role, paints) {
+  const col = geo.getAttribute('color').array.slice();
+  for (let i = 0; i < role.length; i++) {
+    if (!role[i]) continue;
+    const c = paints[role[i] - 1];
+    col[i * 3] = c.r;
+    col[i * 3 + 1] = c.g;
+    col[i * 3 + 2] = c.b;
+  }
+  const g = new THREE.BufferGeometry();
+  for (const [name, a] of Object.entries(geo.attributes)) g.setAttribute(name, a);
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(geo.index);
+  g.boundingSphere = geo.boundingSphere;
+  return g;
 }
 
 const cache = new Map();
@@ -864,17 +894,23 @@ export function shieldGeo(model, color, team, team2 = '#dddddd', coat = false) {
 // Horse
 // ---------------------------------------------------------------------------
 
+// The horse's colours that come from its coat (coats.js), by role: its
+// shape is built once per team and barding with these roles for colours and
+// painted for each coat (horseCoat), so that all the coats share every
+// buffer but the colours. (points: from the knees and hocks down, black,
+// POINTS, on a bay, a dun...: items.js COATS `points`)
+const COAT_ROLES = ['coat', 'mane', 'muzzle', 'points'];
+const POINTS = '#1e1916';
 // Neck and head placement (shared by the body and the barding).
 const NECK_A = [0, 1.42, 0.68];
 const NECK_B = [0, 2.02, 1.12];
 const HEAD_A = [0, 2.07, 1.16];
 const HEAD_B = [0, 1.9, 1.58];
 
-function horseBodyGeo(coat, team, barding) {
-  return cached(`horse:${coat}:${team}:${barding}`, () => {
-    const b = new GeoBuilder();
-    const mane = shade(coat, 0.35);
-    const muzzle = shade(coat, 0.55);
+function horseBodyGeo(team, barding) {
+  return cached(`horse:${team}:${barding}`, () => {
+    const b = new GeoBuilder(COAT_ROLES);
+    const [coat, mane, muzzle] = COAT_ROLES;
     // barrel, chest and hindquarters
     b.add(new THREE.CapsuleGeometry(0.3, 0.95, 6, 14), coat, [0, 1.3, -0.02], [Math.PI / 2, 0, 0], [0.95, 1, 1]);
     b.sphere(0.31, coat, [0, 1.32, 0.6], 14, 10, [0.95, 1.05, 0.9]);
@@ -922,24 +958,26 @@ function horseBodyGeo(coat, team, barding) {
   });
 }
 
-function horseLegGeo(coat, hind) {
-  return cached(`hleg:${coat}:${hind}`, () => {
-    const b = new GeoBuilder();
+// (low: from the knee or the hock down)
+function horseLegGeo(hind) {
+  return cached(`hleg:${hind}`, () => {
+    const b = new GeoBuilder(COAT_ROLES);
     const hoof = '#1f1812';
+    const [coat, , , low] = COAT_ROLES;
     if (hind) {
       b.sphere(0.15, coat, [0, 0.0, -0.02], 10, 8, [0.8, 1.6, 1.15]); // gaskin muscle
       b.limb([0, 0.05, -0.02], [0, -0.48, -0.1], 0.12, 0.07, 10, coat, [0.8, 1.1]);
-      b.sphere(0.066, coat, [0, -0.48, -0.1], 8, 6, [0.8, 1, 1.1]); // hock
-      b.limb([0, -0.48, -0.1], [0, -0.9, -0.05], 0.05, 0.045, 8, coat, [0.85, 1.1]);
+      b.sphere(0.066, low, [0, -0.48, -0.1], 8, 6, [0.8, 1, 1.1]); // hock
+      b.limb([0, -0.48, -0.1], [0, -0.9, -0.05], 0.05, 0.045, 8, low, [0.85, 1.1]);
     } else {
       b.sphere(0.12, coat, [0, -0.05, 0.03], 10, 8, [0.8, 1.7, 1.1]); // forearm muscle
       b.limb([0, 0.05, 0.02], [0, -0.5, 0.0], 0.1, 0.06, 10, coat, [0.8, 1.1]);
-      b.sphere(0.06, coat, [0, -0.5, 0.0], 8, 6, [0.8, 1, 1.05]); // knee
-      b.limb([0, -0.5, 0.0], [0, -0.9, -0.01], 0.047, 0.044, 8, coat, [0.85, 1.1]);
+      b.sphere(0.06, low, [0, -0.5, 0.0], 8, 6, [0.8, 1, 1.05]); // knee
+      b.limb([0, -0.5, 0.0], [0, -0.9, -0.01], 0.047, 0.044, 8, low, [0.85, 1.1]);
     }
     const z = hind ? -0.05 : -0.01;
-    b.sphere(0.055, coat, [0, -0.91, z], 8, 6, [0.9, 1, 1.1]); // fetlock
-    b.limb([0, -0.91, z], [0, -1.0, z + 0.04], 0.045, 0.048, 8, coat); // pastern
+    b.sphere(0.055, low, [0, -0.91, z], 8, 6, [0.9, 1, 1.1]); // fetlock
+    b.limb([0, -0.91, z], [0, -1.0, z + 0.04], 0.045, 0.048, 8, low); // pastern
     b.cyl(0.055, 0.068, 0.08, 10, hoof, [0, -1.045, z + 0.05]);
     return b.build();
   });
@@ -947,21 +985,41 @@ function horseLegGeo(coat, hind) {
 
 const HORSE_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.1, 0.1), 1.9);
 
+// coat: the horse's (coats.js: body, mane, points)
 export function buildHorse(coat, team, barding) {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  const parts = [[body, horseBodyGeo(coat, team, barding)]];
+  const parts = [[body, horseBodyGeo(team, barding)]];
   const legs = [];
   for (const [x, z] of [[0.18, 0.6], [-0.18, 0.6], [0.18, -0.58], [-0.18, -0.58]]) {
     const l = new THREE.Group();
     l.position.set(x, 1.1, z);
-    parts.push([l, horseLegGeo(coat, z < 0)]);
+    parts.push([l, horseLegGeo(z < 0)]);
     body.add(l);
     legs.push(l);
   }
-  rigidSkin(root, parts, `horse:${coat}:${team}:${barding}`, HORSE_SPHERE);
+  const key = `horse:${team}:${barding}`;
+  const mesh = rigidSkin(root, parts, key, HORSE_SPHERE);
+  mesh.geometry = horseCoat(mesh.geometry, parts, coat, key);
   return { root, body, legs };
+}
+
+// The horse's shape (`geo`: its `parts` merged, rigidSkin; `key`: its team
+// and barding) painted in a coat (COAT_ROLES).
+function horseCoat(geo, parts, coat, key) {
+  const { body, mane, points } = coat;
+  return cached(`${key}:${body}:${mane}:${!!points}`, () => {
+    // (the parts' roles, in the order they were merged)
+    const role = new Uint8Array(geo.getAttribute('position').count);
+    let at = 0;
+    for (const [, g] of parts) {
+      role.set(g.userData.role, at);
+      at += g.userData.role.length;
+    }
+    const paints = [body, mane, shade(body, 0.55), points ? POINTS : body];
+    return painted(geo, role, paints.map((c) => new THREE.Color(c)));
+  });
 }
 
 // ---------------------------------------------------------------------------

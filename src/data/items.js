@@ -70,12 +70,20 @@ export const ITEMS = {
   great_helm: { type: 'helmet', slot: 'helmet', name: 'Великий шолом', armor: 31, look: 'great', price: 850 },
 
   // --- horses ----------------------------------------------------------------
-  sumpter: { type: 'horse', slot: 'horse', name: 'В’ючна конячка', speed: 9, hp: 70, armor: 4, maneuver: 0.85, price: 160, coat: '#7b5a3c' },
-  steppe_horse: { type: 'horse', slot: 'horse', name: 'Степовий кінь', speed: 11.5, hp: 85, armor: 6, maneuver: 1.25, price: 360, coat: '#b08850' },
-  courser: { type: 'horse', slot: 'horse', name: 'Скакун', speed: 13, hp: 95, armor: 8, maneuver: 1.15, price: 720, coat: '#3a2a20' },
-  hunter: { type: 'horse', slot: 'horse', name: 'Мисливський кінь', speed: 11.2, hp: 115, armor: 12, maneuver: 1.05, price: 620, coat: '#5b3b25' },
-  destrier: { type: 'horse', slot: 'horse', name: 'Бойовий кінь', speed: 10.6, hp: 150, armor: 26, maneuver: 0.95, price: 1650, coat: '#dcdcdc', barding: true },
-  charger: { type: 'horse', slot: 'horse', name: 'Лицарський кінь', speed: 10.2, hp: 185, armor: 40, maneuver: 0.9, price: 2900, coat: '#222222', barding: true },
+  // (`coat`: the breed's own coat's colour, the first of its `coats`; `marks`:
+  // the share of its horses with white markings, a blaze and socks)
+  sumpter: { type: 'horse', slot: 'horse', name: 'В’ючна конячка', speed: 9, hp: 70, armor: 4, maneuver: 0.85, price: 160, coat: '#7b5a3c', marks: 0.45,
+    coats: { bay: 26, chestnut: 20, darkBay: 10, flaxen: 6, black: 8, grey: 8, dun: 8, grullo: 6, bayRoan: 8 } },
+  steppe_horse: { type: 'horse', slot: 'horse', name: 'Степовий кінь', speed: 11.5, hp: 85, armor: 6, maneuver: 1.25, price: 360, coat: '#b08850', marks: 0.3,
+    coats: { dun: 18, bay: 18, chestnut: 12, grey: 10, whiteGrey: 5, grullo: 9, black: 6, darkBay: 5, buckskin: 4, palomino: 3, flaxen: 4, bayRoan: 6 } },
+  courser: { type: 'horse', slot: 'horse', name: 'Скакун', speed: 13, hp: 95, armor: 8, maneuver: 1.15, price: 720, coat: '#3a2a20', marks: 0.55,
+    coats: { darkBay: 24, bay: 26, chestnut: 18, black: 10, grey: 14, liver: 8 } },
+  hunter: { type: 'horse', slot: 'horse', name: 'Мисливський кінь', speed: 11.2, hp: 115, armor: 12, maneuver: 1.05, price: 620, coat: '#5b3b25', marks: 0.55,
+    coats: { bay: 28, lightBay: 8, darkBay: 12, chestnut: 22, flaxen: 4, black: 8, grey: 10, liver: 8 } },
+  destrier: { type: 'horse', slot: 'horse', name: 'Бойовий кінь', speed: 10.6, hp: 150, armor: 26, maneuver: 0.95, price: 1650, coat: '#dcdcdc', marks: 0.5, barding: true,
+    coats: { whiteGrey: 22, grey: 16, ironGrey: 10, bay: 22, darkBay: 12, black: 12, chestnut: 6 } },
+  charger: { type: 'horse', slot: 'horse', name: 'Лицарський кінь', speed: 10.2, hp: 185, armor: 40, maneuver: 0.9, price: 2900, coat: '#222222', marks: 0.45, barding: true,
+    coats: { black: 30, darkBay: 22, bay: 18, grey: 12, ironGrey: 8, liver: 5, chestnut: 5 } },
 
   // --- food ------------------------------------------------------------------
   grain: { type: 'food', name: 'Зерно', servings: 40, morale: 0, price: 24 },
@@ -100,6 +108,36 @@ export const ITEMS = {
 };
 
 for (const [id, it] of Object.entries(ITEMS)) it.id = id;
+
+// Horses' natural coats (battle/coats.js gives each horse one of its breed's,
+// items' `coats`, by their weights; the first is the breed's own, its body
+// the item's `coat`): the body's colour (sRGB, as the coat looks in
+// daylight), the mane's and tail's, and whether the lower legs are black
+// ("points": a bay, a dun, a buckskin, a grullo). Every horse's hooves are
+// dark horn.
+export const COATS = {
+  bay: { name: 'Гнідий', body: '#7a472a', mane: '#1b1613', points: true },
+  lightBay: { name: 'Світло-гнідий', body: '#956842', mane: '#1d1714', points: true },
+  darkBay: { name: 'Темно-гнідий', body: '#4a2c1d', mane: '#171210', points: true },
+  chestnut: { name: 'Рудий', body: '#8c5233', mane: '#743e25', points: false },
+  // (a chestnut with a flaxen mane and tail)
+  flaxen: { name: 'Ігреневий', body: '#93593a', mane: '#d6bf98', points: false },
+  liver: { name: 'Темно-рудий', body: '#5a3020', mane: '#3f2117', points: false },
+  black: { name: 'Вороний', body: '#262120', mane: '#151211', points: false },
+  // greys: dappled, nearly white, and the dark grey of a young one
+  grey: { name: 'Сірий', body: '#8a8884', mane: '#d2cec6', points: false },
+  whiteGrey: { name: 'Світло-сірий', body: '#d2cec6', mane: '#e8e4dc', points: false },
+  ironGrey: { name: 'Темно-сірий', body: '#5a5856', mane: '#7d7975', points: false },
+  // duns: sandy (a bay dun), mouse-grey (grullo); a buckskin golden
+  dun: { name: 'Саврасий', body: '#a8855a', mane: '#1c1611', points: true },
+  grullo: { name: 'Мишастий', body: '#6b5f53', mane: '#1a1715', points: true },
+  buckskin: { name: 'Буланий', body: '#c08c44', mane: '#1c1611', points: true },
+  palomino: { name: 'Солов’їний', body: '#c4944a', mane: '#e6dbc0', points: false },
+  // (a bay roan: white hairs through a bay's coat, its points black; a
+  // roan's head is as dark as its legs, which the one coat colour cannot
+  // give, and a chestnut roan without it is only a pink horse: none)
+  bayRoan: { name: 'Гнідо-чалий', body: '#7e6860', mane: '#1b1613', points: true },
+};
 
 export const FOOD_IDS = Object.keys(ITEMS).filter((k) => ITEMS[k].type === 'food');
 export const GOOD_IDS = Object.keys(ITEMS).filter((k) => ITEMS[k].type === 'good');

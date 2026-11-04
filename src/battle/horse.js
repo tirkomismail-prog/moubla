@@ -134,6 +134,62 @@ function geometry(piece, level) {
   return g;
 }
 
+// The lower legs' vertex colours (the baked occlusion, which the material
+// multiplies in) darkened by the coat (items.js COATS): each LOWER_LEGS look
+// is a factor of a Coat vertex's colour by its height (m above the ground in
+// the bind pose: the hooves reach 0.15 m up, the white socks of the
+// markings are 0.15 to 0.4 m up, the knees' and hocks' joints 0.53 and
+// 0.51 m).
+// - hooves: dark horn (the hooves are coat in the model, as on the low
+//   preset's horse), HOOF of the coat below the coronets (CORONET: from
+//   where to where it fades out);
+// - points (a bay, a dun...): black lower legs and hooves, POINTS of the
+//   coat below the knees and hocks (KNEE); the blaze stays;
+// - socks: the points of a horse with white markings, darker still (SOCK)
+//   below the socks' top (SOCKS), so that the white goes under the black
+//   (white x POINTS x SOCK is about a bay's points).
+// Made once for each level's colours (the farthest level shares the next
+// one's vertices) and given to a horse's own geometries (poolBones), not to
+// new ones (three.js draws Math.random for each new geometry's id: a seeded
+// battle keeps its ranks).
+const HOOF = 0.12;
+const CORONET = [0.15, 0.2];
+const POINTS = 0.06;
+const KNEE = [0.52, 0.66];
+const SOCK = 0.15;
+const SOCKS = [0.4, 0.46];
+const fade = (k, [a, b], y) => k + (1 - k) * smoothstep(a, b, y);
+const LOWER_LEGS = {
+  hooves: (y) => fade(HOOF, CORONET, y),
+  points: (y) => fade(POINTS, KNEE, y),
+  socks: (y) => fade(POINTS, KNEE, y) * fade(SOCK, SOCKS, y),
+};
+const darkened = new Map();
+
+// the LOWER_LEGS look of a coat (coats.js)
+function legsOf(coat) {
+  return coat.points ? (coat.marks ? 'socks' : 'points') : 'hooves';
+}
+
+function legColors(geo, look) {
+  const src = geo.getAttribute('color');
+  let made = darkened.get(src);
+  if (!made) darkened.set(src, (made = {}));
+  if (!made[look]) {
+    const pos = geo.getAttribute('position');
+    const part = geo.getAttribute('_part');
+    const coat = T.parts.indexOf('Coat');
+    const color = src.clone();
+    for (let i = 0; i < src.count; i++) {
+      if (Math.round(part.getX(i)) !== coat) continue;
+      const k = LOWER_LEGS[look](pos.getY(i));
+      if (k < 1) color.setXYZ(i, src.getX(i) * k, src.getY(i) * k, src.getZ(i) * k);
+    }
+    made[look] = color;
+  }
+  return made[look];
+}
+
 // ---------------------------------------------------------------------------
 // Look
 // ---------------------------------------------------------------------------
@@ -143,14 +199,13 @@ const COAT_MEAN = 0.62;
 const CARDS = new Set(['Mane']);
 const MARKED = new Set(['Coat']);
 
+// (spec.coat: the horse's coat, coats.js)
 function palette(spec) {
-  const coat = new THREE.Color(spec.coat);
-  const light = coat.getHSL({}).l > 0.55;
-  // dark manes and tails, except on light horses
-  const mane = light ? coat.clone().lerp(new THREE.Color('#f0ece4'), 0.2) : new THREE.Color('#1c1611');
+  const coat = new THREE.Color(spec.coat.body);
+  const mane = new THREE.Color(spec.coat.mane);
   const steel = tiled('iron', '#ffffff', 1, 0.9);
   return {
-    Coat: surface(coat.clone().multiplyScalar(1 / COAT_MEAN), 0.62),
+    Coat: surface(coat.multiplyScalar(1 / COAT_MEAN), 0.62),
     Mane: surface(mane.multiplyScalar(1 / COAT_MEAN), 0.5),
     Eyes: surface('#0e0907', 0.06),
     Saddle: tiled('leather', '#8a6a55', 0.85),
@@ -164,8 +219,8 @@ function palette(spec) {
 
 // The horses' material in a battle (`owner`) and this horse's palette row.
 function horseLook(owner, spec) {
-  const white = spec.marks ? '#f2eee6' : null;
-  const coat = new THREE.Color(spec.coat).multiplyScalar(1 / COAT_MEAN);
+  const white = spec.coat.marks ? '#f2eee6' : null;
+  const coat = new THREE.Color(spec.coat.body).multiplyScalar(1 / COAT_MEAN);
   return partLook(owner, { program: 'horse', parts: T.parts, layers: T.layers, normals: T.normals, tiles: T.tiles, mud: spec.mud }, {
     palette: palette(spec),
     layerOf: (name) => T.partLayers[name],
@@ -207,11 +262,15 @@ const _v = new THREE.Vector3();
 const _t = new THREE.Vector3();
 
 export class SkinnedHorse {
-  // spec: {coat, team, barding, dirt, mud}; owner: the battle's (whose
-  // material, palette and bone texture: partLook, poolBones)
+  // spec: {coat (coats.js: its colours, points and white markings), team,
+  // barding, dirt, mud}; owner: the battle's (whose material, palette and
+  // bone texture: partLook, poolBones)
   constructor(spec, owner) {
     this.skinned = true;
-    this.spec = { ...spec, marks: Math.random() < 0.55 };
+    this.spec = spec;
+    // (a draw of the shared stream, as when the white markings were drawn
+    // here: a seeded battle, bench.js, keeps its ranks as they were)
+    Math.random();
     this.root = new THREE.Group();
     this.object = cloneSkinned(T.scene);
     this.root.add(this.object);
@@ -249,6 +308,8 @@ export class SkinnedHorse {
     this.space = ownSpaceSkeleton(this.object, this.lod);
     this.skeleton = shared;
     poolBones(owner, shared, this.lod, row, spec.dirt || 0);
+    const legs = legsOf(spec.coat);
+    for (const o of this.lod) o.geometry.setAttribute('color', legColors(o.geometry, legs));
     this.shadow = shadowStandIn(this.lod[this.lod.length - 1], mat, CULL_SPHERE);
     this.lodLevel = -1;
     this.setLod(0);

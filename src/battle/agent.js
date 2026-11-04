@@ -9,6 +9,7 @@ import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround } from './character.js';
 import { groundFit, fitNormal, layFlat, footprint, lowest, rigidGrip, secondFor, secondRanges, STEEPEST } from './grips.js';
 import { stature, scaledY, hitZone, NEUTRAL, EYES, EYES_MOUNTED } from './stature.js';
+import { coatFor, ownCoat } from './coats.js';
 import { clamp, wrapAngle, approachAngle, smoothstep } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
 
@@ -432,7 +433,7 @@ export class Agent {
 
     // horse
     this.horse = null;
-    if (eq.horse && !opts.noHorse) this.mountHorse(this.makeHorse(eq.horse, opts.colors));
+    if (eq.horse && !opts.noHorse) this.mountHorse(this.makeHorse(eq.horse, opts));
     this.radius = this.horse ? 0.85 : 0.36;
 
     // prefer the ranged weapon for archers, the melee one otherwise
@@ -546,19 +547,28 @@ export class Agent {
     return this.shield;
   }
 
-  makeHorse(itemId, colors) {
+  // (opts: the rider's, as the constructor got them)
+  makeHorse(itemId, opts) {
     const it = ITEMS[itemId];
+    const colors = opts.colors;
     // (the cloth of the side's field colour)
     const team = colors ? (colors.cloth && colors.cloth.sign) || colors.team : '#777';
+    // its coat (coats.js): the breed's own under the player (the same horse
+    // in every battle), a companion's by his name (the same too), a
+    // soldier's by his id; or a chosen one ({key, marks})
+    const coat = opts.coat ? ownCoat(it, opts.coat.key, !!opts.coat.marks)
+      : this.isPlayer ? ownCoat(it)
+        : coatFor(it, opts.hero ? opts.hero.key || opts.hero.name : this.id);
     // the realistic horse with medium/high graphics, else the procedural one
     const realistic = this.battle.gfx && this.battle.gfx.standard && horseReady();
     const rig = realistic
-      ? new SkinnedHorse({ coat: it.coat, team, barding: !!it.barding, dirt: 0.35 + Math.random() * 0.45, mud: mudOf(this.battle.terrain && this.battle.terrain.type) }, this.battle.props)
-      : buildHorse(it.coat, team, !!it.barding);
+      ? new SkinnedHorse({ coat, team, barding: !!it.barding, dirt: 0.35 + Math.random() * 0.45, mud: mudOf(this.battle.terrain && this.battle.terrain.type) }, this.battle.props)
+      : buildHorse(coat, team, !!it.barding);
     rig.root.rotation.order = 'YXZ';
     this.battle.scene.add(rig.root);
     return {
       item: it,
+      coat,
       hp: it.hp,
       maxHp: it.hp,
       armor: it.armor,
