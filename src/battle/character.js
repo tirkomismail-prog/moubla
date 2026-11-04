@@ -8,13 +8,14 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { helmetGeo, setTileIndex, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
-import { handOnAxis, secondGrip, secondRanges } from './grips.js';
+import { handOnAxis, secondFor, secondGrip, secondRanges } from './grips.js';
 import { bytesOf, decodeLayers, decodeTiles, deco, DULL_METAL, lodMesh, ownSpaceSkeleton, partLook, poolBones, posed, shadowStandIn, simplified, simplifierReady, surface, tiled, TILE_FRAGMENT } from './partmat.js';
 import { JERKIN, SABLE, TINCTURES, UNDYED, lightness } from '../data/dyes.js';
 import { horseTextures, loadHorse } from './horse.js';
 import { loadTrees } from './trees.js';
 import { loadGround } from './ground.js';
 import { clamp, wrapAngle, smoothstep } from '../core/util.js';
+import { NEUTRAL, handsOut } from './stature.js';
 
 const state = { status: 'idle', promise: null, t: null };
 
@@ -183,6 +184,14 @@ function prepare(gltf) {
   t.pelvisRest = bones.pelvis.position.clone();
   t.headRestQ = bones.head.getWorldQuaternion(new THREE.Quaternion());
   t.headRestInv = new THREE.Matrix4().copy(bones.head.matrixWorld).invert();
+  // the trunk's bones' sideways and forward in their own space as bound (a
+  // man's build widens them: SkinnedHuman.shape)
+  const bound = scene.getObjectByName('Soldier_LOD0');
+  t.girth = bound ? Object.entries(GIRTH).map(([bone, part]) => {
+    const i = bound.skeleton.bones.findIndex((o) => o.name === bone);
+    const m = new THREE.Matrix3().setFromMatrix4(bound.skeleton.boneInverses[i]);
+    return { bone, part, axes: [new THREE.Vector3(1, 0, 0).applyMatrix3(m).normalize(), new THREE.Vector3(0, 0, 1).applyMatrix3(m).normalize()] };
+  }) : [];
   // garments (Piece_<name>_LOD<n>): joined with the head and hands of each
   // level of detail (Soldier_LOD<n>) into one mesh per outfit, see outfitGeometry
   t.common = [];
@@ -895,6 +904,11 @@ const CULL_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 1.6);
 // frame, every second or every fourth frame
 const LOD_DIST = [10, 20, 32];
 const POSE_DIST = [17, 45];
+// the trunk's bones a man's build (stature.js) widens and deepens, by which
+// of its factors: his waist (the hips and the belly, the belt between them,
+// alike: the layers of his clothes bound to them differently move together),
+// his chest, and the ribs between them
+const GIRTH = { pelvis: 'waist', spine_01: 'waist', spine_02: 'ribs', spine_03: 'chest' };
 
 // ---------------------------------------------------------------------------
 // The fallen. Agent.lieLayout lays the frame of the soldier's own space on
@@ -975,22 +989,24 @@ export function lieTurn(a, k, out = new THREE.Euler()) {
 
 // Where the wrist or ankle of `limb` ('arm_l' .. 'leg_r', his own side) goes
 // as he lies as `lie`, in his own space (`out`), on the ground under it or
-// not as LIE gives it; the LIE spec it comes from.
+// not as LIE gives it (for the model: lie.k times as far on a man lie.k times
+// as tall); the LIE spec it comes from.
 export function lieTarget(lie, limb, terrain, out) {
   const m = lie.mirror;
   const s = limb.endsWith('_l') ? 'l' : 'r';
   // (mirrored: this side as the other side's given)
   const spec = LIE[lie.variant][limb.slice(0, -1) + (m > 0 ? s : s === 'l' ? 'r' : 'l')];
-  out.set(spec.at[0] * m, spec.at[1], spec.at[2]);
+  out.set(spec.at[0] * m, spec.at[1], spec.at[2]).multiplyScalar(lie.k);
   if (spec.ground !== undefined) onGround(out, spec.ground, lie, terrain);
   return spec;
 }
 
 // How high the pelvis lies over the ground (m) rolled by rho: its bone is
-// nearer the back than the belly, half the hips' width from either side.
-export function lieHeight(rho) {
+// nearer the back than the belly, half the hips' width from either side
+// (the model's; `k` times as high for a man `k` times as tall, or broad).
+export function lieHeight(rho, k = 1) {
   const c = Math.cos(rho);
-  return Math.hypot(0.2 * Math.sin(rho), (c >= 0 ? 0.14 : 0.17) * c);
+  return k * Math.hypot(0.2 * Math.sin(rho), (c >= 0 ? 0.14 : 0.17) * c);
 }
 
 export class SkinnedHuman {
@@ -1087,6 +1103,50 @@ export class SkinnedHuman {
     // where along it (secondHand)
     this.second = 0;
     this.secondAt = 0;
+    this.shape(spec.stature || NEUTRAL);
+  }
+
+  // His build (stature.js), once. The space of his bones is his height times
+  // the model's (so is the pose rig's root, Agent: its targets are where his
+  // hands reach), the clips turn the bones and move the pelvis in it; his
+  // meshes are drawn as they are in it (the rig's root, their parent, would
+  // make them larger again). His neck bone is his head's size, the head on
+  // it with it (the helmet on that), and a hood or a coif round both; his
+  // collarbones longer or shorter, his arms out or in with them; his trunk
+  // wider and deeper: the bind of its bones, the skin round them with every
+  // garment layer on it alike, not the bones further out. What his hands
+  // hold stays the size it is (their grips the other way); the lengths the
+  // pose works with (of his limbs and his hands) are his own.
+  shape(st) {
+    const t = this.t;
+    const b = this.bones;
+    const k = st.height;
+    this.k = k;
+    // (his hands hang as far from his hips as the model's: hang)
+    this.handsOut = handsOut(st);
+    this.space.position.multiplyScalar(k);
+    this.space.scale.multiplyScalar(k);
+    this.object.scale.setScalar(1 / k);
+    b.neck_01.scale.setScalar(st.head);
+    this.limbs = {};
+    for (const [name, limb] of Object.entries(t.limbs)) this.limbs[name] = { ...limb, a: limb.a * k, b: limb.b * k };
+    this.hand = {};
+    for (const s of ['l', 'r']) {
+      b[`upperarm_${s}`].position.multiplyScalar(st.shoulders);
+      this.grip[s].scale.setScalar(1 / k);
+      this.grip[s].updateMatrix();
+      const h = t.hands[s];
+      this.hand[s] = { grip: h.grip.clone().multiplyScalar(k), back: h.back * k, side: h.side * k };
+    }
+    // (each soldier's own bind of the bones his build changes)
+    const skeleton = this.skeleton;
+    const inv = (skeleton.boneInverses = skeleton.boneInverses.slice());
+    const widen = (name, f, axes) => {
+      const i = skeleton.bones.indexOf(b[name]);
+      if (f !== 1) inv[i] = scaledBind(inv[i], f, axes);
+    };
+    for (const g of t.girth) widen(g.bone, st[g.part], g.axes);
+    for (const s of ['l', 'r']) widen(`clavicle_${s}`, st.shoulders, [Y]);
   }
 
   setLod(level) {
@@ -1262,7 +1322,8 @@ export class SkinnedHuman {
     let freq;
     if (backward) freq = sp / cyc(t.clips.walk_back);
     else freq = (sp / cyc(t.clips.walk)) * (1 - wRun) + (sp / cyc(t.clips.run)) * wRun;
-    freq = clamp(freq, 0.35, 2.4);
+    // (a taller man's strides are longer)
+    freq = clamp(freq / this.k, 0.35, 2.4);
     this.phase = (this.phase + dt * freq) % 1;
     this.idleTime += dt * this.idleRate;
     for (const [name, a] of Object.entries(acts)) {
@@ -1284,10 +1345,10 @@ export class SkinnedHuman {
     for (const s of ['l', 'r']) {
       const side = s === 'l' ? 1 : -1;
       const hip = b[`thigh_${s}`].getWorldPosition(U.v1);
-      const foot = horse.stirrup ? horse.stirrup(s, U.v2).applyMatrix4(toLocal).add(U.v3.set(0, 0.07, -0.06).applyQuaternion(rootQ))
-        : U.v2.set(side * 0.3, -0.78, 0.18).applyQuaternion(rootQ).add(hip);
+      const foot = horse.stirrup ? horse.stirrup(s, U.v2).applyMatrix4(toLocal).add(U.v3.set(0, 0.07, -0.06).multiplyScalar(this.k).applyQuaternion(rootQ))
+        : U.v2.set(side * 0.3, -0.78, 0.18).multiplyScalar(this.k).applyQuaternion(rootQ).add(hip);
       const pole = U.v3.set(side * 0.3, 0, 1).applyQuaternion(rootQ).add(hip);
-      solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.t.limbs[`leg_${s}`], foot, pole);
+      solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.limbs[`leg_${s}`], foot, pole);
     }
   }
 
@@ -1386,7 +1447,8 @@ export class SkinnedHuman {
     const idleW = this.actions.idle ? this.actions.idle.weight : 0;
     if (idleW <= 0.02) return false;
     const shoulder = A.dir.setFromMatrixPosition((s === 'l' ? b.upperarm_l : b.upperarm_r).matrixWorld);
-    wrist.lerp(A.hang.set(s === 'l' ? 0.08 : -0.08, -0.55, 0.035).applyQuaternion(rootQ).add(shoulder), idleW);
+    const out = 0.08 + this.handsOut;
+    wrist.lerp(A.hang.set(s === 'l' ? out : -out, -0.55, 0.035).multiplyScalar(this.k).applyQuaternion(rootQ).add(shoulder), idleW);
     q.slerp(this.handWorld(s, rootQ, A.q2), idleW);
     return true;
   }
@@ -1397,17 +1459,17 @@ export class SkinnedHuman {
   // `free`), hanging; eased from one to the other.
   secondHand(agent, rootQ, dt, handle) {
     const b = this.bones;
-    const t = this.t;
-    const hr = t.hands.r;
-    const hl = t.hands.l;
+    const hr = this.t.hands.r;
+    const hl = this.hand.l;
     // the weapon's axis: through the right hand's grip, along the held item
     const p = S2.p.copy(hr.grip).applyMatrix4(b.hand_r.matrixWorld);
     const dir = S2.dir.set(0, 0, 1).applyQuaternion(worldQuat(b.hand_r, S2.q).multiply(hr.gripQ));
     const shoulder = S2.sh.setFromMatrixPosition(b.upperarm_l.matrixWorld);
-    const arm = t.limbs.arm_l;
+    const arm = this.limbs.arm_l;
     let s = NaN;
     if (agent._pose.free < 0.5) {
-      for (const [want, from, to] of secondRanges(agent.weapon)) {
+      for (const range of secondRanges(agent.weapon)) {
+        const [want, from, to] = secondFor(range, this.k, S2.range);
         s = secondGrip(shoulder, p, dir, from, to, want, (arm.a + arm.b) * REACH, hl.back, hl.side);
         if (!Number.isNaN(s)) break;
       }
@@ -1467,16 +1529,17 @@ export class SkinnedHuman {
     // the arrow's rest out from the jaw along the way to the target, as far
     // as the bow arm reaches: the bow's grip, and the left wrist, so far back
     const jaw = AR.jaw.copy(JAW).applyMatrix4(b.head.matrixWorld);
-    const gripOff = AR.g.copy(t.hands.l.grip).applyQuaternion(this.handWorld('l', aimQ, AR.hq));
+    const gripOff = AR.g.copy(this.hand.l.grip).applyQuaternion(this.handWorld('l', aimQ, AR.hq));
     const restOff = AR.ro.copy(ARROW_REST).applyQuaternion(bowQ);
-    const arm = t.limbs.arm_l;
+    const arm = this.limbs.arm_l;
     const reach = (arm.a + arm.b) * REACH;
     const v = AR.v.copy(jaw).sub(restOff).sub(gripOff).sub(AR.s.setFromMatrixPosition(b.upperarm_l.matrixWorld));
     const vt = v.dot(T);
     const disc = vt * vt - v.lengthSq() + reach * reach;
     const full = Math.min(DRAW, disc > 0 ? Math.sqrt(disc) - vt : -vt);
     // (nearer as he nocks, NOCK_REST, pushed out as he draws)
-    const draw = Math.min(full, NOCK_REST + (full - NOCK_REST) * d.pull);
+    const nock = NOCK_REST * this.k;
+    const draw = Math.min(full, nock + (full - nock) * d.pull);
     const rest = AR.rest.copy(jaw).addScaledVector(T, draw);
     const grip = AR.grip.copy(rest).sub(restOff);
     // the bow hand raised
@@ -1485,7 +1548,7 @@ export class SkinnedHuman {
     // drawing it to the jaw
     const handR = this.handWorld('r', aimQ, AR.hr);
     const at = AR.at.copy(STRING_NOCK).applyQuaternion(bowQ).add(grip).lerp(jaw, d.pull);
-    const wrist = AR.w.copy(t.hands.r.grip).applyQuaternion(handR).negate().add(at);
+    const wrist = AR.w.copy(this.hand.r.grip).applyQuaternion(handR).negate().add(at);
     const hanging = this.hang('r', rootQ, AR.wh, AR.qh);
     if (hold > 0.001 || hanging) {
       AR.wh.lerp(wrist, hold);
@@ -1533,7 +1596,7 @@ export class SkinnedHuman {
     const [upper, lower, hand] = s === 'l' ? this.armL : this.armR;
     const shoulder = H.shoulder.setFromMatrixPosition(upper.matrixWorld);
     if (!pole) pole = H.pole.set(side * 0.55, -0.55, -0.45).applyQuaternion(rootQ).add(shoulder);
-    solveLimb(upper, lower, hand, s === 'l' ? this.t.limbs.arm_l : this.t.limbs.arm_r, wrist, pole, true);
+    solveLimb(upper, lower, hand, s === 'l' ? this.limbs.arm_l : this.limbs.arm_r, wrist, pole, true);
     setWorldQuat(hand, handWorldQ);
   }
 
@@ -1542,7 +1605,7 @@ export class SkinnedHuman {
   placeHand(s, pos, q, rootQ, pole = null) {
     const handWorld = this.handWorld(s, q, H.q);
     // wrist position = grip minus the grip offset
-    const wrist = H.wrist.copy(this.t.hands[s].grip).applyQuaternion(handWorld);
+    const wrist = H.wrist.copy(this.hand[s].grip).applyQuaternion(handWorld);
     wrist.subVectors(pos, wrist);
     this.placeWrist(s, wrist, handWorld, rootQ, pole);
   }
@@ -1584,13 +1647,13 @@ export class SkinnedHuman {
         // it lies; the ankle from where it stood to where it lies, as high as
         // keeps it and the toes (as the foot turns) out of the ground
         const footQ = U.d.copy(toLocalQ).multiply(f.feetQFrom[k]).slerp(f.feetQTo[k], wl);
-        const toe = U.v4.copy(b[`ball_${s}`].position).applyQuaternion(footQ).applyQuaternion(U.q);
+        const toe = U.v4.copy(b[`ball_${s}`].position).multiplyScalar(this.k).applyQuaternion(footQ).applyQuaternion(U.q);
         const foot = U.v1.lerpVectors(f.feetFrom[k], f.feetTo[k], wl);
-        foot.y = Math.max(foot.y, terrain.heightAt(foot.x, foot.z) + 0.06, terrain.heightAt(foot.x + toe.x, foot.z + toe.z) + 0.02 - toe.y);
+        foot.y = Math.max(foot.y, terrain.heightAt(foot.x, foot.z) + 0.06 * this.k, terrain.heightAt(foot.x + toe.x, foot.z + toe.z) + 0.02 - toe.y);
         foot.applyMatrix4(U.toLocal);
         const hip = b[`thigh_${s}`].getWorldPosition(U.v2);
         const pole = U.v3.lerpVectors(f.polesFrom[k], f.polesTo[k], wl).add(hip);
-        solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.t.limbs[`leg_${s}`], foot, pole);
+        solveLimb(b[`thigh_${s}`], b[`calf_${s}`], b[`foot_${s}`], this.limbs[`leg_${s}`], foot, pole);
         setWorldQuat(b[`foot_${s}`], footQ);
         const i = LEGS + 3 + 4 * k;
         f.bones[i].quaternion.slerpQuaternions(f.from[i], f.to[i], wl);
@@ -1634,7 +1697,7 @@ export class SkinnedHuman {
         const spec = lieTarget(lie, `${limb}_${s}`, terrain, target);
         const root = b[upper].getWorldPosition(new THREE.Vector3());
         const pole = new THREE.Vector3(spec.pole[0] * m, spec.pole[1], spec.pole[2]);
-        solveLimb(b[upper], b[lower], b[end], t.limbs[`${limb}_${s}`], target, pole.clone().add(root));
+        solveLimb(b[upper], b[lower], b[end], this.limbs[`${limb}_${s}`], target, pole.clone().add(root));
         if (limb === 'arm') {
           if (spec.palm) this.handFlat(s, spec.palm, lie.sky);
           continue;
@@ -1644,7 +1707,7 @@ export class SkinnedHuman {
         const foot = b[end];
         if (spec.flat) {
           // the sole on the ground, the toes away from the head
-          aim(foot, b[`ball_${s}`].position, U.v1.copy(target).addScaledVector(Y, -0.13).addScaledVector(lie.sky, -0.06));
+          aim(foot, b[`ball_${s}`].position, U.v1.copy(target).addScaledVector(Y, -0.13 * this.k).addScaledVector(lie.sky, -0.06 * this.k));
         } else {
           // pointed: turned towards the line of the shin
           const ankle = U.v1.setFromMatrixPosition(foot.matrixWorld);
@@ -1730,7 +1793,7 @@ const scratch = (vs, qs, extra = {}) => {
 };
 const U = scratch(['v1', 'v2', 'v3', 'v4', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1), e: new THREE.Euler() });
 const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway', 'd0', 'd1', 'butt'], ['wristQ', 'q', 'q2', 'qp', 'qp2']);
-const S2 = scratch(['p', 'dir', 'sh', 'w'], ['q', 'q2', 'q3'], { h: scratch(['grip', 'wrist', 'len', 'knuck', 'palm'], []) });
+const S2 = scratch(['p', 'dir', 'sh', 'w'], ['q', 'q2', 'q3'], { h: scratch(['grip', 'wrist', 'len', 'knuck', 'palm'], []), range: [0, 0, 0] });
 const AR = scratch(['T', 'up', 'right', 'x', 'y', 'jaw', 'g', 'ro', 'v', 's', 'rest', 'grip', 'p', 'at', 'w', 'wh', 'pole', 'pole2', 'meet'],
   ['q', 'aimQ', 'bowQ', 'hq', 'hr', 'q2', 'qh'], { m: new THREE.Matrix4(), bm: new THREE.Matrix4() });
 const H = scratch(['len', 'knuck', 'palm', 'wrist', 'shoulder', 'pole'], ['q', 'inv', 'lower'], { m: new THREE.Matrix4() });
@@ -1742,6 +1805,17 @@ const AI = scratch(['from', 'pos', 'to'], ['q', 'r']);
 const SL = scratch(['S', 'dir', 'p', 'E', 'T', 'n', 'h', 'axis', 'tmp'], ['q', 'r']);
 const OG = scratch(['w'], []);
 const HB = scratch(['v'], []);
+const SB = { m: new THREE.Matrix4() };
+
+// A bone's inverse bind `m` followed by a scale by `f` along the unit axes
+// `axes` (square to each other, in the bone's space): the skin bound to it
+// scaled so about the bone. A new matrix.
+function scaledBind(m, f, axes) {
+  const s = SB.m.identity();
+  const e = s.elements;
+  for (const a of axes) for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) e[c * 4 + r] += (f - 1) * a.getComponent(r) * a.getComponent(c);
+  return s.multiply(m).clone();
+}
 
 // a rotation given in the frame `frameQ` (e.g. the soldier's root) as a world rotation
 function worldRot(frameQ, local, out) {

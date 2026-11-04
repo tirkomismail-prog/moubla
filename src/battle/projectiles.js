@@ -104,8 +104,11 @@ export class Projectiles {
       for (const a of cands) {
         if (!a.alive || a === p.owner) continue;
         if (!battle.areEnemies(p.owner, a) && !p.anyTeam) continue;
-        const base = a.horse ? a.pos.y + 1.55 : a.pos.y + 0.1;
-        const top = base + (a.horse ? 1.05 : 1.75);
+        // (round him from his feet, or his horse's back, to the top of his
+        // head: Agent.hitZone)
+        const zone = a.hitZone();
+        const base = a.pos.y + zone.base;
+        const top = a.pos.y + zone.top;
         _a.set(a.pos.x, base, a.pos.z);
         _b.set(a.pos.x, top, a.pos.z);
         const [d, s, y] = segSeg(_prev, p.pos, _a, _b);
@@ -185,7 +188,8 @@ export class Projectiles {
       battle.sound('arrowHit', a);
       return;
     }
-    const head = hy > 1.45 && !a.horse ? true : a.horse && hy > 0.75;
+    const zone = a.hitZone();
+    const head = hy > zone.head - zone.base;
     const armor = head ? a.headArmor : a.bodyArmor;
     const dmg = computeDamage(raw, p.dtype, armor) * (head ? 1.6 : 1);
     battle.onRangedHit(p.owner, a, dmg, false, head);

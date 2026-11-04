@@ -752,7 +752,7 @@ export class Battle {
 
   // Launch a projectile from agent `a` with weapon `w`.
   fireProjectile(a, w, dirOverride) {
-    const origin = new THREE.Vector3(a.pos.x, a.pos.y + (a.horse ? 2.35 : 1.5), a.pos.z);
+    const origin = new THREE.Vector3(a.pos.x, a.pos.y + a.bodyY(a.horse ? 2.35 : 1.5), a.pos.z);
     origin.x += Math.sin(a.aimYaw) * 0.45;
     origin.z += Math.cos(a.aimYaw) * 0.45;
     let dir;
@@ -796,11 +796,11 @@ export class Battle {
   // Direction to shoot at a (possibly moving) target, compensating for gravity.
   aimSolution(a, t, speed) {
     const ox = a.pos.x;
-    const oy = a.pos.y + (a.horse ? 2.35 : 1.5);
+    const oy = a.pos.y + a.bodyY(a.horse ? 2.35 : 1.5);
     const oz = a.pos.z;
     let tx = t.pos.x;
     let tz = t.pos.z;
-    const ty = t.pos.y + (t.horse ? 2.0 : 1.1);
+    const ty = t.pos.y + t.bodyY(t.horse ? 2.0 : 1.1);
     let dist = Math.hypot(tx - ox, tz - oz);
     const flight = dist / speed;
     tx += t.vel.x * flight;
@@ -1180,7 +1180,8 @@ export class Battle {
     }
     if (!focus) return;
     const mounted = !!focus.horse;
-    const pivot = new THREE.Vector3(focus.pos.x, focus.pos.y + (mounted ? 2.85 : 1.65), focus.pos.z);
+    // (above his head, as tall as he is: Agent.bodyY)
+    const pivot = new THREE.Vector3(focus.pos.x, focus.pos.y + focus.bodyY(mounted ? 2.85 : 1.65), focus.pos.z);
     const y = this.camYaw;
     const pch = this.camPitch;
     const dist = focus === this.player ? (mounted ? 5.4 : 3.1) : 6;

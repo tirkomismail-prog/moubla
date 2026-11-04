@@ -3,6 +3,7 @@
 // geometries so that a single shared material can be used.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { CLAVICLE } from './stature.js';
 
 // Two shared materials: a cheap Lambert one for the low preset and a PBR one
 // that reads a per-vertex `metal` attribute, so that steel parts shine and
@@ -508,11 +509,37 @@ export function buildHuman(spec) {
   const backMount = new THREE.Group();
   backMount.position.set(0, 0.35, -0.16);
   torso.add(backMount);
-  if (show) rigidSkin(root, parts, `human:${key.join('|')}`, HUMAN_SPHERE);
+  const skin = show ? rigidSkin(root, parts, `human:${key.join('|')}`, HUMAN_SPHERE) : null;
   // (armLen: from the shoulder to the hand; character.js fitDriver sets the
   // realistic body's)
-  return { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount, armLen: 0.6 };
+  const rig = { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount, armLen: 0.6 };
+  if (spec.stature) shapeHuman(rig, skin, spec.stature);
+  return rig;
 }
+
+// A man's build (stature.js) on this body (after its mesh is made: the mesh
+// is shared by all who look alike). All of him is his height times the
+// model's, but what his hands and his back hold, which stays the size it is
+// (the realistic body is posed by this rig: as large as it). His shoulders
+// are out or in by his collarbones' change (the realistic model's); his
+// trunk wider and deeper (as his waist and chest), his head larger or
+// smaller: their bind.
+function shapeHuman(r, mesh, st) {
+  const k = st.height;
+  r.root.scale.setScalar(k);
+  for (const o of [r.wristR, r.handL, r.shieldMount, r.backMount]) o.scale.setScalar(1 / k);
+  const out = CLAVICLE * (st.shoulders - 1);
+  r.armR.position.x -= out;
+  r.armL.position.x += out;
+  if (!mesh) return;
+  const trunk = (st.waist + st.chest) / 2;
+  const sk = mesh.skeleton;
+  sk.boneInverses.forEach((m, i) => {
+    if (sk.bones[i] === r.torso) m.premultiply(_shape.makeScale(trunk, 1, trunk));
+    else if (sk.bones[i] === r.neck) m.premultiply(_shape.makeScale(st.head, st.head, st.head));
+  });
+}
+const _shape = new THREE.Matrix4();
 
 // ---------------------------------------------------------------------------
 // Weapons (built along +Z from the grip at the origin)

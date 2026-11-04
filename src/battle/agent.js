@@ -7,7 +7,8 @@ import { buildHuman, buildHorse, weaponGeo, shieldGeo, arrowGeo, stringGeo, bowN
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround } from './character.js';
-import { groundFit, fitNormal, layFlat, footprint, lowest, rigidGrip, secondRanges, STEEPEST } from './grips.js';
+import { groundFit, fitNormal, layFlat, footprint, lowest, rigidGrip, secondFor, secondRanges, STEEPEST } from './grips.js';
+import { stature, scaledY, hitZone, NEUTRAL, EYES, EYES_MOUNTED } from './stature.js';
 import { clamp, wrapAngle, approachAngle, smoothstep } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
 
@@ -19,8 +20,10 @@ const Q = (arm, hint) => armQuat(arm, hint);
 const HALF_PI = Math.PI / 2;
 // how far a soldier turns his head to his foe from
 const LOOK_DIST = 40;
-// a rider's hip joints above the seat of a (realistic) saddle
+// a rider's hip joints above the seat of a (realistic) saddle; the pose rig's
+// hips above its feet (models.js buildHuman, of the model's size)
 const SEAT_PELVIS = 0.1;
+const HIPS = 0.92;
 
 // Build a pose from the arm direction and the desired direction of the held
 // item (blade). The wrist angle bends the item towards the arm axis.
@@ -49,7 +52,10 @@ function P(arm, blade, twist = 0, pitch = 0) {
 //   turn and bend;
 // - `ground`: a pole stood on the ground: it slides down in the hand till
 //   its butt is there (Agent.groundSlide);
-// - `free`: the second hand rests (lets go of a two-handed weapon).
+// - `free`: the second hand rests (lets go of a two-handed weapon);
+// - `floor`: a long weapon held point down: on a man shorter than the model
+//   (stature.js) the hand no lower above the ground than the model's, the
+//   weapon being as long (its point would go into the ground).
 // poseTable builds them for a rig's shoulder and arm.
 const ONE = {
   // the blade forward and down, the arm by the side
@@ -101,7 +107,7 @@ const POLE = {
 // cocked over a shoulder or overhead, swept across, thrust from the right
 // hip (its pommel by the hip, not in his belly).
 const TWO = {
-  idle: { hand: [-0.08, 0.3, 0.36], blade: [0, -1, 0.45] },
+  idle: { hand: [-0.08, 0.3, 0.36], blade: [0, -1, 0.45], floor: 1 },
   carry: { hand: [-0.2, 0.26, 0.26], blade: [0.05, 0.78, -0.62], free: 1 },
   ready: {
     right: { hand: [-0.16, 0.6, 0.3], blade: [-0.3, 0.55, -0.78], twist: -0.6 },
@@ -119,7 +125,7 @@ const TWO = {
     left: { hand: [0.1, 0.3, 0.38], blade: [0.15, 1, 0.12] },
     right: { hand: [-0.16, 0.36, 0.4], blade: [-0.15, 1, 0.12] },
     up: { hand: [0.14, 0.82, 0.3], blade: [-1, 0.12, 0.15] },
-    down: { hand: [-0.08, 0.2, 0.4], blade: [-0.45, -0.8, 0.4] },
+    down: { hand: [-0.08, 0.2, 0.4], blade: [-0.45, -0.8, 0.4], floor: 1 },
   },
 };
 const OTHER = {
@@ -143,20 +149,24 @@ const OTHER = {
 
 // The poses of the specs above for a rig whose right shoulder is at
 // `shoulder` (torso space) with an arm `len` long, that bends (the realistic
-// body) or not: {q, wrist, ext (the hand's distance from the shoulder, of
-// len), twist, pitch, ground, free}, in the specs' shape.
+// body) or not, of a man `k` times the model's height (the rig is as much
+// larger): {q, wrist, ext (the hand's distance from the shoulder, of len),
+// twist, pitch, ground, free}, in the specs' shape. (`k` to the hundredth,
+// and 1 for the taller: a few tables.)
 const poseTables = new Map();
-function poseTable(shoulder, len, bends) {
-  const key = `${shoulder.x},${shoulder.y},${shoulder.z},${len},${bends}`;
+function poseTable(shoulder, len, bends, k = 1) {
+  const key = `${shoulder.x},${shoulder.y},${shoulder.z},${len},${bends},${k}`;
   let table = poseTables.get(key);
   if (table) return table;
   const arm = new THREE.Vector3();
   const build = (spec) => {
-    if (!spec.blade) return Object.fromEntries(Object.entries(spec).map(([k, v]) => [k, build(v)]));
+    if (!spec.blade) return Object.fromEntries(Object.entries(spec).map(([name, v]) => [name, build(v)]));
     let ext = 1;
     if (spec.low && !bends) arm.fromArray(spec.low);
     else if (spec.hand) {
-      arm.fromArray(spec.hand).sub(shoulder);
+      arm.fromArray(spec.hand);
+      if (spec.floor) arm.y = (HIPS + arm.y) / k - HIPS;
+      arm.sub(shoulder);
       if (bends) ext = Math.min(1, arm.length() / len);
     } else arm.fromArray(spec.arm);
     const p = P([arm.x, arm.y, arm.z], spec.blade, spec.twist, spec.pitch);
@@ -227,6 +237,8 @@ const SLIDE_UP = [0.9, 0.97];
 const LOW_REACH = [0.85, 1.1];
 
 const Z = new THREE.Vector3(0, 0, 1);
+// (the low graphics' second hand's place on the weapon: secondRig)
+const SECOND_AT = [0, 0, 0];
 // an archer's way to his target in his torso's space (animateRig)
 const AIM = new THREE.Vector3();
 const SG = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
@@ -345,6 +357,11 @@ export class Agent {
     this.ai = { nextThink: Math.random() * 0.4, attackCd: Math.random(), strafe: Math.random() < 0.5 ? 1 : -1, strafeT: 0 };
     this.group = opts.group || 'inf';
     this.name = opts.name || '';
+    // his build by his id (stature.js; a chosen one instead, or the model's
+    // for the player: his camera and his reach as they were), and where
+    // missiles hit him on foot and on a horse
+    this.stature = opts.stature || (this.isPlayer ? NEUTRAL : stature(this.id));
+    this.zones = [hitZone(this.stature, false), hitZone(this.stature, true)];
 
     // ---- equipment and stats
     const rnd = Math.random;
@@ -464,6 +481,7 @@ export class Agent {
       badge: colors.badge || null,
       arms: troop && troop.arms ? knightArms(this.id) : -1,
       armsWorn: !!troop && troop.faction === colors.faction,
+      stature: this.stature,
       // a chosen face (skin, hair, beard, stubble) instead of a random one
       ...opts.appearance,
     };
@@ -879,6 +897,7 @@ export class Agent {
     const up = F.b.set(heightAt(x - 0.1, z) - heightAt(x + 0.1, z), 0.2, heightAt(x, z - 0.1) - heightAt(x, z + 0.1)).normalize();
     if (up.y < Math.cos(STEEPEST)) up.set(0, 1, 0);
     const best = { head, push: 0 };
+    const tall = this.stature.height;
     let worst = Infinity;
     for (let k = 0; k * FALL_STEP <= Math.PI + 1e-6; k++) {
       for (const s of k ? [1, -1] : [1]) {
@@ -886,7 +905,7 @@ export class Agent {
         const dx = Math.sin(a);
         const dz = Math.cos(a);
         for (const push of [0, FALL_PUSH]) {
-          const fit = groundFit(heightAt, x + dx * (FALL_REACH + push), z + dz * (FALL_REACH + push), dx, dz, this.pos, F.fit);
+          const fit = groundFit(heightAt, x + dx * (FALL_REACH * tall + push), z + dz * (FALL_REACH * tall + push), dx, dz, this.pos, F.fit, tall);
           const n = fitNormal(fit, dx, dz, F.c);
           const tilt = Math.acos(clamp(n.dot(up), -1, 1));
           // (how far from all right: samples left out count most)
@@ -910,29 +929,32 @@ export class Agent {
   // names facing the sky, fitted to the ground's slope under him (grips.js
   // groundFit). The root's rotation and place at the start of the fall and
   // at its end, and his own space's ground (sky . p = c, `sky` the side up).
-  // `push`: he lands that much farther than LIE's reach.
+  // `push`: he lands that much farther than LIE's reach. (LIE is the
+  // model's: all of it k times as far for a man k times as tall.)
   lieLayout(variant, mirror, dx, dz, push = 0) {
     const L = LIE[variant];
     const terrain = this.battle.terrain;
+    const k = this.stature.height;
     const rho = (Array.isArray(L.rho) ? L.rho[this.fallDir > 0 ? 0 : 1] : L.rho) * mirror;
     const sky = new THREE.Vector3(Math.sin(rho), 0, Math.cos(rho));
     // his pelvis lands `reach` m from his feet; the ground under the body
-    const x = this.pos.x + dx * (L.reach + push);
-    const z = this.pos.z + dz * (L.reach + push);
-    const fit = groundFit((px, pz) => terrain.heightAt(px, pz), x, z, dx, dz, this.pos);
+    const x = this.pos.x + dx * (L.reach * k + push);
+    const z = this.pos.z + dz * (L.reach * k + push);
+    const fit = groundFit((px, pz) => terrain.heightAt(px, pz), x, z, dx, dz, this.pos, undefined, k);
     const n = fitNormal(fit, dx, dz);
     const along = new THREE.Vector3(dx, fit.a, dz).normalize();
     // own (up, sky, up x sky) to the world's (along, n, along x n)
     F.m.makeBasis(along, n, F.a.crossVectors(along, n));
     F.m2.makeBasis(tmpV.set(0, 1, 0), sky, F.b.crossVectors(tmpV, sky)).transpose();
     const q1 = new THREE.Quaternion().setFromRotationMatrix(F.m.multiply(F.m2));
-    // the pelvis lieHeight above the ground under it, `g`
-    const pelvis = new THREE.Vector3(0, this.body ? this.body.t.pelvisY : this.rig.hips.position.y, 0);
-    const hp = lieHeight(rho);
+    // the pelvis lieHeight above the ground under it, `g` (his hips as broad
+    // as his waist)
+    const pelvis = new THREE.Vector3(0, (this.body ? this.body.t.pelvisY : this.rig.hips.position.y) * k, 0);
+    const hp = lieHeight(rho, k * this.stature.waist);
     const g = new THREE.Vector3(x, fit.y, z);
     const r1 = F.c.copy(pelvis).addScaledVector(sky, -hp).applyQuaternion(q1).negate().add(g).clone();
     return {
-      variant, mirror, push, rho, sky, dx, dz, n, g, pelvis, q1, r1,
+      variant, mirror, push, rho, sky, dx, dz, n, g, pelvis, q1, r1, k,
       c: sky.dot(pelvis) - hp,
       q0: new THREE.Quaternion().setFromAxisAngle(tmpV.set(0, 1, 0), this.yaw),
       r0: this.pos.clone(),
@@ -1093,10 +1115,12 @@ export class Agent {
   // ---- animation ---------------------------------------------------------------------------------
 
   // The pose table of this soldier's rig (poseTable): its right shoulder
-  // and arm, bending if he has a realistic body.
+  // and arm, bending if he has a realistic body; his height.
   poses() {
+    if (this._poses) return this._poses;
     const r = this.rig;
-    return this._poses || (this._poses = poseTable(r.armR.position, r.armLen, !!this.body));
+    this._poses = poseTable(r.armR.position, r.armLen, !!this.body, Math.min(1, Math.round(this.stature.height * 100) / 100));
+    return this._poses;
   }
 
   rightPose(out) {
@@ -1224,12 +1248,12 @@ export class Agent {
       };
       for (const [limb, from, len, clear] of [['arm_l', r.armL, 0.6, 0.04], ['arm_r', r.armR, 0.6, 0.04], ['leg_l', r.legL, 0.9, 0.06], ['leg_r', r.legR, 0.9, 0.06]]) {
         const leg = limb[0] === 'l';
-        // its root in his own space
+        // its root in his own space (the rig's, his height times larger)
         const root = F.a.copy(from.position);
         if (!leg) root.applyQuaternion(torso);
-        root.add(r.hips.position);
+        root.add(r.hips.position).multiplyScalar(lie.k);
         const spec = lieTarget(lie, limb, terrain, F.b);
-        const end = F.c.subVectors(F.b, root).setLength(len).add(root);
+        const end = F.c.subVectors(F.b, root).setLength(len * lie.k).add(root);
         if (spec.ground !== undefined) onGround(end, clear, lie, terrain);
         const d = end.sub(root).normalize();
         if (leg) lie.rig[limb] = [Math.atan2(-d.z, -d.y), Math.asin(clamp(d.x, -1, 1))];
@@ -1294,7 +1318,7 @@ export class Agent {
     const pts = [];
     if (this.body) {
       const o = this.body.object;
-      F.m.compose(lie.r1, lie.q1, F.one).multiply(F.m2.compose(o.position, o.quaternion, o.scale));
+      F.m.compose(lie.r1, lie.q1, this.rig.root.scale).multiply(F.m2.compose(o.position, o.quaternion, o.scale));
       return this.body.lyingPoints(F.m, pts);
     }
     const r = this.rig;
@@ -1353,10 +1377,12 @@ export class Agent {
     if (this.horse) {
       const h = this.horse;
       const hr = h.rig;
+      // (his hips on the saddle, however tall he is)
+      const k = this.stature.height;
       if (hr.skinned) {
         // sit on the saddle: it moves and tilts with the horse's back
         hr.update(h, dt, this.battle);
-        const pelvis = this.body ? this.body.t.pelvisY : 0.92;
+        const pelvis = (this.body ? this.body.t.pelvisY : HIPS) * k;
         root.position.set(this.pos.x, this.pos.y + hr.seatY + hr.seatDY + SEAT_PELVIS - pelvis, this.pos.z);
         root.rotation.set(hr.pitch, h.yaw, hr.roll);
       } else {
@@ -1373,10 +1399,10 @@ export class Agent {
         hr.body.rotation.x = Math.sin(ph * 2) * 0.025 * Math.min(1, sp / 6);
         hr.root.position.copy(this.pos);
         hr.root.rotation.y = h.yaw;
-        root.position.set(this.pos.x, this.pos.y + 0.8 + bob, this.pos.z);
+        root.position.set(this.pos.x, this.pos.y + 0.8 + HIPS * (1 - k) + bob, this.pos.z);
         root.rotation.set(0, h.yaw, 0);
       }
-      r.hips.position.y = 0.92;
+      r.hips.position.y = HIPS;
       turnTo(r.legL, -1.15, 0, 0.42);
       turnTo(r.legR, -1.15, 0, -0.42);
       bodyYaw = h.yaw;
@@ -1386,7 +1412,8 @@ export class Agent {
       root.position.copy(this.pos);
       turnTo(root, 0, bodyYaw, 0);
       const sp = Math.hypot(this.vel.x, this.vel.z);
-      this.walkPhase += sp * dt * 2.4;
+      // (a taller man's strides are longer)
+      this.walkPhase += (sp * dt * 2.4) / this.stature.height;
       const amp = Math.min(0.75, sp * 0.18);
       // walking backwards / sideways: swing legs relative to motion
       const moveYaw = Math.atan2(this.vel.x, this.vel.z);
@@ -1396,7 +1423,7 @@ export class Agent {
       const s = Math.sin(this.walkPhase);
       turnTo(r.legL, s * amp * fwd, 0, s * amp * side * 0.5);
       turnTo(r.legR, -s * amp * fwd, 0, -s * amp * side * 0.5);
-      r.hips.position.y = 0.92 - Math.abs(Math.cos(this.walkPhase)) * 0.035 * amp;
+      r.hips.position.y = HIPS - Math.abs(Math.cos(this.walkPhase)) * 0.035 * amp;
       twistBase = clamp(wrapAngle(this.aimYaw - bodyYaw), -1.2, 1.2);
     }
     this.bodyYaw = bodyYaw;
@@ -1565,8 +1592,9 @@ export class Agent {
       this.drawString(null, false);
       return;
     }
+    // (the bow hand's space is the size of what it holds: stature.js)
     const hand = F.b.set(0, -r.armLen * r.armR.scale.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position);
-    hand.sub(r.armL.position).applyQuaternion(F.q.copy(r.armL.quaternion).invert()).sub(r.handL.position).sub(bow.position);
+    hand.sub(r.armL.position).applyQuaternion(F.q.copy(r.armL.quaternion).invert()).sub(r.handL.position).multiplyScalar(this.stature.height).sub(bow.position);
     this.drawString(hand.applyQuaternion(F.q.copy(bow.quaternion).invert()).lerp(STRING_NOCK, 1 - take), d.nocked);
   }
 
@@ -1601,9 +1629,12 @@ export class Agent {
     // the weapon's axis in the torso's space: from the wrist along the held item
     const p = F.a.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position);
     const dir = F.b.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(r.armR.quaternion);
+    // (his, in the rig's space: his height times larger)
+    const k = this.stature.height;
     let s = NaN;
-    for (const [want, from, to] of secondRanges(this.weapon)) {
-      s = rigidGrip(r.armL.position, p, dir, from, to, want, r.armLen * LOW_REACH[0], r.armLen * LOW_REACH[1]);
+    for (const range of secondRanges(this.weapon)) {
+      const [want, from, to] = secondFor(range, k, SECOND_AT);
+      s = rigidGrip(r.armL.position, p, dir, from / k, to / k, want / k, r.armLen * LOW_REACH[0], r.armLen * LOW_REACH[1]);
       if (!Number.isNaN(s)) break;
     }
     if (Number.isNaN(s)) return false;
@@ -1622,7 +1653,7 @@ export class Agent {
     const hand = tmpV.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position).applyQuaternion(r.torso.quaternion);
     const q = tmpQ.copy(r.torso.quaternion).multiply(r.armR.quaternion);
     const up = tmpV2.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(q).y;
-    return this.slideFor(r.hips.position.y + hand.y, up);
+    return this.slideFor((r.hips.position.y + hand.y) * this.stature.height, up);
   }
 
   // As groundSlide, the hand `y` m over his feet, the pole rising `up` m a
@@ -1644,11 +1675,22 @@ export class Agent {
     return smoothstep(SLIDE_UP[0], SLIDE_UP[1], up);
   }
 
-  // Head position (for camera, projectiles and hit tests).
+  // Where his eyes are, about (for the camera, missiles and hit tests).
   headPos(out) {
     out.copy(this.pos);
-    out.y += this.horse ? 2.45 : 1.65;
+    out.y += this.bodyY(this.horse ? EYES_MOUNTED : EYES);
     return out;
+  }
+
+  // How high above his feet (or the ground under his horse) the point of the
+  // model at `y` is on him (stature.js scaledY).
+  bodyY(y) {
+    return scaledY(this.stature, y, !!this.horse);
+  }
+
+  // Where missiles hit him (stature.js hitZone): on foot or on his horse.
+  hitZone() {
+    return this.zones[this.horse ? 1 : 0];
   }
 
   dispose() {

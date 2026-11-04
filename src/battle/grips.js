@@ -3,8 +3,9 @@
 // can run them in node.
 import * as THREE from 'three';
 
-// how far along a lying body its heights are sampled: the feet behind the
-// pelvis, the head ahead of it, and to each side of it (m)
+// how far along a lying body of the model's size (stature.js) its heights
+// are sampled: the feet behind the pelvis, the head ahead of it, and to each
+// side of it (m)
 const FIT = { feet: 0.85, head: 0.75, across: 0.25 };
 // steeper than this from where a man stood is a drop or a wall, not a slope
 // he lies on (the edge of the siege's plateau and its cliff, the sides of
@@ -18,7 +19,8 @@ export const STEEPEST = 0.68;
 // The ground under a body lying along (dx, dz) (a unit vector from its feet
 // to its head) with its pelvis over (x, z): a plane fitted (least squares)
 // to five heights, at the feet, the pelvis and the head along the body and
-// `across` m to each side of the pelvis. `floor` (optional): where he stood
+// `across` m to each side of the pelvis, all `k` times as far for a body `k`
+// times the model's height. `floor` (optional): where he stood
 // ({x, y, z}); a sample more than DROP_GRADE per metre of its distance below
 // or above it is over a drop or up a wall, not a slope he lies on: the plane
 // is fitted to the others (level where they leave it open; with none, at
@@ -31,13 +33,17 @@ export const STEEPEST = 0.68;
 // of the others is off the plane (err, m: a few cm on natural ground; more
 // where it bends sharply, as at the edge of the plateau).
 const SAMPLES = [[-FIT.feet, 0], [0, 0], [FIT.head, 0], [0, FIT.across], [0, -FIT.across]];
+// (this body's: SAMPLES times its height)
+const FU = new Float64Array(5);
+const FV = new Float64Array(5);
 const FH = new Float64Array(5);
 const FW = new Float64Array(5);
-export function groundFit(heightAt, x, z, dx, dz, floor = null, out = {}) {
+export function groundFit(heightAt, x, z, dx, dz, floor = null, out = {}, k = 1) {
   out.off = 0;
   out.feetOff = false;
   for (let i = 0; i < 5; i++) {
-    const [u, v] = SAMPLES[i];
+    const u = (FU[i] = SAMPLES[i][0] * k);
+    const v = (FV[i] = SAMPLES[i][1] * k);
     const px = x + dx * u + dz * v;
     const pz = z + dz * u - dx * v;
     const h = heightAt(px, pz);
@@ -54,7 +60,7 @@ export function groundFit(heightAt, x, z, dx, dz, floor = null, out = {}) {
   out.pitch = Math.atan(out.a);
   out.roll = Math.atan(out.b);
   out.err = 0;
-  for (let i = 0; i < 5; i++) if (FW[i]) out.err = Math.max(out.err, Math.abs(FH[i] - out.y - out.a * SAMPLES[i][0] - out.b * SAMPLES[i][1]));
+  for (let i = 0; i < 5; i++) if (FW[i]) out.err = Math.max(out.err, Math.abs(FH[i] - out.y - out.a * FU[i] - out.b * FV[i]));
   if (FW[1]) out.y = Math.max(out.y, FH[1]);
   return out;
 }
@@ -66,7 +72,8 @@ function fitPlane(out) {
   let s = 0, su = 0, sv = 0, suu = 0, svv = 0, suv = 0, sh = 0, suh = 0, svh = 0;
   for (let i = 0; i < 5; i++) {
     const w = FW[i];
-    const [u, v] = SAMPLES[i];
+    const u = FU[i];
+    const v = FV[i];
     const h = FH[i];
     s += w;
     su += w * u;
@@ -461,6 +468,18 @@ export const SECOND = {
 export function secondRanges(w) {
   if (w.cls === 'spear' || w.cls === 'crossbow') return SECOND[w.cls];
   return w.twoHanded ? SECOND[w.model] || SECOND.greatsword : null;
+}
+
+// A place of SECOND for a man `k` times the model's height (stature.js),
+// into `out`: where he likes his second hand and its nearest (a hand's
+// breadth from the first) as far as he is large, its farthest (the end of
+// the grip or the stock) where it is.
+export function secondFor(range, k, out) {
+  const [want, from, to] = range;
+  out[0] = want * k;
+  out[1] = Math.abs(from) < Math.abs(to) ? from * k : from;
+  out[2] = Math.abs(from) < Math.abs(to) ? to : to * k;
+  return out;
 }
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
