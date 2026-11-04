@@ -1,10 +1,11 @@
 // Each soldier's build (stage 4.5): a little taller or shorter than the
 // model, stockier or slimmer, broader or narrower in the shoulders, his head
 // a little larger or smaller, by his id (the same id, the same man: no
-// Math.random). Plain numbers, kept apart from the scene so that the tests
-// can run them in node: character.js and models.js shape the bodies by
-// them, agent.js, projectiles.js and battle.js follow his height.
-import { mulberry32 } from '../core/rng.js';
+// Math.random), or a named man's by his name (a companion: the same in every
+// battle). Plain numbers, kept apart from the scene so that the tests can
+// run them in node: character.js and models.js shape the bodies by them,
+// agent.js, projectiles.js and battle.js follow his height.
+import { mulberry32, nameSeed } from '../core/rng.js';
 
 // The model as it is: the player stays so (his camera, his reach and the
 // feel of his fights as they were).
@@ -46,10 +47,12 @@ function bell(rand) {
   return Math.tanh(BELL * z);
 }
 
-// The build of the soldier with the id `id`: his height, the width and
-// depth of his waist, ribs and chest, his collarbones' length and his head's
-// size (its share of his height's), each a factor of the model's.
-export function stature(id) {
+// The build of the soldier `who`, his id, or a named man's name (a
+// companion's key: rng.js nameSeed): his height, the width and depth of his
+// waist, ribs and chest, his collarbones' length and his head's size (its
+// share of his height's), each a factor of the model's.
+export function stature(who) {
+  const id = typeof who === 'string' ? nameSeed(who) : who;
   const rand = mulberry32((Math.imul(id, 2654435761) ^ SALT) >>> 0);
   const height = bell(rand);
   const build = bell(rand);
@@ -95,15 +98,12 @@ export function scaledY(st, y, mounted = false) {
   return base + (joint - base + (y - joint) * st.head) * h;
 }
 
-// The model's eyes (Agent.headPos), standing and on a horse.
-export const EYES = 1.62;
-export const EYES_MOUNTED = EYES + RISE;
-
 // Where missiles hit a man (projectiles.js): a capsule round the line from
-// `base` to `top` (the top of his head, m above his feet or the ground under
-// his horse), his head from `head` up; the model's standing and on a horse.
-const ZONE = { base: 0.1, top: 1.75, head: 1.55 };
-const ZONE_MOUNTED = { base: 1.55, top: ZONE.top + RISE, head: 2.3 };
+// `base` to `top` (m above his feet or the ground under his horse), his head
+// from `head` up; the model's standing and on a horse, as they were before
+// the builds (the player's: NEUTRAL), each man's scaled from them.
+const ZONE = { base: 0.1, top: 1.85, head: 1.55 };
+const ZONE_MOUNTED = { base: 1.55, top: 2.6, head: 2.3 };
 
 // The hit zone of a man of stature `st` (scaledY) into `out`.
 export function hitZone(st, mounted = false, out = {}) {

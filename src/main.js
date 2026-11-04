@@ -355,6 +355,8 @@ class Game {
       factionColors: ['#3f6fb5', '#a8322a'],
       arenaFighters: 7,
       fortName: 'Тестова фортеця',
+      // (each soldier from his own stream: Battle.seedSoldier)
+      armySeed: opts.armySeed,
     };
     this.startBattle(config, (result) => {
       this.lastDebugResult = result;

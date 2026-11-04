@@ -6,9 +6,9 @@ import { TROOPS } from '../data/troops.js';
 import { buildHuman, buildHorse, weaponGeo, shieldGeo, arrowGeo, stringGeo, bowNock, armQuat, pickSkin, pickHair, ARROW_NOCK, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
-import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround } from './character.js';
+import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround, GROUND_FOLLOW } from './character.js';
 import { groundFit, fitNormal, layFlat, footprint, lowest, rigidGrip, secondFor, secondRanges, STEEPEST } from './grips.js';
-import { stature, scaledY, hitZone, NEUTRAL, EYES, EYES_MOUNTED } from './stature.js';
+import { stature, scaledY, hitZone, NEUTRAL } from './stature.js';
 import { coatFor, ownCoat } from './coats.js';
 import { clamp, wrapAngle, approachAngle, smoothstep } from '../core/util.js';
 import { sideCloth } from '../data/dyes.js';
@@ -52,11 +52,13 @@ function P(arm, blade, twist = 0, pitch = 0) {
 // - `blade`: the way the held item points; `twist`, `pitch`: the torso's
 //   turn and bend;
 // - `ground`: a pole stood on the ground: it slides down in the hand till
-//   its butt is there (Agent.groundSlide);
+//   its butt is there (Agent.slideFor);
 // - `free`: the second hand rests (lets go of a two-handed weapon);
 // - `floor`: a long weapon held point down: on a man shorter than the model
 //   (stature.js) the hand no lower above the ground than the model's, the
-//   weapon being as long (its point would go into the ground).
+//   weapon being as long (its point would go into the ground); and the
+//   hands raised (or lowered) as the ground under its point is higher (or
+//   lower) than under his feet (Agent.floorLift).
 // poseTable builds them for a rig's shoulder and arm.
 const ONE = {
   // the blade forward and down, the arm by the side
@@ -82,12 +84,18 @@ const ONE = {
 };
 // A spear or a fork: upright by the right foot at rest (its butt a little
 // ahead of the foot and out, clear of a long coat's skirt as he shifts his
-// weight); in a fight held low at the hip and thrust, or overhand, the second
-// hand ahead of the right (grips.js SECOND) where it reaches. (Held at the
-// hip, the right hand stays out by his side, its butt end crossing behind it
-// outside his hip, not through his belly.)
+// weight); carried upright off the ground, lower in the hand, its point a
+// little ahead, on the move (Agent.restShare) or on a horse; the player's
+// at the trail, at rest too (by his side at the hip, its point ahead and a
+// little down: out of his sight, the camera over his right shoulder); in a
+// fight held low at the hip and thrust, or overhand, the second hand ahead
+// of the right (grips.js SECOND) where it reaches. (Held at the hip, the
+// right hand stays out by his side, its butt end crossing behind it outside
+// his hip, not through his belly.)
 const POLE = {
   idle: { hand: [-0.36, 0.28, 0.18], blade: [0.017, 1, -0.05], ground: 1, free: 1 },
+  carry: { hand: [-0.34, 0.12, 0.16], blade: [0.03, 1, 0.12], free: 1 },
+  trail: { arm: [-0.2, -1, 0.15], blade: [0, -0.1, 1], free: 1 },
   ready: {
     thrust: { hand: [-0.27, 0.22, 0.16], blade: [0.3, 0.1, 1], twist: -0.3 },
     overhead: { hand: [-0.24, 0.82, 0], blade: [0.1, -0.22, 1], twist: -0.2 },
@@ -134,9 +142,10 @@ const OTHER = {
   // held up, a little forward, clear of the horse's neck and head and of his
   // own legs (ONE.idle's would go down into them)
   upright: { hand: [-0.33, 0.32, 0.16], blade: [0.06, 1, 0.35] },
-  // a lance on foot stood on the ground by the right foot; upright or
-  // couched on a horse
+  // a lance on foot stood on the ground by the right foot, carried upright
+  // off it on the move (as a pole: POLE); upright or couched on a horse
   idleLance: { hand: [-0.36, 0.28, 0.18], blade: [0.017, 1, -0.04], ground: 1 },
+  carryLance: { hand: [-0.34, 0.12, 0.16], blade: [0.03, 1, 0.1] },
   rideLance: { arm: [-0.2, -1, 0.15], blade: [0, 1, 0.25] },
   couch: { arm: [-0.28, -0.96, -0.1], blade: [0, 0.02, 1] },
   // a crossbow: aimed with its butt at the cheek, the second hand under its
@@ -152,7 +161,7 @@ const OTHER = {
 // `shoulder` (torso space) with an arm `len` long, that bends (the realistic
 // body) or not, of a man `k` times the model's height (the rig is as much
 // larger): {q, wrist, ext (the hand's distance from the shoulder, of len),
-// twist, pitch, ground, free}, in the specs' shape. (The model's shoulder,
+// twist, pitch, ground, free, floor}, in the specs' shape. (The model's shoulder,
 // `k` to the hundredth and 1 for the taller: a few tables, kept for good.)
 const poseTables = new Map();
 function poseTable(shoulder, len, bends, k = 1) {
@@ -171,7 +180,7 @@ function poseTable(shoulder, len, bends, k = 1) {
       if (bends) ext = Math.min(1, arm.length() / len);
     } else arm.fromArray(spec.arm);
     const p = P([arm.x, arm.y, arm.z], spec.blade, spec.twist, spec.pitch);
-    return { ...p, ext, ground: spec.ground || 0, free: spec.free || 0 };
+    return { ...p, ext, ground: spec.ground || 0, free: spec.free || 0, floor: spec.floor || 0 };
   };
   table = { one: build(ONE), pole: build(POLE), two: build(TWO), ...build(OTHER) };
   poseTables.set(key, table);
@@ -187,6 +196,7 @@ function blendPose(out, p0, p1, t) {
   out.ext = p0.ext + (p1.ext - p0.ext) * t;
   out.ground = p0.ground + (p1.ground - p0.ground) * t;
   out.free = p0.free + (p1.free - p0.free) * t;
+  out.floor = p0.floor + (p1.floor - p0.floor) * t;
 }
 
 // The left arm of the low graphics' rig: hanging free, holding a bow
@@ -233,6 +243,18 @@ const JAW_LOW = new THREE.Vector3(-0.105, 0.12, 0.04);
 // metre along it (Agent.slideFor)
 const BUTT_CLEAR = 0.03;
 const SLIDE_UP = [0.9, 0.97];
+// a pole stands on the ground, a two-handed weapon rests point down, while
+// he stands: wholly below the first speed, not at all above the second
+// (m/s; Agent.restShare)
+const REST_SPEED = [0.4, 1.4];
+// a weapon held point down (a pose's `floor`): its lowest corner kept from
+// FLOOR_CLEAR to FLOOR_HOVER m above the ground under it, the hands raised
+// FLOOR_LIFT m at most (and lowered FLOOR_DROP m at most) for it
+// (Agent.floorLift)
+const FLOOR_CLEAR = 0.02;
+const FLOOR_HOVER = 0.1;
+const FLOOR_LIFT = 0.3;
+const FLOOR_DROP = 0.12;
 // the low graphics' straight left arm takes a two-handed weapon this much
 // shorter or longer than it is, at most (of its length)
 const LOW_REACH = [0.85, 1.1];
@@ -242,7 +264,7 @@ const Z = new THREE.Vector3(0, 0, 1);
 const SECOND_AT = [0, 0, 0];
 // an archer's way to his target in his torso's space (animateRig)
 const AIM = new THREE.Vector3();
-const SG = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+const SG = { b: new THREE.Vector3(), d: new THREE.Vector3() };
 
 // A bowstring's holder (models.js stringGeo) spanning from `a` to `b` (in its
 // parent's space).
@@ -273,36 +295,56 @@ const SHIELD_POSE = {
 };
 
 const tmpQ = new THREE.Quaternion();
-const tmpQ2 = new THREE.Quaternion();
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
 
 // a fall to the ground takes this long (s)
 const FALL_TIME = 0.8;
 // the ways of lying (character.js LIE) after a fall on the back: on the back
-// or on a side; on the face: on the face or on a side
+// or on a side; on the face: on the face or on a side. (A long stiff skirt,
+// the mail look's surcoat, does not lie on the back with a knee up: its hem
+// would stand up off the knee as a sheet. SkinnedHuman.longSkirt)
 const BACK_LIES = [0, 1, 3];
+const BACK_LIES_SKIRT = [0, 3];
 const FACE_LIES = [2, 3];
 // how far a falling body turns, at most, to fall straight away from the blow
 const FALL_TURN = 0.7;
+// a hand or foot the ground under which is this much (m) farther below or
+// above the plane he lies on than his hands and feet follow it
+// (character.js GROUND_FOLLOW) is over a drop or in a bank (fallHeading)
+const LIMB_SLACK = 0.03;
 // turned farther round in these steps (rad), if he would lie over a drop,
 // up a wall or across a sharp bend of the ground that way (a sample farther
 // off the fitted plane than FALL_BEND m: natural ground stays within 7 cm),
 // or on ground sloping more than FALL_TILT (rad) from where he stood or
 // steeper than any natural ground (grips.js STEEPEST: the banks between the
-// plateau and the ramp); how far from his feet his pelvis lands then (m,
-// about: LIE[].reach)
+// plateau and the ramp) (his pelvis landing as far from his feet as the way
+// he will lie has it: LIE[].reach)
 const FALL_STEP = 0.35;
 const FALL_BEND = 0.08;
 const FALL_TILT = 0.3;
-const FALL_REACH = 0.45;
 // with his back to a wall (his feet in it as he lies) he lands this much
 // farther from it (m)
 const FALL_PUSH = 0.4;
+// Where a body will lie, about (Agent.lieSketch): points along his trunk
+// (m up the model from its feet), then his wrists and ankles (LIE's). A
+// point of his within CORPSE_CLEAR m of one of a body lying there already
+// (its feet within CORPSE_NEAR m of his) is over it: he turns to lie over
+// fewer of them, no farther round than CORPSE_TURN (rad) from the way he
+// falls (Agent.fallHeading).
+const SKETCH_TRUNK = [0.35, 0.65, 0.95, 1.2, 1.45, 1.65];
+const SKETCH_LIMBS = ['arm_l', 'arm_r', 'leg_l', 'leg_r'];
+const SKETCH = new Float64Array(2 * (SKETCH_TRUNK.length + SKETCH_LIMBS.length));
+const CORPSE_CLEAR = 0.35;
+const CORPSE_NEAR = 4;
+const CORPSE_TURN = 1.05;
 // a thing he drops falls to the ground in this long, at least and at most
 // (s); and stays this far above it while it falls (m)
 const DROP_TIME = [0.25, 0.6];
 const DROP_CLEAR = 0.01;
+// (the points of the bodies by him and what they let fall that a thing he
+// drops keeps clear of: within this of the middle of his body, m)
+const DROP_REACH = 3.2;
 const F = {
   q: new THREE.Quaternion(),
   q2: new THREE.Quaternion(),
@@ -310,13 +352,33 @@ const F = {
   a: new THREE.Vector3(),
   b: new THREE.Vector3(),
   c: new THREE.Vector3(),
-  one: new THREE.Vector3(1, 1, 1),
   m: new THREE.Matrix4(),
   m2: new THREE.Matrix4(),
   fit: {},
 };
 
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+// How many of the points `pts` (x, z, ...) are within CORPSE_CLEAR of one of
+// those of the bodies `near` (each x, z, ...).
+function crowding(pts, near) {
+  const r2 = CORPSE_CLEAR * CORPSE_CLEAR;
+  let n = 0;
+  for (let i = 0; i < pts.length; i += 2) {
+    let over = false;
+    for (let b = 0; b < near.length && !over; b++) {
+      const q = near[b];
+      for (let j = 0; j < q.length; j += 2) {
+        if ((pts[i] - q[j]) ** 2 + (pts[i + 1] - q[j + 1]) ** 2 < r2) {
+          over = true;
+          break;
+        }
+      }
+    }
+    if (over) n++;
+  }
+  return n;
+}
 
 let nextAgentId = 1;
 
@@ -358,10 +420,11 @@ export class Agent {
     this.ai = { nextThink: Math.random() * 0.4, attackCd: Math.random(), strafe: Math.random() < 0.5 ? 1 : -1, strafeT: 0 };
     this.group = opts.group || 'inf';
     this.name = opts.name || '';
-    // his build by his id (stature.js; a chosen one instead, or the model's
-    // for the player: his camera and his reach as they were), and where
-    // missiles hit him on foot and on a horse
-    this.stature = opts.stature || (this.isPlayer ? NEUTRAL : stature(this.id));
+    // his build by his id (stature.js; a chosen one instead, the model's for
+    // the player: his camera, his reach and where he is hit as they were; a
+    // companion's by his name, the same in every battle as his horse's coat:
+    // makeHorse), and where missiles hit him on foot and on a horse
+    this.stature = opts.stature || (this.isPlayer ? NEUTRAL : stature(opts.hero ? opts.hero.key || opts.hero.name : this.id));
     this.zones = [hitZone(this.stature, false), hitZone(this.stature, true)];
 
     // ---- equipment and stats
@@ -863,7 +926,7 @@ export class Agent {
     const hash = Math.imul(this.id, 2654435761) >>> 0;
     const fx = Math.sin(this.yaw);
     const fz = Math.cos(this.yaw);
-    let back = away ? ax * fx + az * fz < 0 : (hash & 1) === 0;
+    const back = away ? ax * fx + az * fz < 0 : (hash & 1) === 0;
     // his head goes away from the blow, the body turning a little to it
     const ahead = this.yaw + (back ? Math.PI : 0);
     let head = away ? ahead + clamp(wrapAngle(Math.atan2(ax, az) - ahead), -FALL_TURN, FALL_TURN) : ahead;
@@ -879,15 +942,15 @@ export class Agent {
       this.pos.z -= Math.sin(this.yaw) * 0.9 * side;
       this.pos.y = this.battle.terrain.heightAt(this.pos.x, this.pos.z);
     }
-    // (or farther round, onto ground of his own level; on his back if his
-    // head then goes behind him)
+    // (or farther round, onto ground of his own level, off the bodies lying
+    // there; on his back if his head then goes behind him), the way he lies
+    // by his id (lieOf)
     const fall = this.fallHeading(head);
     head = fall.head;
-    back = Math.cos(head - this.yaw) < 0;
-    this.fallDir = back ? 1 : -1;
-    // the way he lies, by his id
-    const lies = back ? BACK_LIES : FACE_LIES;
-    this.lie = this.lieLayout(lies[Math.floor((hash / 4294967296) * lies.length)], hash & 0x100 ? -1 : 1, Math.sin(head), Math.cos(head), fall.push);
+    this.fallDir = fall.back ? 1 : -1;
+    this.lie = this.lieLayout(fall.variant, fall.mirror, Math.sin(head), Math.cos(head), fall.push);
+    // (where he will lie, for those who fall by him after: fallHeading)
+    this.lieAt = Float64Array.from(fall.at);
     this.battle.onDeath(this, killer, dtype);
   }
 
@@ -895,9 +958,14 @@ export class Agent {
   // little farther round as lets him lie on ground of the level he stood
   // on, not over a drop, up a wall or across the edge between them (the
   // siege's plateau, its cliff and its ramp: grips.js groundFit leaves the
-  // first two out, and fits the third badly, or steeply), his feet pushed
-  // off a wall behind them if need be (push, m); the way that comes nearest
-  // if none.
+  // first two out, and fits the third badly, or steeply), his hands and feet
+  // as he will lie there (lieOf, lieSketch) on ground they follow too (not
+  // over a drop or in a bank: LIMB_SLACK), his feet pushed off a wall behind
+  // them if need be (push, m); the way that comes nearest if none. Of the
+  // ways no farther round than CORPSE_TURN, the one he lies over fewest of
+  // the bodies lying there in, and what they let fall (corpsesNear). With
+  // the way he lies then (variant, mirror: lieOf), whether on his back
+  // (back), and where (at: lieSketch).
   fallHeading(head) {
     const terrain = this.battle.terrain;
     const heightAt = (x, z) => terrain.heightAt(x, z);
@@ -906,32 +974,106 @@ export class Agent {
     // edge; level if no natural ground is so steep)
     const up = F.b.set(heightAt(x - 0.1, z) - heightAt(x + 0.1, z), 0.2, heightAt(x, z - 0.1) - heightAt(x, z + 0.1)).normalize();
     if (up.y < Math.cos(STEEPEST)) up.set(0, 1, 0);
-    const best = { head, push: 0 };
+    const best = { head, push: 0, back: false, variant: 0, mirror: 1, at: new Float64Array(SKETCH.length) };
     const tall = this.stature.height;
+    const near = this.corpsesNear();
+    const pts = SKETCH;
+    const limbs = 2 * SKETCH_TRUNK.length;
+    // (how far from all right: samples left out count most; any way on
+    // ground he may lie on, scored by the bodies he would lie over (below 1),
+    // beats any other)
     let worst = Infinity;
     for (let k = 0; k * FALL_STEP <= Math.PI + 1e-6; k++) {
+      const crowded = k * FALL_STEP <= CORPSE_TURN + 1e-6;
+      if (!crowded && worst < 1) return best;
       for (const s of k ? [1, -1] : [1]) {
         const a = head + s * k * FALL_STEP;
         const dx = Math.sin(a);
         const dz = Math.cos(a);
+        const back = Math.cos(a - this.yaw) < 0;
+        const [variant, mirror] = this.lieOf(back);
+        const reach = LIE[variant].reach * tall;
         for (const push of [0, FALL_PUSH]) {
-          const fit = groundFit(heightAt, x + dx * (FALL_REACH * tall + push), z + dz * (FALL_REACH * tall + push), dx, dz, this.pos, F.fit, tall);
+          const fit = groundFit(heightAt, x + dx * (reach + push), z + dz * (reach + push), dx, dz, this.pos, F.fit, tall);
           const n = fitNormal(fit, dx, dz, F.c);
           const tilt = Math.acos(clamp(n.dot(up), -1, 1));
-          // (how far from all right: samples left out count most)
-          const bad = fit.off + Math.max(0, fit.err - FALL_BEND) + 3 * Math.max(0, tilt - FALL_TILT) + 3 * Math.max(0, Math.acos(n.y) - STEEPEST);
-          if (bad < worst) {
-            best.head = a;
-            best.push = push;
-            worst = bad;
+          // (his wrists and ankles where the ground is farther from the
+          // plane he lies on than they follow it, half as bad as a sample
+          // left out: groundFit's u along him, v to his left)
+          this.lieSketch(variant, mirror, back, dx, dz, push, pts);
+          const px = x + dx * (reach + push);
+          const pz = z + dz * (reach + push);
+          let off = 0;
+          for (let i = limbs; i < pts.length; i += 2) {
+            const u = (pts[i] - px) * dx + (pts[i + 1] - pz) * dz;
+            const v = (pts[i] - px) * dz - (pts[i + 1] - pz) * dx;
+            const d = heightAt(pts[i], pts[i + 1]) - (fit.y + fit.a * u + fit.b * v);
+            if (d > GROUND_FOLLOW[1] + LIMB_SLACK || d < GROUND_FOLLOW[0] - LIMB_SLACK) off++;
           }
-          if (!bad) return best;
+          const bad = fit.off + 0.5 * off + Math.max(0, fit.err - FALL_BEND) + 3 * Math.max(0, tilt - FALL_TILT) + 3 * Math.max(0, Math.acos(n.y) - STEEPEST);
+          const score = bad > 0 ? 1 + bad : crowded && near.length ? crowding(pts, near) / (pts.length / 2 + 1) : 0;
+          if (score < worst) {
+            Object.assign(best, { head: a, push, back, variant, mirror });
+            best.at.set(pts);
+            worst = score;
+          }
+          if (!score) return best;
           // (pushed, only if his feet alone were in a wall)
           if (fit.off !== 1 || !fit.feetOff) break;
         }
       }
     }
     return best;
+  }
+
+  // The way he lies (character.js LIE) after a fall on his back or on his
+  // face, by his id: [variant, mirror].
+  lieOf(back) {
+    const hash = Math.imul(this.id, 2654435761) >>> 0;
+    const lies = !back ? FACE_LIES : this.body && this.body.longSkirt ? BACK_LIES_SKIRT : BACK_LIES;
+    return [lies[Math.floor((hash / 4294967296) * lies.length)], hash & 0x100 ? -1 : 1];
+  }
+
+  // Where he would lie as LIE[variant] (mirrored by `mirror`; `back`: after
+  // a fall on his back), his head along (dx, dz), his pelvis LIE's reach
+  // (and `push`) m from his feet: x, z of points along his trunk and of his
+  // wrists and ankles (SKETCH_TRUNK, SKETCH_LIMBS), into `out` (about: the
+  // ground taken as level under him).
+  lieSketch(variant, mirror, back, dx, dz, push, out) {
+    const L = LIE[variant];
+    const k = this.stature.height;
+    const rho = (Array.isArray(L.rho) ? L.rho[back ? 0 : 1] : L.rho) * mirror;
+    const c = Math.cos(rho);
+    const sn = Math.sin(rho);
+    const pelvis = (this.body ? this.body.t.pelvisY : HIPS) * k;
+    const px = this.pos.x + dx * (L.reach * k + push);
+    const pz = this.pos.z + dz * (L.reach * k + push);
+    let i = 0;
+    // (a point of his own space: up his length from the pelvis, and to his
+    // left as he lies, along (-dz, dx): his own x and z rolled by rho)
+    const add = (ox, oy, oz) => {
+      const a = oy * k - pelvis;
+      const w = (ox * c - oz * sn) * k;
+      out[i++] = px + dx * a - dz * w;
+      out[i++] = pz + dz * a + dx * w;
+    };
+    for (const y of SKETCH_TRUNK) add(0, y, 0);
+    for (const limb of SKETCH_LIMBS) add(L[limb].at[0] * mirror, L[limb].at[1], L[limb].at[2]);
+    return out;
+  }
+
+  // The bodies lying near him (their feet within CORPSE_NEAR m of his): the
+  // points of each, as its bones lie (dropItems) or will (lieSketch), and of
+  // the things it let fall (dropItems: dropAt).
+  corpsesNear() {
+    const out = [];
+    for (const c of this.battle.corpses || []) {
+      if (c === this || c.disposed || !c.lieAt) continue;
+      if (Math.hypot(c.pos.x - this.pos.x, c.pos.z - this.pos.z) > CORPSE_NEAR) continue;
+      out.push(c.lying || c.lieAt);
+      if (c.dropAt) out.push(c.dropAt);
+    }
+    return out;
   }
 
   // Where and how he will lie (LIE[variant], mirrored by -1): his own space
@@ -1140,14 +1282,25 @@ export class Agent {
     const tab = this.poses();
     const set = w.cls === 'spear' ? tab.pole : w.twoHanded ? tab.two : tab.one;
     let idle = set.idle;
-    if (w.lance) idle = this.couched ? tab.couch : this.horse ? tab.rideLance : tab.idleLance;
-    else if (set === tab.one && (this.horse || w.cls === 'throw')) idle = tab.upright;
-    else if (w.twoHanded) {
-      // (point down at rest, on the shoulder on the move or on a horse)
-      const sp = this.horse ? 9 : Math.hypot(this.vel.x, this.vel.z);
+    // (at rest and on the move: restShare)
+    const rest = (still, moving) => {
       idle = this._idle || (this._idle = { q: new THREE.Quaternion() });
-      blendPose(idle, set.idle, set.carry, smoothstep(0.4, 1.4, sp));
+      blendPose(idle, moving, still, this.restShare());
+    };
+    if (w.lance) {
+      if (this.couched) idle = tab.couch;
+      else if (this.horse) idle = tab.rideLance;
+      else if (this.isPlayer) idle = tab.pole.trail;
+      else rest(tab.idleLance, tab.carryLance);
+    } else if (set === tab.one && (this.horse || w.cls === 'throw')) idle = tab.upright;
+    // (a pole stood on the ground at rest, carried upright on the move or
+    // on a horse; the player's at the trail)
+    else if (set === tab.pole) {
+      if (this.isPlayer) idle = set.trail;
+      else rest(set.idle, set.carry);
     }
+    // (point down at rest, on the shoulder on the move or on a horse)
+    else if (w.twoHanded) rest(set.idle, set.carry);
     if (w.cls === 'bow') {
       blendPose(out, tab.bowRest, tab.bowRest, 0);
       return;
@@ -1204,6 +1357,12 @@ export class Agent {
       default:
         blendPose(out, idle, idle, 0);
     }
+  }
+
+  // How much he stands at rest (1) or moves (0), for a pole stood on the
+  // ground or a two-handed weapon point down (REST_SPEED); never on a horse.
+  restShare() {
+    return this.horse ? 0 : 1 - smoothstep(REST_SPEED[0], REST_SPEED[1], Math.hypot(this.vel.x, this.vel.z));
   }
 
   animate(dt) {
@@ -1285,7 +1444,10 @@ export class Agent {
   // As his fall begins, the weapon he held and his shield (and what he
   // carried on his back) are let go of: out of his hands and his rig into
   // the world, to fall to where they will lie, flat on the ground by him
-  // (grips.js layFlat), clear of his body as it will lie and of each other.
+  // (grips.js layFlat), clear of his body as it will lie and of each other,
+  // and of the bodies lying by him and what they let fall where they can be.
+  // (Where his body lies and what he let fall, kept for those who fall by him
+  // after: lying, dropFoot, dropAt.)
   dropItems() {
     const terrain = this.battle.terrain;
     const heightAt = (x, z) => terrain.heightAt(x, z);
@@ -1302,9 +1464,20 @@ export class Agent {
     }
     const body = this.lyingPoints();
     const items = [];
+    // (theirs near enough to matter: within reach of where his may lie)
+    const others = { body: [], items: [] };
+    const mid = F.c.set((body[0] + body[2]) / 2, 0, (body[1] + body[3]) / 2);
+    const keep = (list, pts) => {
+      for (let i = 0; i < pts.length; i += 2) if (Math.hypot(pts[i] - mid.x, pts[i + 1] - mid.z) < DROP_REACH) list.push(pts[i], pts[i + 1]);
+    };
+    for (const c of this.battle.corpses || []) {
+      if (c === this || c.disposed || !c.lieAt || Math.hypot(c.pos.x - this.pos.x, c.pos.z - this.pos.z) > CORPSE_NEAR) continue;
+      keep(others.body, c.lying || c.lieAt);
+      if (c.dropFoot) keep(others.items, c.dropFoot);
+    }
     const list = held.map(([h, box, from]) => {
       const to = new THREE.Matrix4();
-      const clear = layFlat(heightAt, box, from, body, to, h === this.shieldMesh, this.lie, items);
+      const clear = layFlat(heightAt, box, from, body, to, h === this.shieldMesh, this.lie, items, others);
       footprint(box, to, items);
       this.battle.props.toWorld(h, from);
       // its box's centre and its turn, where it was let go and where it lies
@@ -1319,6 +1492,10 @@ export class Agent {
       return d;
     });
     this.drops = { list, heightAt };
+    this.lying = body;
+    this.dropFoot = items;
+    // (fewer of them, for those who fall by him: fallHeading)
+    this.dropAt = items.filter((v, i) => i % 6 < 2);
   }
 
   // Where his body will lie on the ground: x, z of his feet (between them)
@@ -1439,7 +1616,7 @@ export class Agent {
     }
     this.bodyYaw = bodyYaw;
 
-    const pose = this._pose || (this._pose = { q: new THREE.Quaternion(), wrist: 0, twist: 0, pitch: 0, ext: 1, ground: 0, free: 0 });
+    const pose = this._pose || (this._pose = { q: new THREE.Quaternion(), wrist: 0, twist: 0, pitch: 0, ext: 1, ground: 0, free: 0, floor: 0 });
     this.rightPose(pose);
     const ranged = this.isRanged();
     let turn = twistBase + pose.twist;
@@ -1481,9 +1658,20 @@ export class Agent {
     turnTo(r.wristR, pose.wrist, 0, 0);
     // (the realistic body's hand nearer the shoulder: its elbow bends)
     r.handR.position.y = -r.armLen * (this.body ? pose.ext : 1);
-    // a pole stood on the ground slides down in the hand (the realistic
-    // body's as it poses its hand: SkinnedHuman.arms)
-    if (!bow && !this.body) this.weaponMesh.position.z = pose.ground && !this.horse ? -pose.ground * this.groundSlide() : 0;
+    // a pole stood on the ground slides down in the hand; a weapon held
+    // point down up in it, clear of the ground (the realistic body's as it
+    // poses its hand: SkinnedHuman.arms)
+    if (!bow && !this.body) {
+      const m = this.weaponMesh;
+      m.position.z = pose.ground && !this.horse ? -pose.ground * this.groundSlide() : 0;
+      if (pose.floor && !this.horse) {
+        m.updateWorldMatrix(true, false);
+        const lift = Math.max(0, this.floorLift(m.matrixWorld));
+        // (along its axis, as far as raises it so)
+        const fall = -tmpV.setFromMatrixColumn(m.matrixWorld, 2).normalize().y;
+        if (lift > 0 && fall > 0.2) m.position.z -= (pose.floor * lift) / fall;
+      }
+    }
 
     // left arm / shield
     const sh = this.activeShield();
@@ -1657,40 +1845,61 @@ export class Agent {
   }
 
   // How far a held pole slides down in the hand (up if less than 0) for its
-  // butt to stand on the ground (m): the hand's height over his feet, the
-  // pole's slope.
+  // butt to stand on the ground (m): the low graphics' rig as it is posed.
   groundSlide() {
     const r = this.rig;
-    const hand = tmpV.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position).applyQuaternion(r.torso.quaternion);
+    // (in his own space: slideFor)
+    const hand = tmpV.set(0, r.handR.position.y, 0).applyQuaternion(r.armR.quaternion).add(r.armR.position).applyQuaternion(r.torso.quaternion).add(r.hips.position).multiplyScalar(this.stature.height);
     const q = tmpQ.copy(r.torso.quaternion).multiply(r.armR.quaternion);
-    const up = tmpV2.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(q).y;
-    return this.slideFor((r.hips.position.y + hand.y) * this.stature.height, up);
+    const dir = tmpV2.set(0, -Math.sin(r.wristR.rotation.x), Math.cos(r.wristR.rotation.x)).applyQuaternion(q);
+    return this.slideFor(hand, dir);
   }
 
-  // As groundSlide, the hand `y` m over his feet, the pole rising `up` m a
-  // metre along it (the realistic body's hand is where the clips sway it to:
-  // SkinnedHuman.arms). (It slides down only as it comes upright, SLIDE_UP:
-  // not swept along through him, its butt far behind the hand, as he raises
-  // it or levels it.)
-  slideFor(y, up) {
+  // As groundSlide, the hand at `p` and the pole along the unit `dir`, in his
+  // own space (his feet at the origin, turned as his body: bodyYaw; the
+  // realistic body's hand is where the clips sway it to: SkinnedHuman.arms):
+  // its butt on the ground where it stands, not the level of his feet (on a
+  // slope). (It slides down only as it comes upright, SLIDE_UP: not swept
+  // along through him, its butt far behind the hand, as he raises it or
+  // levels it.)
+  slideFor(p, dir) {
     const geo = this.weaponMesh.userData.prop && this.weaponMesh.userData.prop.geo;
-    const k = this.planted(up);
+    const k = this.planted(dir.y);
     if (!geo || k <= 0) return 0;
     if (!geo.boundingBox) geo.computeBoundingBox();
-    return k * ((y - BUTT_CLEAR) / up + geo.boundingBox.min.z);
+    // (the ground where the pole meets the level of his feet: about under
+    // its butt, the pole about upright)
+    const t = p.y / dir.y;
+    const g = this.groundAt(p.x - dir.x * t, p.z - dir.z * t);
+    return k * ((p.y - g - BUTT_CLEAR) / dir.y + geo.boundingBox.min.z);
+  }
+
+  // The height of the ground above his feet at (x, z) of his own space.
+  groundAt(x, z) {
+    const c = Math.cos(this.bodyYaw);
+    const s = Math.sin(this.bodyYaw);
+    return this.battle.terrain.heightAt(this.pos.x + x * c + z * s, this.pos.z - x * s + z * c) - this.pos.y;
+  }
+
+  // How far a weapon held point down (a pose's `floor`) is to be raised (m;
+  // lowered if less than 0) for its lowest corner to be FLOOR_CLEAR to
+  // FLOOR_HOVER m above the ground under it, the weapon placed by `matrix`
+  // in the world: at most FLOOR_LIFT (FLOOR_DROP lower).
+  floorLift(matrix) {
+    const geo = this.weaponMesh.userData.prop && this.weaponMesh.userData.prop.geo;
+    if (!geo) return 0;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const terrain = this.battle.terrain;
+    const low = lowest((x, z) => terrain.heightAt(x, z), geo.boundingBox, matrix);
+    if (low < FLOOR_CLEAR) return Math.min(FLOOR_CLEAR - low, FLOOR_LIFT);
+    if (low > FLOOR_HOVER) return -Math.min(low - FLOOR_HOVER, FLOOR_DROP);
+    return 0;
   }
 
   // How much a pole rising `up` m a metre along it stands on the ground (0..1,
   // SLIDE_UP), if its pose stands it there.
   planted(up) {
     return smoothstep(SLIDE_UP[0], SLIDE_UP[1], up);
-  }
-
-  // Where his eyes are, about (for the camera, missiles and hit tests).
-  headPos(out) {
-    out.copy(this.pos);
-    out.y += this.bodyY(this.horse ? EYES_MOUNTED : EYES);
-    return out;
   }
 
   // How high above his feet (or the ground under his horse) the point of the

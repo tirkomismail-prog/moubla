@@ -3,7 +3,7 @@
 // without, by its rider's id (the same id, the same horse: no Math.random).
 // Plain data, kept apart from the scene so that the tests can run it in
 // node: horse.js and models.js paint the horses by it.
-import { mulberry32 } from '../core/rng.js';
+import { mulberry32, nameSeed } from '../core/rng.js';
 import { COATS } from '../data/items.js';
 
 // (each id's own stream, not his build's (stature.js) nor the other things
@@ -23,17 +23,10 @@ export function breedCoats(item) {
   return list;
 }
 
-// A name's number (FNV-1a): a named rider's horse by his name, the same in
-// every battle (an agent's id is not).
-function nameSeed(name) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
-  return h >>> 0;
-}
-
 // The coat of the horse of breed `item` ridden by `who`: a soldier's id, or
-// a named rider's name (a companion's key). {key, name, body, mane, points,
-// marks}
+// a named rider's name (a companion's key: his horse the same in every
+// battle, as his id is not; rng.js nameSeed). {key, name, body, mane,
+// points, marks}
 export function coatFor(item, who) {
   const seed = typeof who === 'string' ? nameSeed(who) : who;
   const rand = mulberry32((Math.imul(seed, 2654435761) ^ SALT) >>> 0);

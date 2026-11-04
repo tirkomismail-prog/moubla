@@ -497,11 +497,13 @@ async function startBattle(game, preset, fallen = false) {
   game.settings.graphics = preset;
   game.settings.battleSize = 200;
   // the same field, trees and ranks in every run (the battle itself then
-  // goes as fast as the frames come)
+  // goes as fast as the frames come); each soldier from a stream of his own
+  // (Battle.seedSoldier), the same men in a build that makes more or fewer
+  // objects for them (as stage 4.5's bowstrings): to compare builds
   const random = Math.random;
   Math.random = mulberry32(BATTLE_SEED);
   try {
-    game.debugBattle('field', { terrain: 'plains', hour: 14, ...ARMY });
+    game.debugBattle('field', { terrain: 'plains', hour: 14, armySeed: BATTLE_SEED, ...ARMY });
   } finally {
     Math.random = random;
   }

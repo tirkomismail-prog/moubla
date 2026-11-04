@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { groundFit, fitNormal, layFlat, footprint, lowest, handOnAxis, secondGrip, rigidGrip } from '../src/battle/grips.js';
+import { Agent } from '../src/battle/agent.js';
+import { NEUTRAL } from '../src/battle/stature.js';
+import { buildHuman } from '../src/battle/models.js';
 
 // a plane rising `deg` degrees towards the heading `dir` (rad, from +z towards +x)
 const plane = (deg, dir, h0 = 3) => {
@@ -165,6 +168,183 @@ test('a weapon and a shield dropped by the same body do not lie through each oth
       p.set(items[i], heightAt(items[i], items[i + 1]) + 0.03, items[i + 1]).applyMatrix4(inv);
       assert.ok(Math.hypot(p.x, p.y) > 0.33, `axe at ${items[i]}, ${items[i + 1]} under the shield`);
     }
+  }
+});
+
+test('a weapon let go over a bank beyond his feet lies on the ground by him, not inside the bank', () => {
+  // a bank rising 2.2 m over 2 m (the terrain's grid at the foot of the
+  // siege's cliff) behind the feet of the body lying along +x
+  const bank = (x) => 2.2 * Math.min(1, Math.max(0, (-0.2 - x) / 2));
+  const heightAt = (x) => bank(x);
+  // a sword pointing back over the bank, its middle a metre beyond the feet
+  const m = new THREE.Matrix4().makeRotationY(-Math.PI / 2).setPosition(-0.66, 1.5, 0.3);
+  const out = new THREE.Matrix4();
+  assert.ok(layFlat(heightAt, SWORD, m, BODY, out, false, flatPlane(0)));
+  const low = lowest(heightAt, SWORD, out);
+  assert.ok(low >= 0.01 && low <= 0.03, `lowest corner ${low}`);
+  const c = SWORD.getCenter(new THREE.Vector3()).applyMatrix4(out);
+  let near = Infinity;
+  for (let i = 0; i < BODY.length; i += 2) near = Math.min(near, Math.hypot(BODY[i] - c.x, BODY[i + 1] - c.z));
+  assert.ok(near < 1, `${near} m from the body`);
+  // nowhere on his ground (a trench as wide as he is): on the ground beside
+  // it, not inside its banks
+  const trench = (x, z) => (Math.abs(z) > 0.3 ? 3 * (Math.abs(z) - 0.3) : 0);
+  assert.equal(layFlat(trench, SWORD, new THREE.Matrix4().setPosition(0.8, 1, 0.45), BODY, out, false, flatPlane(0)), false);
+  const lowT = lowest(trench, SWORD, out);
+  assert.ok(lowT >= 0.01 && lowT <= 0.03, `in the trench: lowest corner ${lowT}`);
+});
+
+test('a dropped weapon keeps off the bodies lying by his, where it can', () => {
+  const heightAt = plane(13, 0.6, 1);
+  const m = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(-1.2, 1.5, 0.3)).setPosition(0.8, heightAt(0.8, 0.45) + 0.3, 0.45);
+  const alone = new THREE.Matrix4();
+  layFlat(heightAt, SWORD, m, BODY, alone);
+  // another body lying where it would lie alone
+  const c0 = SWORD.getCenter(new THREE.Vector3()).applyMatrix4(alone);
+  const other = [];
+  for (let t = -0.8; t <= 0.8; t += 0.2) other.push(c0.x + t, c0.z + 0.05);
+  const out = new THREE.Matrix4();
+  assert.ok(layFlat(heightAt, SWORD, m, BODY, out, false, null, [], { body: other, items: [] }));
+  const c = SWORD.getCenter(new THREE.Vector3()).applyMatrix4(out);
+  const dir = new THREE.Vector3().setFromMatrixColumn(out, 2);
+  let near = Infinity;
+  for (let i = 0; i < other.length; i += 2) {
+    for (let t = -0.45; t <= 0.45; t += 0.05) near = Math.min(near, Math.hypot(other[i] - (c.x + dir.x * t), other[i + 1] - (c.z + dir.z * t)));
+  }
+  assert.ok(near > 0.14, `${near} m from the other body`);
+});
+
+// A soldier as fallHeading, lieSketch and the poses see him (no scene).
+function soldier(heightAt, { id = 7, x = 0, z = 0, yaw = 0, corpses = [], weapon = 'spear', isPlayer = false } = {}) {
+  const a = Object.create(Agent.prototype);
+  Object.assign(a, {
+    id, yaw, bodyYaw: yaw, isPlayer, stature: NEUTRAL, body: null, horse: null, couched: false,
+    pos: new THREE.Vector3(x, heightAt(x, z), z), vel: new THREE.Vector3(),
+    battle: { terrain: { heightAt }, corpses },
+    weapons: [weapon], wi: 0, action: { s: 'idle', t: 0, dur: 0 }, _poses: null, _idle: null,
+  });
+  a.rig = buildHuman({ look: 'cloth', team: '#7a2a20', team2: '#d8c9a0', skin: '#c89a78', hair: '#3a2a1c', pants: '#4a4038', stature: NEUTRAL });
+  return a;
+}
+
+test('a man falling by a wall lies with his hands and feet off it, not only his trunk', () => {
+  // the wall (a bank 4 m up over 0.6 m) to his right, parallel to the way
+  // he faces; he falls on his back away from a blow from the front
+  const wall = (x) => 4 * Math.min(1, Math.max(0, (x - 1) / 0.6));
+  const heightAt = (x) => wall(x);
+  for (let id = 1; id <= 40; id++) {
+    const a = soldier(heightAt, { id, x: 0.55 });
+    const fall = a.fallHeading(Math.PI);
+    for (let i = 0; i < fall.at.length; i += 2) {
+      // (no higher than his hands and feet follow the ground: 25 cm)
+      const h = heightAt(fall.at[i], fall.at[i + 1]);
+      assert.ok(h <= 0.28, `id ${id} variant ${fall.variant}: point ${i / 2} ${h.toFixed(2)} m up the wall`);
+    }
+  }
+});
+
+test('a man falls clear of a body lying where he would, turning no farther than a right angle or so', () => {
+  const flat = () => 0;
+  // (his points within 35 cm of the other's: lieSketch)
+  const over = (pts, q) => {
+    let n = 0;
+    for (let i = 0; i < pts.length; i += 2) {
+      let hit = false;
+      for (let j = 0; j < q.length; j += 2) if (Math.hypot(pts[i] - q[j], pts[i + 1] - q[j + 1]) < 0.35) hit = true;
+      if (hit) n++;
+    }
+    return n;
+  };
+  // the first falls on his back; the second, killed beside him (0.6 or 0.9
+  // m) by the same blow, falls the same way unless he knows of him
+  for (const dx of [0.6, 0.9]) {
+    let n0 = 0;
+    let n1 = 0;
+    for (let id = 1; id <= 20; id++) {
+      const first = soldier(flat, { id: 100 + id });
+      const f1 = first.fallHeading(Math.PI);
+      first.lieAt = Float64Array.from(f1.at);
+      const alone = soldier(flat, { id, x: dx }).fallHeading(Math.PI);
+      const fall = soldier(flat, { id, x: dx, corpses: [first] }).fallHeading(Math.PI);
+      const turn = Math.abs(Math.atan2(Math.sin(fall.head - Math.PI), Math.cos(fall.head - Math.PI)));
+      assert.ok(turn <= 1.05 + 1e-6, `${dx} id ${id}: turned ${turn}`);
+      const a = over(alone.at, f1.at);
+      const b = over(fall.at, f1.at);
+      assert.ok(b <= a, `${dx} id ${id}: ${b} points over him, ${a} alone`);
+      // (0.9 m apart there is room: at most their feet by each other)
+      if (dx > 0.8) assert.ok(b <= 1, `${dx} id ${id}: ${b} points over him`);
+      n0 += a;
+      n1 += b;
+    }
+    assert.ok(n1 <= n0 / 2, `${dx}: ${n1} points over him of ${n0} alone`);
+  }
+});
+
+test('a spear stands on the ground at rest, is carried off it on the move, and the player keeps his at the trail', () => {
+  const flat = () => 0;
+  const pose = () => ({ q: new THREE.Quaternion(), wrist: 0, twist: 0, pitch: 0, ext: 1, ground: 0, free: 0, floor: 0 });
+  for (const weapon of ['spear', 'pitchfork']) {
+    const a = soldier(flat, { weapon });
+    const p = pose();
+    a.rightPose(p);
+    assert.equal(p.ground, 1, `${weapon} at rest`);
+    for (const speed of [1.4, 2, 4.5]) {
+      a.vel.set(0, 0, speed);
+      a.rightPose(p);
+      assert.equal(p.ground, 0, `${weapon} at ${speed} m/s`);
+      assert.ok(p.free > 0.99, `${weapon}: the left hand hangs`);
+    }
+    const player = soldier(flat, { weapon, isPlayer: true });
+    player.rightPose(p);
+    assert.equal(p.ground, 0, `the player's ${weapon} at rest`);
+  }
+  // a lance on foot too
+  const lance = soldier(flat, { weapon: 'lance' });
+  const p = pose();
+  lance.rightPose(p);
+  assert.equal(p.ground, 1);
+  lance.vel.set(3, 0, 0);
+  lance.rightPose(p);
+  assert.equal(p.ground, 0);
+});
+
+test('a pole stood on a slope has its butt on the ground where it stands, not at the level of his feet', () => {
+  const geo = { boundingBox: new THREE.Box3(new THREE.Vector3(-0.03, -0.03, -0.55), new THREE.Vector3(0.03, 0.03, 1.67)) };
+  // (the realistic body's hand at rest, in his own space; the pole about upright)
+  const hand = new THREE.Vector3(-0.36, 1.2, 0.18);
+  const dir = new THREE.Vector3(0.017, 1, -0.05).normalize();
+  for (const deg of [0, 14, 30]) {
+    const heightAt = plane(deg, 0.4, 2);
+    for (let yaw = 0; yaw < 6.28; yaw += Math.PI / 4) {
+      const a = soldier(heightAt, { x: 1.5, z: -2, yaw });
+      a.weaponMesh = { userData: { prop: { geo } } };
+      const slide = a.slideFor(hand, dir);
+      // the butt in his space, then in the world
+      const butt = hand.clone().addScaledVector(dir, geo.boundingBox.min.z - slide);
+      const wx = a.pos.x + butt.x * Math.cos(yaw) + butt.z * Math.sin(yaw);
+      const wz = a.pos.z - butt.x * Math.sin(yaw) + butt.z * Math.cos(yaw);
+      const over = a.pos.y + butt.y - heightAt(wx, wz);
+      // (the ground taken where the pole meets the level of his feet: a few mm
+      // off on a steep slope)
+      assert.ok(Math.abs(over - 0.03) < (deg > 20 ? 0.01 : 0.004), `${deg}° heading ${yaw.toFixed(2)}: butt ${over.toFixed(3)} m over the ground`);
+    }
+  }
+});
+
+test('a weapon held point down is raised clear of the ground rising under its point, lowered over ground falling away', () => {
+  const geo = { boundingBox: SWORD };
+  // the sword point down and forward from a hand 1.2 m up, on a 14° slope
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -0.91, 0.41).normalize());
+  for (const rise of [1, -1]) {
+    const heightAt = plane(14 * rise, 0, 0);
+    const a = soldier(heightAt);
+    a.weaponMesh = { userData: { prop: { geo } } };
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(0, 1.2 - 0.25, 0.3), q, new THREE.Vector3(1, 1, 1));
+    const lift = a.floorLift(m);
+    m.elements[13] += lift;
+    const low = lowest(heightAt, SWORD, m);
+    if (rise > 0) assert.ok(lift > 0 && Math.abs(low - 0.02) < 1e-6, `uphill: lift ${lift}, lowest ${low}`);
+    else assert.ok(lift < 0 && low >= 0.1 - 1e-6 && low < 0.3, `downhill: lift ${lift}, lowest ${low}`);
   }
 });
 

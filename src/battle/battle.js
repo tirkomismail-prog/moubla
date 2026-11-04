@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { TROOPS } from '../data/troops.js';
 import { ITEMS } from '../data/items.js';
 import { clamp, wrapAngle, shade } from '../core/util.js';
+import { mulberry32 } from '../core/rng.js';
 import { BattleTerrain } from './terrain.js';
 import { Agent } from './agent.js';
 import { aiControl } from './ai.js';
@@ -360,6 +361,17 @@ export class Battle {
     return { team: c, team2: toHex(lighten(c, 1.6)), cloth: sideCloth(own, other), badge, faction: own };
   }
 
+  // A seeded army (config.armySeed: bench.js): each soldier's place, kit
+  // and looks drawn from a stream of his own (Math.random, which the seeder
+  // puts back), by his place in the order they come: the same army however
+  // many draws those before him made (three.js draws for every new object,
+  // so a change in what a soldier carries or how he is made would shift
+  // every soldier after him).
+  seedSoldier() {
+    const seed = this.config.armySeed;
+    if (seed != null) Math.random = mulberry32((seed ^ Math.imul(this.agents.length + 1, 0x9e3779b1)) >>> 0);
+  }
+
   spawnInitial() {
     const cfg = this.config;
     if (cfg.kind === 'arena') {
@@ -370,6 +382,7 @@ export class Battle {
     const hero = cfg.sides[0].hero;
     const b0 = this.teams[0].base;
     if (hero) {
+      this.seedSoldier();
       const fx = Math.sin(b0.yaw);
       const fz = Math.cos(b0.yaw);
       const p = new Agent(this, {
@@ -396,6 +409,7 @@ export class Battle {
       const firstRanged = eq.w1 && ITEMS[eq.w1].slot === 'ranged';
       const group = eq.horse && cfg.kind !== 'siege' ? 'cav' : firstRanged ? 'arch' : 'inf';
       const side = i % 2 ? 1 : -1;
+      this.seedSoldier();
       const a = new Agent(this, {
         team: 0,
         key: c.key,
@@ -436,6 +450,8 @@ export class Battle {
       const t = TROOPS[e.troopId];
       const group = GROUP_OF_TYPE[t.type] || 'inf';
       const g = team.groups[group];
+      // (the deployed army only: bench.js puts Math.random back after it)
+      if (initial) this.seedSoldier();
       let x;
       let z;
       if (initial) {

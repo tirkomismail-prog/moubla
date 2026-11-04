@@ -1,5 +1,13 @@
 // Seeded pseudo-random helpers (mulberry32) plus convenience wrappers.
 
+// A name's number (FNV-1a): a seed for what a named one (a companion, by
+// his key) should be the same in every battle, as an agent's id is not.
+export function nameSeed(name) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
+
 export function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {

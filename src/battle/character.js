@@ -1024,6 +1024,9 @@ export class SkinnedHuman {
       if (m) this.lod[+m[1]] = o;
     });
     const outfit = outfitOf(spec);
+    // (the mail look's long surcoat: its stiff hem would stand up off a
+    // raised knee as he lies, Agent.lieOf)
+    this.longSkirt = outfitList.get(outfit.key).includes('Surcoat');
     // (a cloth hood is a part of the outfit, other helmets are carried)
     if (!outfit.hood) this.addHelmet(spec, props);
     // beards: none, a moustache or a full beard; helmets and hoods hide the
@@ -1369,19 +1372,27 @@ export class SkinnedHuman {
     }
     // right hand: the weapon grip of the pose rig (moved with his shoulder
     // as the clips sway his body; a pole stood on the ground turned about
-    // its butt to follow it there)
+    // its butt to follow it there; a weapon held point down raised clear of
+    // the ground under its point, or lowered nearer it: Agent.floorLift)
     const wristQ = worldQuat(r.wristR, A.wristQ);
     const wristP = A.wristP.setFromMatrixPosition(r.wristR.matrixWorld);
     const sway = this.sway(agent, 'r', A.pos);
     const ground = agent.horse ? 0 : agent._pose.ground;
     if (ground) this.pivot(agent, wristP, wristQ, sway, ground);
+    const floor = agent.horse ? 0 : agent._pose.floor;
+    if (floor) {
+      // (the weapon in the world, so held: his own space is the world's but
+      // for his place and turn, U)
+      const m = A.m.compose(A.grip.copy(wristP).add(sway), wristQ, U.one).premultiply(A.m2.compose(U.p, U.q, U.one));
+      wristP.y += floor * agent.floorLift(m);
+    }
     this.placeHand('r', wristP.add(sway), wristQ, rootQ);
     // (a pole stood on the ground: its butt there from where the hand is)
     let slide = 0;
     if (ground) {
       const p = A.pos.copy(this.t.hands.r.grip).applyMatrix4(this.bones.hand_r.matrixWorld);
-      const up = A.dir.set(0, 0, 1).applyQuaternion(worldQuat(this.bones.hand_r, A.q).multiply(this.t.hands.r.gripQ)).y;
-      slide = ground * agent.slideFor(p.y, up);
+      const dir = A.dir.set(0, 0, 1).applyQuaternion(worldQuat(this.bones.hand_r, A.q).multiply(this.t.hands.r.gripQ));
+      slide = ground * agent.slideFor(p, dir);
     }
     agent.weaponMesh.position.z = -slide;
     // (round the weapon's handle: a sword's hilt or a haft)
@@ -1793,7 +1804,7 @@ const scratch = (vs, qs, extra = {}) => {
   return o;
 };
 const U = scratch(['v1', 'v2', 'v3', 'v4', 'p'], ['rootQ', 'a', 'b', 'c', 'd', 'inc', 'q'], { toLocal: new THREE.Matrix4(), one: new THREE.Vector3(1, 1, 1), e: new THREE.Euler() });
-const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway', 'd0', 'd1', 'butt'], ['wristQ', 'q', 'q2', 'qp', 'qp2']);
+const A = scratch(['wristP', 'pos', 'dir', 'hang', 'sway', 'd0', 'd1', 'butt', 'grip'], ['wristQ', 'q', 'q2', 'qp', 'qp2'], { m: new THREE.Matrix4(), m2: new THREE.Matrix4() });
 const S2 = scratch(['p', 'dir', 'sh', 'w'], ['q', 'q2', 'q3'], { h: scratch(['grip', 'wrist', 'len', 'knuck', 'palm'], []), range: [0, 0, 0] });
 const AR = scratch(['T', 'up', 'right', 'x', 'y', 'jaw', 'g', 'ro', 'v', 's', 'rest', 'grip', 'p', 'at', 'w', 'wh', 'pole', 'pole2', 'meet'],
   ['q', 'aimQ', 'bowQ', 'hq', 'hr', 'q2', 'qh'], { m: new THREE.Matrix4(), bm: new THREE.Matrix4() });
@@ -1910,15 +1921,19 @@ function solveLimb(upper, lower, end, info, target, pole, fresh = false) {
   aim(lower, info.endDir, T);
 }
 
+// How far a hand or foot on the ground follows the ground below and above
+// the plane the body lies on, at most (m): onGround.
+export const GROUND_FOLLOW = [-0.15, 0.25];
+
 // Put a point of the soldier's space (lying as `lie`) `clear` m above the
 // ground: on the plane he lies on, then by as much as the ground under it is
-// above or below that plane (a little).
+// above or below that plane (a little: GROUND_FOLLOW).
 export function onGround(p, clear, lie, terrain) {
   const sky = lie.sky;
   p.addScaledVector(sky, lie.c + clear - sky.dot(p));
   const w = OG.w.copy(p).applyQuaternion(lie.q1).add(lie.r1);
   const n = lie.n;
   const plane = lie.g.y - (n.x * (w.x - lie.g.x) + n.z * (w.z - lie.g.z)) / n.y;
-  const d = clamp(terrain.heightAt(w.x, w.z) - plane, -0.15, 0.25);
+  const d = clamp(terrain.heightAt(w.x, w.z) - plane, GROUND_FOLLOW[0], GROUND_FOLLOW[1]);
   p.addScaledVector(sky, d * n.y);
 }

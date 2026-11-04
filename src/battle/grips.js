@@ -209,16 +209,19 @@ function groundUnder(heightAt, plane, cx, cz, dx, dz, ex, ey) {
 // it points now, ITEM_LIFT m above the ground at its lowest corner, off the
 // body that lies there: `body`, its points on the ground (x, z, ...), the
 // first two its feet and its head, and off the items dropped before
-// (`items`, their footprints' points). Moved across the body's length (on
-// the side it is on, or the other) and if need be turned along it, as
-// little as will clear them, onto ground the body lies on too (`plane`:
-// {g, n}, the body's ground, see groundFit; any ground without it), from
-// no farther than NEAR m from the body. `faceUp`: its thin axis up
+// (`items`, their footprints' points); off the bodies lying by it and the
+// things they let fall too where it can be (`others`: {body, items}, their
+// points as those). Moved across the body's length (on the side it is on,
+// or the other) and if need be turned along it, as little as will clear
+// them, onto ground the body lies on too (`plane`: {g, n}, the body's
+// ground, see groundFit; any ground without it), from beside the body's
+// length, no farther than NEAR m from it. `faceUp`: its thin axis up
 // whichever way it faces now (a shield shows its painted face, and the grip
 // behind it stands out less than its boss). Writes the new world matrix
 // into `out`; false if no such place was found (it then lies along the
-// body, MOVE_MAX out on its side, on the body's plane).
-export function layFlat(heightAt, box, matrix, body, out, faceUp = false, plane = null, items = []) {
+// body, MOVE_MAX out on the side whose ground is nearer the body's plane,
+// on the ground there).
+export function layFlat(heightAt, box, matrix, body, out, faceUp = false, plane = null, items = [], others = null) {
   const { axes, local, n, dir, p, c } = L;
   matrix.extractBasis(axes[0], axes[1], axes[2]);
   for (const v of axes) v.normalize();
@@ -256,9 +259,11 @@ export function layFlat(heightAt, box, matrix, body, out, faceUp = false, plane 
     oz = -oz;
     off = -off;
   }
-  // (no farther than NEAR from the body's length, or beyond its ends)
+  // (no farther than NEAR from the body's length, nor beyond its ends: past
+  // them it may be over a bank he lies away from, SLIDE too short to come
+  // back)
   off = Math.min(off, NEAR);
-  const along = clamp((c.x - body[0]) * ux + (c.z - body[1]) * uz, -NEAR, ul + NEAR);
+  const along = clamp((c.x - body[0]) * ux + (c.z - body[1]) * uz, 0, ul);
   const x0 = body[0] + ux * along;
   const z0 = body[1] + uz * along;
   dir.set(axes[long].x, 0, axes[long].z);
@@ -266,37 +271,49 @@ export function layFlat(heightAt, box, matrix, body, out, faceUp = false, plane 
   dir.normalize();
   // along the body: the way of its length nearer the item's
   const k = dir.x * ux + dir.z * uz >= 0 ? 1 : -1;
-  const fits = (cx, cz, dx, dz) => clearOf(body, cx, cz, dx, dz, hl, hw) && clearOfItems(items, cx, cz, dx, dz, half, hw) && groundUnder(heightAt, plane, cx, cz, dx, dz, ex, ey);
+  // (clear of the others too, first; `all`)
+  const fits = (cx, cz, dx, dz, all) => clearOf(body, cx, cz, dx, dz, hl, hw) && clearOfItems(items, cx, cz, dx, dz, half, hw)
+    && (!all || (clearOf(others.body, cx, cz, dx, dz, hl, hw) && clearOfItems(others.items, cx, cz, dx, dz, half, hw)))
+    && groundUnder(heightAt, plane, cx, cz, dx, dz, ex, ey);
   // (out to MOVE_MAX on either side of the body's length, the nearer to
   // where it was let go first; slid along the body if need be)
   let found = false;
-  for (let d = 0; d <= off + MOVE_MAX && !found; d += MOVE_STEP) {
-    for (const s of [1, -1]) {
-      const o = off + s * d;
-      if (Math.abs(o) > MOVE_MAX) continue;
-      for (const t of SLIDE) {
-        const cx = x0 + ox * o + ux * t;
-        const cz = z0 + oz * o + uz * t;
-        if (fits(cx, cz, dir.x, dir.z)) found = true;
-        else if (fits(cx, cz, ux * k, uz * k)) {
-          dir.set(ux * k, 0, uz * k);
-          found = true;
+  for (const all of others && (others.body.length || others.items.length) ? [true, false] : [false]) {
+    for (let d = 0; d <= off + MOVE_MAX && !found; d += MOVE_STEP) {
+      for (const s of [1, -1]) {
+        const o = off + s * d;
+        if (Math.abs(o) > MOVE_MAX) continue;
+        for (const t of SLIDE) {
+          const cx = x0 + ox * o + ux * t;
+          const cz = z0 + oz * o + uz * t;
+          if (fits(cx, cz, dir.x, dir.z, all)) found = true;
+          else if (fits(cx, cz, ux * k, uz * k, all)) {
+            dir.set(ux * k, 0, uz * k);
+            found = true;
+          }
+          if (found) {
+            c.set(cx, 0, cz);
+            break;
+          }
         }
-        if (found) {
-          c.set(cx, 0, cz);
-          break;
-        }
+        if (found) break;
       }
-      if (found) break;
     }
+    if (found) break;
   }
-  // (nowhere: along the body, as far out as it goes, on the body's plane)
-  const ground = found || !plane ? heightAt : (x, z) => planeAt(plane, x, z);
+  // (nowhere: along the body, as far out as it goes, on the side where the
+  // ground is nearer the body's plane, on the ground: never inside a bank)
   if (!found) {
     dir.set(ux * k, 0, uz * k);
-    c.set(x0 + ox * MOVE_MAX, 0, z0 + oz * MOVE_MAX);
-    groundUnder(ground, null, c.x, c.z, dir.x, dir.z, ex, ey);
+    let o = MOVE_MAX;
+    if (plane) {
+      const gap = (q) => Math.abs(heightAt(x0 + ox * q, z0 + oz * q) - planeAt(plane, x0 + ox * q, z0 + oz * q));
+      if (gap(-MOVE_MAX) < gap(MOVE_MAX)) o = -MOVE_MAX;
+    }
+    c.set(x0 + ox * o, 0, z0 + oz * o);
+    groundUnder(heightAt, null, c.x, c.z, dir.x, dir.z, ex, ey);
   }
+  const ground = heightAt;
   // its axes in the world: the thin one along the ground's normal, the long
   // one along its heading laid on the ground, the third to make a
   // right-handed frame (x = y × z, y = z × x, z = x × y)

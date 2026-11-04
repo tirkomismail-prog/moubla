@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stature, scaledY, hitZone, handsOut, NEUTRAL, SPREAD, EYES, EYES_MOUNTED } from '../src/battle/stature.js';
+import { stature, scaledY, hitZone, handsOut, NEUTRAL, SPREAD } from '../src/battle/stature.js';
 import { groundFit, secondFor, SECOND } from '../src/battle/grips.js';
 import { buildHuman } from '../src/battle/models.js';
+import { Agent } from '../src/battle/agent.js';
+import { SkinnedHuman } from '../src/battle/character.js';
 
 const ids = (n, from = 1) => Array.from({ length: n }, (_, i) => from + i);
 const near = (a, b, eps, what) => assert.ok(Math.abs(a - b) <= eps, `${what}: ${a} vs ${b}`);
@@ -11,6 +13,13 @@ test('a soldier’s build is the same every time it is made from his id, and dif
   for (const id of [1, 2, 77, 4096, 123457]) assert.deepEqual(stature(id), stature(id));
   const seen = new Set(ids(200).map((id) => stature(id).height.toFixed(6)));
   assert.ok(seen.size > 190, `${seen.size} heights of 200`);
+});
+
+test('a companion’s build is his name’s: the same in every battle, whatever id he gets there', () => {
+  for (const key of ['comp:lesia', 'comp:torvi', 'Борис Сірий']) assert.deepEqual(stature(key), stature(key));
+  const keys = ['comp:lesia', 'comp:torvi', 'comp:borys', 'comp:aibek', 'comp:hilda', 'comp:ostap'];
+  assert.equal(new Set(keys.map((k) => stature(k).height)).size, keys.length);
+  for (const k of keys) assert.ok(Math.abs(stature(k).height - 1) < SPREAD.height, `${k}: ${stature(k).height}`);
 });
 
 test('every build is within its spreads, the head smaller for a taller man', () => {
@@ -77,29 +86,30 @@ test('the build’s parts go together: broad shoulders with a stocky build, a sm
   assert.ok(Math.abs(corr((t) => t.height, (t) => t.waist)) < 0.1, 'height and waist');
 });
 
-test('the model’s heights stay where they were for the neutral man (the player)', () => {
+test('the model’s heights stay where they were for the neutral man (the player), his hit zone as before the builds', () => {
   for (const y of [0, 0.1, 0.93, 1.5, 1.62, 1.75, 2.85]) near(scaledY(NEUTRAL, y), y, 1e-12, `standing ${y}`);
   for (const y of [1.55, 1.645, 2.3, 2.35, 2.85]) near(scaledY(NEUTRAL, y, true), y, 1e-12, `mounted ${y}`);
-  assert.deepEqual(hitZone(NEUTRAL), { base: 0.1, top: 1.75, head: 1.55 });
+  // (projectiles.js before stage 4.5: from 0.1 to 1.85 m above his feet,
+  // the head from 1.55; on a horse from 1.55 to 2.6, the head from 2.3)
+  assert.deepEqual(hitZone(NEUTRAL), { base: 0.1, top: 1.85, head: 1.55 });
   const m = hitZone(NEUTRAL, true);
   near(m.base, 1.55, 1e-9, 'mounted base');
-  near(m.top, 2.465, 1e-9, 'mounted top');
+  near(m.top, 2.6, 1e-9, 'mounted top');
   near(m.head, 2.3, 1e-9, 'mounted head');
-  near(EYES_MOUNTED - EYES, 0.715, 1e-9, 'a rider’s eyes above a standing man’s');
 });
 
-test('the hit zone and the eyes follow a man’s height, his head’s size above his neck; a rider’s hips stay on the saddle', () => {
+test('the hit zone and the head follow a man’s height, his head’s size above his neck; a rider’s hips stay on the saddle', () => {
   const tall = { ...NEUTRAL, height: 1.07, head: 0.95 };
   const short = { ...NEUTRAL, height: 0.93, head: 1.05 };
   // standing: scaled from his feet, the neck and the head by their own size
   // above the root of the neck (1.48 m on the model)
-  near(hitZone(tall).top, (1.48 + 0.27 * 0.95) * 1.07, 1e-9, 'tall top');
-  near(hitZone(short).top, (1.48 + 0.27 * 1.05) * 0.93, 1e-9, 'short top');
+  near(hitZone(tall).top, (1.48 + 0.37 * 0.95) * 1.07, 1e-9, 'tall top');
+  near(hitZone(short).top, (1.48 + 0.37 * 1.05) * 0.93, 1e-9, 'short top');
   near(hitZone(tall).head, (1.48 + 0.07 * 0.95) * 1.07, 1e-9, 'tall head line');
-  near(scaledY(tall, EYES), (1.48 + 0.14 * 0.95) * 1.07, 1e-9, 'tall eyes');
+  near(scaledY(tall, 1.62), (1.48 + 0.14 * 0.95) * 1.07, 1e-9, 'tall eyes');
   // on a horse: his hips at 1.645 m whatever his height
   near(scaledY(tall, 1.645, true), 1.645, 1e-12, 'hips');
-  near(scaledY(tall, EYES_MOUNTED, true) - scaledY(NEUTRAL, EYES_MOUNTED, true), scaledY(tall, EYES) - EYES - 0.07 * 0.93, 1e-9, 'rider’s eyes rise less than a standing man’s');
+  near(scaledY(tall, 2.335, true) - scaledY(NEUTRAL, 2.335, true), scaledY(tall, 1.62) - 1.62 - 0.07 * 0.93, 1e-9, 'rider’s eyes rise less than a standing man’s');
   assert.ok(hitZone(tall, true).top > hitZone(NEUTRAL, true).top && hitZone(short, true).top < hitZone(NEUTRAL, true).top);
   // (continuous at the root of the neck)
   near(scaledY(tall, 1.48 - 1e-9), scaledY(tall, 1.48 + 1e-9), 1e-8, 'at the neck');
@@ -145,19 +155,24 @@ test('a taller man’s second hand is as much farther from the first on a weapon
 
 test('the pose tables are made for the model’s shoulder: a few for all, though each man’s arms are where his collarbones put them', () => {
   const spec = { look: 'mail', team: '#7a2a20', team2: '#d8c9a0', skin: '#c89a78', hair: '#3a2a1c', pants: '#4a4038', helmet: 'nasal' };
+  // (the realistic body's shoulders, character.js t.shoulder: the model's)
+  const t = { shoulder: { r: { x: -0.184, y: 1.386, z: 0.02 }, l: { x: 0.184, y: 1.386, z: 0.02 } }, reach: 0.53 };
   for (const driverOnly of [false, true]) {
-    const keys = new Set();
+    const tables = new Set();
     const arms = new Set();
     for (const id of ids(300)) {
       const st = stature(id);
-      const r = buildHuman({ ...spec, driverOnly, stature: st });
-      const s = r.shoulder;
-      // (as agent.js poses keys its table)
-      keys.add(`${s.x},${s.y},${s.z},${Math.min(1, Math.round(st.height * 100) / 100)}`);
-      arms.add(r.armR.position.x);
-      assert.ok(Math.abs(r.armR.position.x - s.x) < 0.007, `${driverOnly}: arm ${r.armR.position.x} of ${s.x}`);
+      const rig = buildHuman({ ...spec, driverOnly, stature: st });
+      const s = rig.shoulder;
+      arms.add(rig.armR.position.x);
+      assert.ok(Math.abs(rig.armR.position.x - s.x) < 0.007, `${driverOnly}: arm ${rig.armR.position.x} of ${s.x}`);
+      // (the realistic body moves the rig's shoulders to its own)
+      const body = driverOnly ? { t } : null;
+      if (body) SkinnedHuman.prototype.fitDriver.call(body, rig);
+      // the tables agent.js keeps for good (Agent.poses)
+      tables.add(Agent.prototype.poses.call({ rig, body, stature: st, _poses: null }));
     }
-    assert.ok(keys.size <= 10, `${driverOnly}: ${keys.size} tables`);
+    assert.ok(tables.size <= 10, `${driverOnly}: ${tables.size} tables`);
     assert.ok(arms.size > 250, `${driverOnly}: ${arms.size} shoulders`);
   }
 });
