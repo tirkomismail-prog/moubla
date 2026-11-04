@@ -511,8 +511,11 @@ export function buildHuman(spec) {
   torso.add(backMount);
   const skin = show ? rigidSkin(root, parts, `human:${key.join('|')}`, HUMAN_SPHERE) : null;
   // (armLen: from the shoulder to the hand; character.js fitDriver sets the
-  // realistic body's)
-  const rig = { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount, armLen: 0.6 };
+  // realistic body's. shoulder: the model's right one, that the pose tables
+  // are made for (agent.js poseTable): a man's own is out or in by his
+  // collarbones, a few mm (shapeHuman), and a table for each man would be
+  // kept for good)
+  const rig = { root, hips, torso, neck, legL, legR, armR, armL, handR, wristR, handL, shieldMount, backMount, armLen: 0.6, shoulder: armR.position.clone() };
   if (spec.stature) shapeHuman(rig, skin, spec.stature);
   return rig;
 }

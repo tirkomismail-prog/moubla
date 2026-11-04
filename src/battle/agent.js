@@ -151,8 +151,8 @@ const OTHER = {
 // `shoulder` (torso space) with an arm `len` long, that bends (the realistic
 // body) or not, of a man `k` times the model's height (the rig is as much
 // larger): {q, wrist, ext (the hand's distance from the shoulder, of len),
-// twist, pitch, ground, free}, in the specs' shape. (`k` to the hundredth,
-// and 1 for the taller: a few tables.)
+// twist, pitch, ground, free}, in the specs' shape. (The model's shoulder,
+// `k` to the hundredth and 1 for the taller: a few tables, kept for good.)
 const poseTables = new Map();
 function poseTable(shoulder, len, bends, k = 1) {
   const key = `${shoulder.x},${shoulder.y},${shoulder.z},${len},${bends},${k}`;
@@ -1114,12 +1114,13 @@ export class Agent {
 
   // ---- animation ---------------------------------------------------------------------------------
 
-  // The pose table of this soldier's rig (poseTable): its right shoulder
-  // and arm, bending if he has a realistic body; his height.
+  // The pose table of this soldier's rig (poseTable): the model's right
+  // shoulder (his own is out or in by a few mm: models.js buildHuman) and
+  // its arm, bending if he has a realistic body; his height.
   poses() {
     if (this._poses) return this._poses;
     const r = this.rig;
-    this._poses = poseTable(r.armR.position, r.armLen, !!this.body, Math.min(1, Math.round(this.stature.height * 100) / 100));
+    this._poses = poseTable(r.shoulder, r.armLen, !!this.body, Math.min(1, Math.round(this.stature.height * 100) / 100));
     return this._poses;
   }
 

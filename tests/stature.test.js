@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { stature, scaledY, hitZone, handsOut, NEUTRAL, SPREAD, EYES, EYES_MOUNTED } from '../src/battle/stature.js';
 import { groundFit, secondFor, SECOND } from '../src/battle/grips.js';
+import { buildHuman } from '../src/battle/models.js';
 
 const ids = (n, from = 1) => Array.from({ length: n }, (_, i) => from + i);
 const near = (a, b, eps, what) => assert.ok(Math.abs(a - b) <= eps, `${what}: ${a} vs ${b}`);
@@ -139,5 +140,24 @@ test('a taller man’s second hand is as much farther from the first on a weapon
   for (const k of [0.93, 1.07]) for (const r of Object.values(SECOND)) {
     const [w, a, b] = secondFor(r[0], k, out);
     assert.ok(a < b && w >= a && w <= b, `${r[0]} at ${k}: ${[w, a, b]}`);
+  }
+});
+
+test('the pose tables are made for the model’s shoulder: a few for all, though each man’s arms are where his collarbones put them', () => {
+  const spec = { look: 'mail', team: '#7a2a20', team2: '#d8c9a0', skin: '#c89a78', hair: '#3a2a1c', pants: '#4a4038', helmet: 'nasal' };
+  for (const driverOnly of [false, true]) {
+    const keys = new Set();
+    const arms = new Set();
+    for (const id of ids(300)) {
+      const st = stature(id);
+      const r = buildHuman({ ...spec, driverOnly, stature: st });
+      const s = r.shoulder;
+      // (as agent.js poses keys its table)
+      keys.add(`${s.x},${s.y},${s.z},${Math.min(1, Math.round(st.height * 100) / 100)}`);
+      arms.add(r.armR.position.x);
+      assert.ok(Math.abs(r.armR.position.x - s.x) < 0.007, `${driverOnly}: arm ${r.armR.position.x} of ${s.x}`);
+    }
+    assert.ok(keys.size <= 10, `${driverOnly}: ${keys.size} tables`);
+    assert.ok(arms.size > 250, `${driverOnly}: ${arms.size} shoulders`);
   }
 });

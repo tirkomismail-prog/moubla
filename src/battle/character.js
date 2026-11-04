@@ -1200,6 +1200,7 @@ export class SkinnedHuman {
     const hipY = rig.hips.position.y;
     rig.armR.position.set(t.shoulder.r.x, t.shoulder.r.y - hipY, t.shoulder.r.z);
     rig.armL.position.set(t.shoulder.l.x, t.shoulder.l.y - hipY, t.shoulder.l.z);
+    rig.shoulder.copy(rig.armR.position);
     rig.armLen = t.reach * 0.96;
     rig.handR.position.y = -rig.armLen;
     rig.handL.position.y = -rig.armLen;
