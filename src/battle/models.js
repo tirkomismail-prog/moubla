@@ -765,6 +765,34 @@ export function arrowGeo(kind) {
   });
 }
 
+// The arrow on a drawn bow (agent.js drawString): a flying arrow's shape
+// (its tip, nock and vanes where arrowGeo has them), lighter, and a model of
+// its own that casts no shadow, while the arrows in flight and stuck in the
+// ground keep theirs: when forty bowmen draw at once, a whole arrow and its
+// shadow for each would cost 7k triangles. No socket behind the head, and
+// each vane both faces of a plane rather than a box (44 triangles, not 92).
+export function nockedGeo() {
+  return cached('arrow:nocked', () => {
+    const b = new GeoBuilder();
+    const L = 0.78;
+    const r = 0.0055;
+    b.cyl(r, r, L, 6, '#8a6a3a', [0, 0, 0.05 - L / 2], TIP);
+    b.cone(r * 2.2, 0.06, 4, DARK_STEEL, [0, 0, 0.1], TIP, [1, 1, 0.8]);
+    for (let k = 0; k < 3; k++) {
+      const a = (k * 2 * Math.PI) / 3;
+      for (const face of [1, -1]) {
+        // (the plane along Z, facing out of the vane's either side)
+        const vane = new THREE.PlaneGeometry(0.12, 0.016).rotateY((face * Math.PI) / 2);
+        b.add(vane, '#e6e0cc', [Math.sin(a) * (r + 0.008), Math.cos(a) * (r + 0.008), 0.1 - L], [0, 0, -a]);
+      }
+    }
+    const g = b.build();
+    // (as thin as the string)
+    g.userData.noShadow = true;
+    return g;
+  });
+}
+
 // Shield outlines (x, y in metres, front towards +Z).
 function outline(fn) {
   const sh = new THREE.Shape();

@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { groundFit, fitNormal, layFlat, footprint, lowest, handOnAxis, secondGrip, rigidGrip } from '../src/battle/grips.js';
 import { Agent } from '../src/battle/agent.js';
 import { NEUTRAL } from '../src/battle/stature.js';
-import { buildHuman } from '../src/battle/models.js';
+import { buildHuman, arrowGeo, nockedGeo } from '../src/battle/models.js';
 
 // a plane rising `deg` degrees towards the heading `dir` (rad, from +z towards +x)
 const plane = (deg, dir, h0 = 3) => {
@@ -414,5 +414,22 @@ test('a straight arm (the low graphics) takes the haft within its lengths, or no
     assert.ok(!Number.isNaN(u) && at(u) >= 0.5 - 1e-9 && at(u) <= 0.66 + 1e-9, `${want}: ${u} at ${at(u)}`);
     if (at(want) >= 0.5 && at(want) <= 0.66) assert.ok(Math.abs(u - want) < 1e-9);
     for (let v = -0.5; v <= 1; v += 0.01) if (at(v) >= 0.5 && at(v) <= 0.66) assert.ok(Math.abs(v - want) >= Math.abs(u - want) - 1e-9);
+  }
+});
+
+test('the arrow on a drawn bow is a flying arrow’s shape, lighter and casting no shadow; the flying one keeps its shadow', () => {
+  const tris = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
+  const fly = arrowGeo('arrow');
+  const nock = nockedGeo();
+  assert.notEqual(nock, fly);
+  assert.equal(nock.userData.noShadow, true);
+  assert.ok(!fly.userData.noShadow);
+  // forty bowmen drawing at once: within the stage's 5k triangles on the
+  // high preset too (which draws them twice)
+  assert.ok(tris(nock) * 40 * 2 < 5000, `${tris(nock)} triangles`);
+  fly.computeBoundingBox();
+  nock.computeBoundingBox();
+  for (const k of ['min', 'max']) for (const ax of ['x', 'y', 'z']) {
+    assert.ok(Math.abs(fly.boundingBox[k][ax] - nock.boundingBox[k][ax]) < 0.002, `${k}.${ax}: ${fly.boundingBox[k][ax]} vs ${nock.boundingBox[k][ax]}`);
   }
 });

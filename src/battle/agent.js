@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { ITEMS } from '../data/items.js';
 import { TROOPS } from '../data/troops.js';
-import { buildHuman, buildHorse, weaponGeo, shieldGeo, arrowGeo, stringGeo, bowNock, armQuat, pickSkin, pickHair, ARROW_NOCK, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
+import { buildHuman, buildHorse, weaponGeo, shieldGeo, nockedGeo, stringGeo, bowNock, armQuat, pickSkin, pickHair, ARROW_NOCK, ARROW_REST, BOW_CANT, BOW_LOWER, STRING_NOCK } from './models.js';
 import { SkinnedHorse, horseReady } from './horse.js';
 import { T, allowedDir } from './combat.js';
 import { SkinnedHuman, charactersReady, itemMaterial, knightArms, LIE, lieHeight, lieTarget, lieTurn, onGround, GROUND_FOLLOW } from './character.js';
@@ -677,7 +677,7 @@ export class Agent {
       this.weaponMesh.rotation.z = Math.PI;
       this.weaponMesh.updateMatrix();
       this.strings = this.stringBow(this.weaponMesh, mat);
-      this.nocked = this.carry(this.weaponMesh, arrowGeo('arrow'), mat);
+      this.nocked = this.carry(this.weaponMesh, nockedGeo(), mat);
       this.stringStraight = false;
       this.drawString(null, false);
     }
