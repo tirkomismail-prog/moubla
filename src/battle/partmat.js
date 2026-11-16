@@ -240,6 +240,10 @@ export const TILE_FRAGMENT = `
     return mat3(t * scale, b * scale, n);
   }`;
 
+// (what a bone's quaternion calls on a change: no Euler angles to keep in
+// step, ownSpaceSkeleton)
+const NO_EULER = () => {};
+
 // The bones of a skinned model taken out of the scene into a space of their
 // own, the model's: the scene graph no longer walks them and updates their
 // world matrices every frame, and the bone matrices (and the bone texture)
@@ -247,6 +251,11 @@ export const TILE_FRAGMENT = `
 // stay in the scene; they are skinned in "detached" mode, which gives the
 // same result with bones in the model's space. Items held in a bone's space
 // name that space's place in the world (userData.space) for props.js.
+// The bones' rotations (Euler angles) no longer follow their quaternions:
+// three.js works them out anew at every turn of a bone (the clips, the pose,
+// the falls; a quarter of the time of posing), and nothing reads or writes a
+// bone's rotation. (The pose rig's nodes, the items' holders and the roots,
+// turned by angles, are no bones: they keep theirs.)
 // Returns the bones' space: the root for animation clips.
 export function ownSpaceSkeleton(object, meshes) {
   object.updateMatrixWorld(true);
@@ -263,6 +272,7 @@ export function ownSpaceSkeleton(object, meshes) {
     m.bindMatrixInverse.copy(m.bindMatrix).invert();
   }
   const skeleton = meshes[0].skeleton;
+  for (const bone of skeleton.bones) bone.quaternion._onChange(NO_EULER);
   const update = skeleton.update;
   skeleton.posed = true;
   skeleton.update = function () {
@@ -540,8 +550,9 @@ const DECO_SHAPES = { cross: 1, saltire: 2, bend: 3, armbands: 4, coat: 5 };
 // The code in a palette row (texel 3's alpha, with the second material's
 // metalness: a = metalness + 2 * code; next to the largest codes a float
 // keeps the metalness to 1/64): bits 0-2 the shape, 3 woven, 4-7 the sign's
-// tint, 8-11 the patch's (0: none), 12-16 the coat's layer + 1. The tints
-// are a table of the kind (uniform decoTint).
+// tint, 8-11 the patch's (0: none), 12-16 the coat's layer + 1 (handed on
+// to the fragments in bits 3-7: vDeco). The tints are a table of the kind
+// (uniform decoTint).
 function decoCoder(tints) {
   const index = new Map();
   const slot = (color) => {
@@ -598,7 +609,13 @@ function makeKind(o) {
         varying float vShade;
         #endif
         #ifdef PART_DECO
-        flat varying float vDeco;
+        // (not flat: ANGLE on Direct3D 11 gives a flat varying GL's last
+        // vertex's value with a geometry shader on every triangle drawn. A
+        // triangle is of one part, so the code is the same at its three
+        // vertices; interpolated, it can still come out off by a share of
+        // it (SwiftShader's samples of thin triangles: up to ~1e-4), so it
+        // is kept below 4096 (begin_vertex) and rounded where it is read)
+        varying float vDeco;
         varying vec2 vDecoXY;
         #endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>${PART_BEGIN}
@@ -616,8 +633,12 @@ function makeKind(o) {
         #endif
         #ifdef PART_DECO
         // a sign or arms (texel 3's alpha: the second metalness + 2 * code)
-        vDeco = floor(pal3.a * 0.5);
-        vPartSurface.z = pal3.a - 2.0 * vDeco;
+        float decoCode = floor(pal3.a * 0.5);
+        vPartSurface.z = pal3.a - 2.0 * decoCode;
+        // (a coat has no tints: its layer + 1 from bits 12-16 down to 3-7,
+        // the code below 4096 as a sign's)
+        int decoBits = int(decoCode);
+        vDeco = float((decoBits & 7) == 5 ? ((decoBits >> 12) << 3) | 5 : decoBits & 4095);
         // where in the bind pose: across the body (x), and how squarely the
         // surface faces the front (+) or the back (-) (the height: vDirt.y);
         // the sides keep which of them they turn to, so that front and back
@@ -646,7 +667,7 @@ function makeKind(o) {
         #ifdef PART_DECO
         uniform vec3 decoTint[16];
         uniform highp sampler2DArray heraldry;
-        flat varying float vDeco;
+        varying float vDeco;
         varying vec2 vDecoXY;
         #endif`)
       .replace('#include <color_fragment>', `
@@ -773,7 +794,7 @@ const DECO_FRAGMENT = `
       // back mirrored, as a viewer behind sees it)
       vec3 f = front ? vec3(1.0 / 0.21, 1.0 / 0.245, 1.215) : vec3(-1.0 / 0.22, 1.0 / 0.257, 1.225);
       vec2 uv = vec2(0.5 + decoP.x * f.x, 0.5 - (decoP.y - f.z) * f.y);
-      vec3 coat = textureLod(heraldry, vec3(uv, float((code >> 12) - 1)), log2(decoPx * abs(f.x) * DECO_TEXELS)).rgb;
+      vec3 coat = textureLod(heraldry, vec3(uv, float((code >> 3) - 1)), log2(decoPx * abs(f.x) * DECO_TEXELS)).rgb;
       // (the coat's dyes as tints of the wool: 0.75 / its mean)
       partTint = mix(partTint, coat * vec3(0.974, 1.029, 1.121), coatFade);
     } else if (decoFade > 0.0) {

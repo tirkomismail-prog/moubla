@@ -1,12 +1,13 @@
 // Performance benchmark (bench.html): a fixed field battle of ~150 soldiers
 // and ~50 horses, filmed by an orbiting camera, at several graphics presets
 // and internal resolutions, and from behind a soldier in the fight as the
-// player sees it. Reports frame times, draw calls and triangles as a table
-// and as JSON to send back to the developer.
+// player sees it. Reports frame times (and how many of the display's
+// refreshes each frame took), draw calls and triangles as a table and as
+// JSON to send back to the developer.
 // bench.html?parts: only the breakdown of the medium preset;
 // bench.html?corpses: the same battle with half the soldiers fallen.
 import * as THREE from 'three';
-import { mulberry32 } from './core/rng.js';
+import { mulberry32, nameSeed } from './core/rng.js';
 import { AutoResolution } from './battle/autores.js';
 import { textureMemory } from './battle/bc.js';
 
@@ -38,6 +39,8 @@ const PART_NAMES = {
   noHorses: 'без коней',
   soldiersNoDeco: 'воїни без знаків військ і гербів (етап 4.4)',
   soldiersNoMasks: 'воїни без масок вершин, знаків і гербів (етапи 4.3–4.4; вигляд хибний, лише ціна)',
+  soldiersFlat: 'воїни зі старою програмою: код знака flat (ANGLE на Direct3D 11 додає геометричний шейдер; економія від’ємна на його ціну)',
+  decoNoData: 'знаки й герби в шейдері, але в жодного воїна їх немає (та сама програма: ціна знака на піксель)',
   baseAgain: 'усе ще раз (розкид замірів)',
   groundNoSurface: 'земля без рельєфу шарів (нормалей і висот)',
   groundOneLayer: 'земля одним шаром (без змішування шарів)',
@@ -122,14 +125,19 @@ function variantOf(mat, key, make) {
   return m.get(key);
 }
 
+// the soldiers' meshes: every level of detail (one material in a battle,
+// partmat.js)
+const isSoldier = (o) => o.isMesh && o.material && o.material.customProgramCacheKey && o.material.customProgramCacheKey().startsWith('soldier:');
+
 // The soldiers' material without some of its shader (its #defines, see
-// partmat.js makeKind), in a copy: on every soldier's levels of detail.
+// partmat.js makeKind), or with it edited (`edit` the shader after
+// partmat.js), in a copy: on every soldier's levels of detail.
 // (Parts of the signs' and arms' code cut out by editing the shader made it
 // slower, not faster, on an Intel UHD 630: the Direct3D compiler handles a
 // smaller branch otherwise.)
-function soldierVariant(key, drop) {
+function soldierVariant(key, drop, edit = null) {
   return (b) => {
-    const meshes = find(b, (o) => o.isMesh && o.material && o.material.customProgramCacheKey && o.material.customProgramCacheKey().startsWith('soldier:'));
+    const meshes = find(b, isSoldier);
     const back = meshes.map((o) => [o, o.material]);
     for (const [o, mat] of back) {
       o.material = variantOf(mat, key, () => {
@@ -141,7 +149,12 @@ function soldierVariant(key, drop) {
         copy.userData = userData;
         copy.defines = { ...mat.defines };
         for (const d of drop) delete copy.defines[d];
-        copy.onBeforeCompile = mat.onBeforeCompile;
+        copy.onBeforeCompile = edit
+          ? (shader, renderer) => {
+              mat.onBeforeCompile(shader, renderer);
+              edit(shader);
+            }
+          : mat.onBeforeCompile;
         copy.customProgramCacheKey = () => `${mat.customProgramCacheKey()}-${key}`;
         return copy;
       });
@@ -169,9 +182,44 @@ function groundVariant(key, edit) {
     return () => (mesh.material = mat);
   };
 }
+// a piece of a shader replaced, once (a warning if it is not there once:
+// the measurement would be of something else)
+function replaced(text, from, to) {
+  if (text.split(from).length !== 2) console.warn('bench: not once in the shader:', from);
+  return text.replace(from, to);
+}
 const STILL_PARTS = {
   ...Object.fromEntries(Object.entries(PARTS).filter(([name]) => name !== 'baseAgain')),
   soldiersNoMasks: soldierVariant('no-masks', ['PART_DECO', 'PART_MASKS', 'PART_HAIR']),
+  // the soldiers' program with the sign's code (vDeco) a flat varying
+  // again, as it was, for which ANGLE on Direct3D 11 runs a geometry shader
+  // on every triangle drawn (partmat.js); nothing else differs (the code
+  // stays moved below 4096: a few operations a vertex), the picture the
+  // same. Its saving is below zero by what that costs.
+  soldiersFlat: soldierVariant('flat', [], (shader) => {
+    shader.vertexShader = replaced(shader.vertexShader, 'varying float vDeco;', 'flat varying float vDeco;');
+    shader.fragmentShader = replaced(shader.fragmentShader, 'varying float vDeco;', 'flat varying float vDeco;');
+  }),
+  // the signs and arms taken off by the data, not the code: the same
+  // program, the code in every palette row zeroed (texel 3's alpha: the
+  // second metalness + 2 * code; the metalness kept), so that no pixel goes
+  // into the sign's branch: what the sign's work per pixel costs. Put back
+  // as it was, bit for bit.
+  decoNoData: (b) => {
+    const textures = new Set(find(b, isSoldier).map((o) => o.material.userData.palette.value));
+    const saved = [...textures].map((tex) => {
+      const data = tex.image.data;
+      const copy = data.slice();
+      for (let i = 15; i < data.length; i += 16) data[i] -= 2 * Math.floor(data[i] * 0.5);
+      tex.needsUpdate = true;
+      return [tex, copy];
+    });
+    return () =>
+      saved.forEach(([tex, copy]) => {
+        tex.image.data.set(copy);
+        tex.needsUpdate = true;
+      });
+  },
   groundNoSurface: groundVariant('no-surface', (f) => f.split('if (surface1 > 0.001) {').join('if (false) {')),
   groundOneLayer: groundVariant('one-layer', (f) => f.replace(/vec4 use = [^;]*;/, 'vec4 use = step(wTop, w);')),
   // (the look-ups: textureGrad(ground<Color|Surface><i>, uv, dx, dy))
@@ -193,10 +241,92 @@ function percentile(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
 }
 
+// The intervals (ms) between `n` animation frames, by their own timestamps
+// (requestAnimationFrame's: the display's refreshes they were drawn for)
+function frameStamps(n) {
+  return new Promise((resolve) => {
+    const out = [];
+    let last = null;
+    const tick = (stamp) => {
+      if (last != null) out.push(stamp - last);
+      last = stamp;
+      if (out.length < n) requestAnimationFrame(tick);
+      else resolve(out);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+// The display's refresh period (ms) from the intervals between frames: a
+// frame is shown at a refresh, so they come at its multiples; the shortest
+// of them that are not rare
+function refreshOf(intervals) {
+  const sorted = intervals.filter((d) => d > 2).sort((a, b) => a - b);
+  if (sorted.length < 10) return null;
+  const low = percentile(sorted, 0.1);
+  return percentile(sorted.filter((d) => d < low * 1.25), 0.5);
+}
+
+// The share of frames that took 1, 2, 3 and 4 or more of the display's
+// refreshes (`refresh` ms): two refreshes are 30 frames a second on a 60 Hz
+// screen, three a visible hitch
+function pacing(intervals, refresh) {
+  if (!refresh || !intervals.length) return null;
+  const n = [0, 0, 0, 0];
+  for (const d of intervals) n[Math.min(4, Math.max(1, Math.round(d / refresh))) - 1]++;
+  return n.map((k) => +(k / intervals.length).toFixed(3));
+}
+
 function gpuName(renderer) {
   const gl = renderer.getContext();
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+}
+
+// The browser's full version (the user agent string has only the major
+// one), and the system's
+async function browserVersion() {
+  try {
+    const v = await navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'platformVersion']);
+    return { versions: v.fullVersionList.map((b) => `${b.brand} ${b.version}`).join(', '), platform: `${v.platform} ${v.platformVersion}` };
+  } catch {
+    return null;
+  }
+}
+
+// The soldiers' programs as the browser translated them for the video card
+// (WEBGL_debug_shaders; on Windows, ANGLE's HLSL): a short hash and the
+// length of each shader ('hash/length'), so that two runs show whether the
+// translation changed (a new browser or ANGLE). three.js deletes a
+// program's shaders once it is linked, and a deleted shader's translation
+// can no longer be read: each is read as it is deleted, from the battle's
+// start (watchShaders).
+const translated = new WeakMap();
+function watchShaders(renderer) {
+  const gl = renderer.getContext();
+  const ext = gl.getExtension('WEBGL_debug_shaders');
+  if (!ext) return;
+  const del = gl.deleteShader.bind(gl);
+  gl.deleteShader = (shader) => {
+    if (shader && !translated.has(shader)) {
+      const text = ext.getTranslatedShaderSource(shader) || '';
+      translated.set(shader, `${nameSeed(text).toString(16)}/${text.length}`);
+    }
+    del(shader);
+  };
+}
+function soldierShaders(renderer) {
+  if (!renderer.getContext().getExtension('WEBGL_debug_shaders')) return null;
+  const out = {};
+  for (const p of renderer.info.programs || []) {
+    const key = /soldier:[^,]*/.exec(p.cacheKey);
+    if (!key) continue;
+    const [vs, fs] = [translated.get(p.vertexShader), translated.get(p.fragmentShader)];
+    let name = key[0];
+    for (let k = 2; name in out; k++) name = `${key[0]}#${k}`;
+    out[name] = vs && fs ? { vs, fs } : null;
+  }
+  return out;
 }
 
 // A fixed piece of JavaScript work, timed: how fast the processor runs right
@@ -266,7 +396,10 @@ function panel() {
 }
 
 // Measure the running battle for `seconds` of visible frames: frame
-// intervals, CPU time of battle.frame(), draw calls, triangles.
+// intervals, CPU time of battle.frame(), draw calls, triangles. (Not in
+// the result's JSON: `stamps`, the intervals between the frames' own
+// timestamps, for their pacing once the display's refresh is known; `span`,
+// when the measured frames began and ended.)
 function measure(game, seconds, timeGpu = true) {
   return new Promise((resolve) => {
     const battle = game.battle;
@@ -307,7 +440,10 @@ function measure(game, seconds, timeGpu = true) {
     let last = performance.now();
     let measured = 0;
     let first = true; // the interval up to the first frame is partial
-    const tick = () => {
+    const stamps = [];
+    let lastStamp = null;
+    let start = last;
+    const tick = (stamp) => {
       const now = performance.now();
       const dt = now - last;
       last = now;
@@ -315,8 +451,11 @@ function measure(game, seconds, timeGpu = true) {
       else {
         frames.push(dt);
         measured += dt;
+        stamps.push(stamp - lastStamp);
       }
+      if (first) start = now;
       first = false;
+      lastStamp = stamp;
       // slow machines: at least a few frames even if they take long
       if (measured < seconds * 1000 || frames.length < 5) requestAnimationFrame(tick);
       else {
@@ -326,27 +465,81 @@ function measure(game, seconds, timeGpu = true) {
         const sorted = [...frames].sort((a, b) => a - b);
         const avg = frames.reduce((a, b) => a + b, 0) / Math.max(1, frames.length);
         const cpuSorted = [...cpu].sort((a, b) => a - b);
-        resolve({
+        const gpuSorted = gpu ? [...gpu.times].sort((a, b) => a - b) : [];
+        const gl = battle.renderer.getContext();
+        const r = {
           fps: +(1000 / avg).toFixed(1),
           p50: +percentile(sorted, 0.5).toFixed(1),
           p90: +percentile(sorted, 0.9).toFixed(1),
           p99: +percentile(sorted, 0.99).toFixed(1),
           cpuP50: +percentile(cpuSorted, 0.5).toFixed(1),
+          cpuP90: +percentile(cpuSorted, 0.9).toFixed(1),
           // (of it: posing the soldiers, battle.js frame)
           animMs: anim.length ? +percentile([...anim].sort((a, b) => a - b), 0.5).toFixed(2) : null,
-          gpuP50: gpu && gpu.times.length ? +percentile([...gpu.times].sort((a, b) => a - b), 0.5).toFixed(1) : null,
+          gpuP50: gpuSorted.length ? +percentile(gpuSorted, 0.5).toFixed(1) : null,
+          gpuP90: gpuSorted.length ? +percentile(gpuSorted, 0.9).toFixed(1) : null,
           calls: Math.round(calls / Math.max(1, n)),
           triangles: Math.round(tris / Math.max(1, n)),
+          // the drawing buffer at the end (the internal resolution)
+          buffer: `${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`,
           realistic: !!battle.agents.find((a) => a.body),
           agents: battle.agents.filter((a) => a.alive).length,
           horses: battle.agents.filter((a) => a.alive && a.horse).length,
           fallen: battle.agents.filter((a) => !a.alive).length,
           lods: { alive: lods.alive.map((k) => +(k / Math.max(1, n)).toFixed(1)), dead: lods.dead.map((k) => +(k / Math.max(1, n)).toFixed(1)) },
-        });
+        };
+        Object.defineProperties(r, { stamps: { value: stamps }, span: { value: [start, now] } });
+        resolve(r);
       }
     };
     requestAnimationFrame(tick);
   });
+}
+
+// The automatic resolution at work in a row (an auto row), watched from
+// now on: its decisions (every few frames: the GPU time's 80th percentile it
+// went by, the scale after, and what it did: down, up, undo, a step down
+// undone, keep, or settle, waiting after a change), the scale of each frame
+// and the GPU times of its own timer (the drawing only, not the whole frame
+// as the rows' gpuP50). `done(span)`: what of it fell in the measured
+// frames, the decisions' times in seconds from their start (below zero: in
+// the warm-up).
+function watchAutoRes(auto) {
+  const decisions = [];
+  const scales = [];
+  const gpu = [];
+  let seen = 0;
+  const update = auto.update;
+  auto.update = function (dt) {
+    const now = performance.now();
+    const times = this.times;
+    if (this.ext) for (let i = seen; i < times.length; i++) gpu.push([now, times[i]]);
+    const { scale, lock } = this;
+    const changed = update.call(this, dt);
+    // (it decides once it has enough frames, and starts on new ones)
+    if (this.times !== times) {
+      const action = this.scale < scale ? 'down' : this.scale > scale ? (this.lock !== lock - dt ? 'undo' : 'up') : this.wait > 0 ? 'settle' : 'keep';
+      decisions.push([now, times[Math.floor(times.length * 0.8)], this.scale, action]);
+      seen = 0;
+    } else seen = times.length;
+    scales.push([now, this.scale]);
+    return changed;
+  };
+  return {
+    done([from, to]) {
+      const within = (list) => list.filter(([t]) => t >= from && t <= to).map(([, v]) => v);
+      const s = within(scales);
+      const g = within(gpu).sort((a, b) => a - b);
+      return {
+        decisions: decisions.map(([t, p80, scale, action]) => [+((t - from) / 1000).toFixed(1), +p80.toFixed(1), +scale.toFixed(2), action]),
+        scaleMean: s.length ? +(s.reduce((a, b) => a + b, 0) / s.length).toFixed(3) : null,
+        scaleMin: s.length ? +Math.min(...s).toFixed(2) : null,
+        scaleMax: s.length ? +Math.max(...s).toFixed(2) : null,
+        gpuP50: g.length ? +percentile(g, 0.5).toFixed(1) : null,
+        gpuP90: g.length ? +percentile(g, 0.9).toFixed(1) : null,
+      };
+    },
+  };
 }
 
 // the camera 30 m from the middle of the armies, 9 m up, looking at it from
@@ -368,15 +561,27 @@ function viewAt(battle, angle) {
   battle.debugCam = { x: cx + Math.cos(angle) * 30, y: y + 9, z: cz + Math.sin(angle) * 30, tx: cx, ty: y + 1.2, tz: cz };
 }
 
+// Circle the middle of the armies, ORBIT_STEP radians every 33 ms; `angle`
+// where the camera is on the circle (set: it goes there now)
+const ORBIT_STEP = 0.012;
+const ORBIT_SPEED = ORBIT_STEP / 0.033; // radians a second
 function orbit(battle) {
-  // circle the middle of the armies
   let angle = 0;
   const timer = setInterval(() => {
     if (!battle.agents) return;
-    angle += 0.012;
+    angle += ORBIT_STEP;
     viewAt(battle, angle);
   }, 33);
-  return () => clearInterval(timer);
+  return {
+    stop: () => clearInterval(timer),
+    get angle() {
+      return angle;
+    },
+    set angle(a) {
+      angle = a;
+      if (battle.agents) viewAt(battle, angle);
+    },
+  };
 }
 
 // The camera as the player's (battle.js updateCamera): 3.1 m behind a foot
@@ -508,6 +713,8 @@ async function startBattle(game, preset, fallen = false) {
     Math.random = random;
   }
   const b = game.battle;
+  // (before its first frame compiles the programs)
+  watchShaders(b.renderer);
   b.debugStart();
   b.hud.root.style.display = 'none';
   // nobody dies: the load stays the same through the whole run
@@ -532,7 +739,7 @@ async function startBattle(game, preset, fallen = false) {
 
 // From behind a soldier in the fight: the moving battle, then still frames
 // with `parts` left out
-const CLOSE_PARTS = ['base', 'noSoldiers', 'soldiersNoDeco'];
+const CLOSE_PARTS = ['base', 'noSoldiers', 'soldiersNoDeco', 'soldiersFlat', 'decoNoData'];
 async function closeCase(game, battle, show, parts) {
   const unfollow = follow(battle);
   show('ближній вид, як у гравця…');
@@ -541,6 +748,22 @@ async function closeCase(game, battle, show, parts) {
   unfollow();
   const still = await stillBreakdown(battle, (text) => show(`ближній вид. ${text}`), { parts, views: [closeView] });
   return { row, still };
+}
+
+// The battle as it is played: the window's own resolution, lowered by the
+// automatic resolution when the frames take too long (the camera as it is);
+// a row with what the automatic resolution did (watchAutoRes)
+async function autoCase(game, battle) {
+  battle.setRenderHeight(null);
+  battle.autoRes = new AutoResolution(battle.renderer);
+  battle.resize();
+  const watch = watchAutoRes(battle.autoRes);
+  await wait(WARMUP * 2000);
+  const r = await measure(game, MEASURE, false);
+  const row = { height: 'auto', scale: battle.autoRes.scale, ...r, autores: watch.done(r.span) };
+  battle.autoRes.dispose();
+  battle.autoRes = null;
+  return [row, r.stamps];
 }
 
 export async function runBenchmark(game) {
@@ -552,93 +775,139 @@ export async function runBenchmark(game) {
   const heights = partsOnly || corpsesOnly ? [] : HEIGHTS;
   const out = panel();
   const show = (text) => (out.innerHTML = `<b>Бенчмарк битви</b><br>${text}`);
-  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 4 : corpsesOnly ? 2 : 7} хвилин. Підключіть зарядку.`;
+  out.innerHTML = `<b>Бенчмарк битви</b><br>Не чіпайте мишу й клавіатуру ≈${partsOnly ? 4 : corpsesOnly ? 2 : 8} хвилин. Підключіть зарядку.`;
   // a tab opened in the background does not draw: start once it is shown
   while (document.hidden) await wait(250);
   await game.charactersLoading;
   await wait(500);
+  // the display's refresh, from frames that take one (nothing is drawn yet)
+  const refresh = refreshOf(await frameStamps(90));
   const results = [];
   let device = null;
   const calib = [calibrate()];
   const breakdown = {};
+  let breakdownArc = null;
   let still = null;
   let stillClose = null;
+  // (the close view at the window's resolution: a row after all the others,
+  // which keep their places in the results)
+  let closeAuto = null;
+  let fixedRows = 0;
+  // (each row or part with its frames' intervals: their pacing at the end)
+  const paced = [];
+  const row = (r, stamps, fields = {}) => {
+    const o = { ...fields, ...r };
+    paced.push([o, stamps || r.stamps]);
+    return o;
+  };
   for (const preset of presets) {
     const battle = await startBattle(game, preset, corpsesOnly);
-    const stop = orbit(battle);
+    const cam = orbit(battle);
     if (!device) {
+      const gl = battle.renderer.getContext();
       device = {
         gpu: gpuName(battle.renderer),
         userAgent: navigator.userAgent,
+        // (the full version, where the browser tells it)
+        browser: await browserVersion(),
         screen: `${screen.width}x${screen.height}`,
         window: `${window.innerWidth}x${window.innerHeight}`,
         devicePixelRatio: window.devicePixelRatio,
+        refreshMs: refresh && +refresh.toFixed(2),
         cores: navigator.hardwareConcurrency,
         // the models' texture layers: video memory, how many compressed
         textures: textureMemory(),
+        // whether the browser can draw with the first vertex as the
+        // provoking one (WEBGL_provoking_vertex: flat varyings without
+        // ANGLE's geometry shader on Direct3D 11), and show the shaders'
+        // translations (WEBGL_debug_shaders, soldierShaders)
+        provokingVertex: !!gl.getExtension('WEBGL_provoking_vertex'),
+        debugShaders: !!gl.getExtension('WEBGL_debug_shaders'),
       };
     }
     for (const h of heights) {
       battle.setRenderHeight(h);
-      out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, роздільність: ${h}p… (${results.length + 1} з ${presets.length * heights.length})`;
+      out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, роздільність: ${h}p… (${++fixedRows} з ${presets.length * heights.length})`;
       await wait(WARMUP * 1000);
-      const r = await measure(game, MEASURE);
-      results.push({ preset, height: h, ...r });
+      results.push(row(await measure(game, MEASURE), null, { preset, height: h }));
     }
     // the medium preset as it is played: the window's own resolution, lowered
     // by the automatic resolution when the frames take too long
     if (preset === BREAKDOWN.preset && !partsOnly && !corpsesOnly) {
-      battle.setRenderHeight(null);
-      battle.autoRes = new AutoResolution(battle.renderer);
-      battle.resize();
       out.innerHTML = `<b>Бенчмарк битви</b><br>Графіка: ${preset}, автоматична роздільність…`;
-      await wait(WARMUP * 2000);
-      const r = await measure(game, MEASURE, false);
-      results.push({ preset, height: 'auto', scale: battle.autoRes.scale, ...r });
-      battle.autoRes.dispose();
-      battle.autoRes = null;
+      const [r, stamps] = await autoCase(game, battle);
+      results.push(row(r, stamps, { preset }));
     }
     if (preset === BREAKDOWN.preset && corpsesOnly) {
       battle.setRenderHeight(BREAKDOWN.height);
       show(`Графіка: ${preset}, ${BREAKDOWN.height}p, половина воїнів полягла…`);
       await wait(WARMUP * 1000);
-      results.push({ preset, height: BREAKDOWN.height, ...(await measure(game, MEASURE)) });
-      stop();
+      results.push(row(await measure(game, MEASURE), null, { preset, height: BREAKDOWN.height }));
+      cam.stop();
       still = await stillBreakdown(battle, show, { parts: ['base', 'noSoldiers'] });
     } else if (preset === BREAKDOWN.preset) {
       battle.setRenderHeight(BREAKDOWN.height);
+      // every part on the same arc of the orbit, the first's (else each
+      // part looks from another side: one part's turn is half the circle):
+      // the camera put back by its warm-up, and at the arc's start as the
+      // measurement starts
+      let arc = null;
       for (const [name, off] of Object.entries(PARTS)) {
         out.innerHTML = `<b>Бенчмарк битви</b><br>Розклад середньої графіки: ${PART_NAMES[name]}…`;
         const restore = off(battle);
         // (longer first: the resolution has just changed)
-        await wait((name === 'base' ? WARMUP : BREAKDOWN.warmup) * 1000);
+        const warmup = name === 'base' ? WARMUP : BREAKDOWN.warmup;
+        if (arc != null) cam.angle = arc - warmup * ORBIT_SPEED;
+        await wait(warmup * 1000);
+        if (arc == null) arc = cam.angle;
+        else cam.angle = arc;
         const r = await measure(game, BREAKDOWN.measure);
         restore();
         // (p50, p90: whether the frames come evenly with this part left out)
-        breakdown[name] = { fps: r.fps, p50: r.p50, p90: r.p90, cpuP50: r.cpuP50, gpuP50: r.gpuP50, triangles: r.triangles };
+        breakdown[name] = row({ fps: r.fps, p50: r.p50, p90: r.p90, cpuP50: r.cpuP50, cpuP90: r.cpuP90, gpuP50: r.gpuP50, gpuP90: r.gpuP90, triangles: r.triangles }, r.stamps);
       }
-      stop();
+      // (the arc: from, to, radians on the circle)
+      const from = arc % (Math.PI * 2);
+      breakdownArc = [+from.toFixed(2), +(from + BREAKDOWN.measure * ORBIT_SPEED).toFixed(2)];
+      cam.stop();
       still = await stillBreakdown(battle, show);
     }
     // up close, as the player sees the fight (last: the measurements before
-    // it stay comparable with earlier runs)
+    // it stay comparable with earlier runs); then as he plays it, at the
+    // window's resolution with the automatic one
     if (preset === BREAKDOWN.preset) {
       const close = await closeCase(game, battle, show, corpsesOnly ? ['base', 'noSoldiers'] : CLOSE_PARTS);
-      results.push({ preset, height: BREAKDOWN.height, view: 'close', ...close.row });
+      results.push(row(close.row, null, { preset, height: BREAKDOWN.height, view: 'close' }));
       stillClose = close.still;
+      if (!partsOnly && !corpsesOnly) {
+        show('ближній вид, як у гравця, з автоматичною роздільністю…');
+        const unfollow = follow(battle);
+        const [r, stamps] = await autoCase(game, battle);
+        unfollow();
+        closeAuto = row(r, stamps, { preset, view: 'close' });
+      }
+      // (before the next battle takes the programs away)
+      device.soldierShaders = soldierShaders(battle.renderer);
     }
-    stop();
+    cam.stop();
   }
+  if (closeAuto) results.push(closeAuto);
   calib.push(calibrate());
   if (game.battle) game.battle.setRenderHeight(null);
+  for (const [r, stamps] of paced) r.pacing = pacing(stamps, refresh);
   // calibMs: the processor test before and after the run (lower is faster)
   // still: GPU ms of still frames per part left out, and what that saves
   // (stillClose: the same from behind a soldier in the fight); results:
   // animMs the CPU ms of posing, lods how many soldiers (living, fallen) at
-  // each level of detail; fallen: half the soldiers fallen (?corpses)
-  const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, fallen: corpsesOnly, results, breakdown, still, stillClose };
+  // each level of detail, buffer the drawing buffer's size, pacing the
+  // share of frames that took 1, 2, 3, 4+ of the display's refreshes
+  // (device.refreshMs), autores what the automatic resolution did (auto
+  // rows); breakdownArc: where on the orbit every part of the breakdown was
+  // measured; fallen: half the soldiers fallen (?corpses)
+  const report = { date: new Date().toISOString(), build: BUILD, device, calibMs: calib, army: ARMY, fallen: corpsesOnly, results, breakdown, breakdownArc, still, stillClose };
+  const share = (p) => (p ? p.map((k) => Math.round(k * 100)).join('/') : '–');
   const rows = results
-    .map((r) => `<tr><td>${r.preset}</td><td>${r.height === 'auto' ? `авто ×${r.scale}` : `${r.height}p`}${r.view === 'close' ? ', ближче' : ''}</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${r.cpuP50}</td><td>${r.animMs ?? '–'}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
+    .map((r) => `<tr><td>${r.preset}</td><td>${r.height === 'auto' ? `авто ×${+r.scale.toFixed(2)}` : `${r.height}p`}${r.view === 'close' ? ', ближче' : ''}</td><td><b>${r.fps}</b></td><td>${r.p50}</td><td>${r.p90}</td><td>${share(r.pacing)}</td><td>${r.cpuP50}</td><td>${r.animMs ?? '–'}</td><td>${r.gpuP50 ?? '–'}</td><td>${r.calls}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
     .join('');
   const breakdownRows = Object.entries(breakdown)
     .map(([name, r]) => `<tr><td>${PART_NAMES[name]}</td><td><b>${r.fps}</b></td><td>${r.cpuP50}</td><td>${r.gpuP50 ?? '–'}</td><td>${(r.triangles / 1e6).toFixed(2)}M</td></tr>`)
@@ -654,13 +923,13 @@ export async function runBenchmark(game) {
   // the processor slower at the end than at the start: it got hot
   const hot = calib[1] > calib[0] * 1.25;
   out.innerHTML = `<b>Готово.</b> Скопіюйте JSON нижче й надішліть його.<br>
-    <small>Версія ${BUILD}; ${device.gpu}; тест процесора: ${calib.join(' / ')} мс${hot ? ' — <b>під кінець процесор сповільнився (перегрів чи режим економії): числа занижені</b>' : ''}</small>
+    <small>Версія ${BUILD}; ${device.gpu}; екран оновлюється кожні ${device.refreshMs ?? '?'} мс; тест процесора: ${calib.join(' / ')} мс${hot ? ' — <b>під кінець процесор сповільнився (перегрів чи режим економії): числа занижені</b>' : ''}</small>
     ${corpsesOnly ? '<br><small>Половина воїнів полягла (bench.html?corpses).</small>' : ''}
     <table style="border-collapse:collapse;margin:8px 0;width:100%" cellpadding="3">
-      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>CPU, мс</th><th>пози, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
+      <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Графіка</th><th>Висота</th><th>FPS</th><th>кадр p50, мс</th><th>p90, мс</th><th>кадри в 1/2/3/4+ оновлення екрана, %</th><th>CPU, мс</th><th>пози, мс</th><th>GPU, мс</th><th>виклики</th><th>трикутники</th></tr>
       ${rows}
     </table>
-    ${breakdownRows ? `<small>Середня графіка, ${BREAKDOWN.height}p, без однієї частини:</small>
+    ${breakdownRows ? `<small>Середня графіка, ${BREAKDOWN.height}p, без однієї частини (кожна на тій самій дузі обльоту):</small>
     <table style="border-collapse:collapse;margin:4px 0 8px;width:100%" cellpadding="3">
       <tr style="text-align:left;border-bottom:1px solid #8a7"><th>Варіант</th><th>FPS</th><th>CPU, мс</th><th>GPU, мс</th><th>трикутники</th></tr>
       ${breakdownRows}
